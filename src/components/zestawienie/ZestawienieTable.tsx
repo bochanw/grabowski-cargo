@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { Load, Direction } from "@/types/load";
 import { useDeleteLoad, useUpdateLoad } from "@/hooks/useLoads";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
+import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
@@ -71,7 +72,11 @@ interface EditingCell {
   key: keyof Load;
 }
 
-type Dialog = { kind: "import" } | { kind: "attach"; load: Load } | { kind: "contractors" } | { kind: "invoice"; load: Load };
+type Dialog =
+  | { kind: "import" }
+  | { kind: "attach"; load: Load }
+  | { kind: "contractors" }
+  | { kind: "invoice"; loadIds: string[] };
 
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [visibleBlocks, setVisibleBlocks] = useState<Record<ColumnBlock, boolean>>({
@@ -84,6 +89,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const updateLoad = useUpdateLoad();
   const deleteLoad = useDeleteLoad();
   const { data: fleetData } = useFleet();
@@ -96,12 +104,47 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     [visibleBlocks]
   );
 
-  const dayGroups = useMemo(() => groupByDay(loads), [loads]);
+  // Wyszukiwarka: filtr w pamięci po WSZYSTKICH polach rekordu + nazwie kontrahenta. Tekst do
+  // przeszukania liczony raz na rekord (nie przy każdym wciśnięciu klawisza).
+  const searchIndex = useMemo(
+    () => new Map(loads.map((load) => [load.id, loadSearchText(load, load.contractor_id ? contractorNames.get(load.contractor_id) : undefined)])),
+    [loads, contractorNames]
+  );
+  const visibleLoads = useMemo(
+    () => (query.trim() === "" ? loads : loads.filter((load) => matchesQuery(searchIndex.get(load.id) ?? "", query))),
+    [loads, query, searchIndex]
+  );
+
+  const dayGroups = useMemo(() => groupByDay(visibleLoads), [visibleLoads]);
   // Od najnowszego — fallback "z poprzedniego zlecenia" przy dopasowaniu do floty.
   const recentLoads = useMemo(
     () => [...loads].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "")),
     [loads]
   );
+
+  // Ctrl+K / Cmd+K — kursor w wyszukiwarce (UX dyspozytorski: bez myszki).
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const selectedLoads = useMemo(() => loads.filter((load) => selectedIds.has(load.id)), [loads, selectedIds]);
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   function toggleBlock(block: ColumnBlock) {
     if (block === "ladunek") return;
@@ -138,10 +181,48 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         >
           + Importuj zlecenie (PDF)
         </button>
+        <div className="relative">
+          <input
+            ref={searchInputRef}
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setQuery("");
+            }}
+            placeholder="Szukaj: kontener, kierowca, terminal, klient… (Ctrl+K)"
+            className="w-80 rounded-full border border-zinc-300 px-3 py-1 text-xs text-zinc-900 placeholder:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+        </div>
+        {query.trim() !== "" && (
+          <span className="text-xs text-zinc-500">
+            {visibleLoads.length} z {loads.length}
+          </span>
+        )}
+        {selectedLoads.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => setDialog({ kind: "invoice", loadIds: selectedLoads.map((l) => l.id) })}
+              className="rounded-full border border-zinc-900 bg-zinc-900 px-3 py-1 text-xs font-medium text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+            >
+              Wystaw fakturę ({selectedLoads.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="text-xs text-zinc-500 underline hover:text-zinc-800 dark:hover:text-zinc-200"
+            >
+              odznacz
+            </button>
+          </>
+        )}
         {saveError ? (
           <span className="text-xs text-red-600">{saveError}</span>
         ) : (
-          <span className="text-xs text-zinc-400">Kliknij komórkę, żeby edytować — Enter zapisuje, Esc anuluje.</span>
+          selectedLoads.length === 0 && (
+            <span className="hidden text-xs text-zinc-400 xl:inline">Kliknij komórkę, żeby edytować — Enter zapisuje, Esc anuluje.</span>
+          )
         )}
         <div className="ml-auto flex gap-2">
           <button
@@ -187,10 +268,13 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
       {dialog?.kind === "invoice" && (
         <InvoiceDialog
-          // Świeży rekord z listy (dialog mógł zostać otwarty przed aktualizacją Realtime).
-          load={loads.find((l) => l.id === dialog.load.id) ?? dialog.load}
-          contractor={contractors.find((c) => c.id === dialog.load.contractor_id) ?? null}
-          onClose={() => setDialog(null)}
+          // Świeże rekordy z listy (dialog mógł zostać otwarty przed aktualizacją Realtime).
+          loads={dialog.loadIds.map((id) => loads.find((l) => l.id === id)).filter((l): l is Load => Boolean(l))}
+          contractors={contractors}
+          onClose={() => {
+            setDialog(null);
+            setSelectedIds(new Set());
+          }}
         />
       )}
       {dialog?.kind === "attach" && (
@@ -210,6 +294,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         <table className="w-full min-w-max border-collapse text-xs">
           <thead className="sticky top-0 z-10 bg-zinc-100 dark:bg-zinc-900">
             <tr>
+              <th className="w-8 border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800" />
               {columns.map((column) => (
                 <th
                   key={column.key}
@@ -226,7 +311,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           <tbody>
             {dayGroups.length === 0 && (
               <tr>
-                <td colSpan={columns.length + 1} className="px-2 py-6 text-center text-zinc-500">
+                <td colSpan={columns.length + 2} className="px-2 py-6 text-center text-zinc-500">
                   Brak ładunków.
                 </td>
               </tr>
@@ -243,8 +328,10 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 onStartEdit={setEditingCell}
                 onCancelEdit={() => setEditingCell(null)}
                 onCommit={commitCell}
+                selectedIds={selectedIds}
+                onToggleSelected={toggleSelected}
                 onAttach={(load) => setDialog({ kind: "attach", load })}
-                onInvoice={(load) => setDialog({ kind: "invoice", load })}
+                onInvoice={(load) => setDialog({ kind: "invoice", loadIds: [load.id] })}
                 onDelete={handleDelete}
               />
             ))}
@@ -259,6 +346,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
 
 interface RowHandlers {
   fleet: Fleet;
+  selectedIds: Set<string>;
+  onToggleSelected: (id: string) => void;
   contractors: Contractor[];
   contractorNames: Map<string, string>;
   editingCell: EditingCell | null;
@@ -289,7 +378,7 @@ function DayGroupRows({
     <>
       <tr>
         <td
-          colSpan={columns.length + 1}
+          colSpan={columns.length + 2}
           className="border-y border-zinc-300 bg-zinc-200 px-2 py-1 text-sm font-semibold text-zinc-800 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
         >
           {formatDayHeading(group.dateKey || null)}
@@ -315,6 +404,8 @@ function DirectionRows({
   columns,
   isFirst,
   fleet,
+  selectedIds,
+  onToggleSelected,
   contractors,
   contractorNames,
   editingCell,
@@ -331,7 +422,7 @@ function DirectionRows({
         {/* Gruba kreska oddziela eksporty od importów w obrębie dnia — nie
             tylko kolor tła, ale wyraźna, pogrubiona krawędź. */}
         <td
-          colSpan={columns.length + 1}
+          colSpan={columns.length + 2}
           className={`bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:bg-zinc-950 dark:text-zinc-500 ${
             !isFirst ? "border-t-4 border-zinc-900 dark:border-zinc-100" : ""
           }`}
@@ -342,8 +433,18 @@ function DirectionRows({
       {loads.map((load) => (
         <tr
           key={load.id}
-          className="border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900"
+          className={`border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900 ${
+            selectedIds.has(load.id) ? "bg-blue-50 dark:bg-blue-950/40" : ""
+          }`}
         >
+          <td className="px-2 py-1">
+            <input
+              type="checkbox"
+              checked={selectedIds.has(load.id)}
+              onChange={() => onToggleSelected(load.id)}
+              aria-label={`Zaznacz zlecenie ${load.order_number ?? ""}`}
+            />
+          </td>
           {columns.map((column) => {
             const isEditing = editingCell?.id === load.id && editingCell.key === column.key;
             return (

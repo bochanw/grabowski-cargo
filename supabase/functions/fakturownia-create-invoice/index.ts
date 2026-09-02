@@ -1,24 +1,24 @@
 // ============================================================
-// fakturownia-create-invoice — wystawia fakturę w Fakturowni dla zlecenia z Zestawienia
+// fakturownia-create-invoice — wystawia fakturę w Fakturowni dla JEDNEGO lub KILKU zleceń
 // ============================================================
 // Kopia wzorca z bochanw/DAB/supabase/functions/fakturownia-create-invoice (Panel floty), z inną
-// treścią pozycji: właściciel chce w tytule "Transport kontenera <nr>, na trasie <trasa>, nr
-// zlecenia <nr>" — trasę i tytuł składa appka (src/lib/invoice/invoiceTitle.ts) i pokazuje do
-// edycji PRZED wysłaniem; ta funkcja dostaje gotowy tytuł i tylko go przekazuje.
+// treścią: jedna pozycja na każde zlecenie (ładunek) — tytuł składa appka
+// (src/lib/invoice/invoiceTitle.ts) i pokazuje do edycji PRZED wysłaniem; ta funkcja tylko przekazuje.
+//
+// Kwoty są NETTO (właściciel: "wysyła kwotę z frachtu jako brutto, a to jest netto") — pozycja idzie
+// jako `price_net` × 1, Fakturownia sama dolicza VAT wg `tax`.
 //
 // Token API Fakturowni NIE trafia do appki w przeglądarce — żyje wyłącznie w sekretach projektu
-// Supabase. Konfiguracja (Dashboard → Project Settings → Edge Functions → Secrets, albo CLI):
-//   supabase secrets set FAKTUROWNIA_SUBDOMAIN=<subdomena> FAKTUROWNIA_API_TOKEN=<token> --project-ref itlgexjhznjsbonzdxyg
-//   supabase functions deploy fakturownia-create-invoice --project-ref itlgexjhznjsbonzdxyg
-// Subdomena = "twojafirma" z twojafirma.fakturownia.pl; token: Ustawienia → Ustawienia konta →
-// Integracja → Kod autoryzacyjny API. Bez sekretów funkcja zwraca jawny `reason:'not_configured'`.
+// Supabase (Dashboard → Edge Functions → Secrets): FAKTUROWNIA_SUBDOMAIN, FAKTUROWNIA_API_TOKEN.
+// Wdrożenie bez CLI: Dashboard → Edge Functions → Deploy a new function → Via Editor → nazwa
+// `fakturownia-create-invoice` → wklejony ten plik → Deploy.
 //
 // Autoryzacja: domyślna weryfikacja JWT Supabase — każdy zalogowany dyspozytor (świadomie bez
-// is_manager(), jak parse-order-pdf; patrz CLAUDE.md). To wystawia PRAWDZIWE faktury — jeśli
-// właściciel zechce ograniczyć do managera, to osobna decyzja.
+// is_manager(), jak reszta tej appki; patrz CLAUDE.md).
 //
-// Zabezpieczenie przed dublem: `oid` = id zlecenia z naszej bazy + `oid_unique:'yes'` — Fakturownia
-// odrzuci drugą fakturę do tego samego zlecenia, nawet gdyby appka o tym zapomniała.
+// Zabezpieczenie przed dublem: `oid` = id zleceń z naszej bazy + `oid_unique:'yes'` — Fakturownia
+// odrzuci drugą fakturę do tego samego zestawu zleceń; appka dodatkowo blokuje zlecenia już
+// zafakturowane (fakturownia_invoice_id).
 //
 // Stawka VAT: 23% dla kontrahenta krajowego (PLN, bez VAT-EU), "np" dla zagranicznego — to samo
 // pierwsze przybliżenie co w DAB, do zweryfikowania na pierwszych realnych fakturach.
@@ -37,10 +37,8 @@ function json(body: unknown, status = 200): Response {
 }
 
 interface InvoiceRequest {
-  loadId?: string;
-  orderNumber?: string;
-  title?: string;
-  amount?: number;
+  loadIds?: string[];
+  positions?: { title?: string; amountNet?: number }[];
   currency?: string;
   paymentTermsDays?: number | null;
   paymentTermsNote?: string | null;
@@ -74,12 +72,11 @@ Deno.serve(async (req: Request) => {
     return json({ ok: false, reason: 'bad_request', error: 'Nieprawidłowe zapytanie.' }, 400);
   }
 
-  const loadId = (body.loadId || '').toString().trim();
-  const title = (body.title || '').toString().trim();
-  const amount = Number(body.amount) || 0;
+  const loadIds = (body.loadIds || []).map((id) => String(id).trim()).filter(Boolean);
+  const positions = (body.positions || []).map((p) => ({ title: (p.title || '').toString().trim(), amountNet: Number(p.amountNet) || 0 }));
   const buyerName = (body.buyer?.name || '').trim();
-  if (!loadId || !title || amount <= 0 || !buyerName) {
-    return json({ ok: false, reason: 'bad_request', error: 'Faktura wymaga zlecenia, tytułu, dodatniej kwoty i nazwy kontrahenta.' }, 400);
+  if (loadIds.length === 0 || positions.length === 0 || positions.some((p) => !p.title || p.amountNet <= 0) || !buyerName) {
+    return json({ ok: false, reason: 'bad_request', error: 'Faktura wymaga zleceń, pozycji z tytułem i dodatnią kwotą netto oraz nazwy kontrahenta.' }, 400);
   }
 
   const subdomain = Deno.env.get('FAKTUROWNIA_SUBDOMAIN');
@@ -91,8 +88,8 @@ Deno.serve(async (req: Request) => {
   const currency = (body.currency || 'PLN').toUpperCase();
   const isForeign = currency !== 'PLN' || !!(body.buyer?.vatEu || '').trim();
   const tax = isForeign ? 'np' : 23;
-  // Data wystawienia = DZIŚ; data sprzedaży = rozładunek/załadunek (jak w DAB — pomylenie tych dat
-  // było tam realnym błędem). Termin płatności = dziś + dni z warunku kontrahenta/dokumentu.
+  // Data wystawienia = DZIŚ; data sprzedaży = z appki (dyspozytor wybiera, bo ładunki mogą być z
+  // kilku dni); termin płatności = dziś + dni z warunku kontrahenta/dokumentu.
   const issueDate = new Date().toISOString().slice(0, 10);
   const sellDate = (body.sellDate || issueDate).slice(0, 10);
   const days = Number(body.paymentTermsDays);
@@ -104,10 +101,10 @@ Deno.serve(async (req: Request) => {
     sell_date: sellDate,
     currency,
     payment_type: 'transfer',
-    oid: loadId,
+    oid: loadIds.join('+'),
     oid_unique: 'yes',
     buyer_name: buyerName,
-    positions: [{ name: title, quantity: 1, quantity_unit: 'usł.', total_price_gross: amount, tax }],
+    positions: positions.map((p) => ({ name: p.title, quantity: 1, quantity_unit: 'usł.', price_net: p.amountNet, tax })),
   };
   const note = (body.paymentTermsNote || '').trim();
   if (note) invoicePayload.description = `Termin płatności: ${days > 0 ? `${days} dni ` : ''}${note}`;

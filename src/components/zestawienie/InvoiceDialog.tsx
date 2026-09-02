@@ -14,57 +14,107 @@ const REASON_MESSAGES: Record<string, string> = {
   network: "Nie udało się połączyć z serwerem — sprawdź połączenie i spróbuj ponownie.",
 };
 
-// Wystawienie faktury w Fakturowni dla jednego zlecenia. Wszystko, co idzie na fakturę, jest
-// widoczne i edytowalne PRZED wysłaniem (tytuł, kwota, termin) — nic nie wychodzi bez kliknięcia.
+interface PositionState {
+  loadId: string;
+  title: string;
+  titleTouched: boolean;
+  amountNet: number | null;
+  origin: ExportOrigin;
+  isExport: boolean;
+  orderNumber: string;
+}
+
+function initialPositions(loads: Load[]): PositionState[] {
+  return loads.map((load) => ({
+    loadId: load.id,
+    title: buildInvoiceTitle(load, "poimport"),
+    titleTouched: false,
+    amountNet: load.invoice_amount,
+    origin: "poimport",
+    isExport: load.direction === "E",
+    orderNumber: load.order_number ?? "",
+  }));
+}
+
+// Data sprzedaży: przy kilku ładunkach z różnych dni bierzemy NAJPÓŹNIEJSZĄ jako propozycję —
+// dyspozytor i tak ją wybiera ręcznie (właściciel: "potrzebuję możliwość wybrania daty sprzedaży").
+function defaultSellDate(loads: Load[]): string {
+  const dates = loads.map((l) => l.secondary_date ?? l.load_date).filter((d): d is string => Boolean(d)).sort();
+  return dates.length > 0 ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Wystawienie faktury w Fakturowni dla JEDNEGO lub KILKU zleceń (jedna pozycja = jedno zlecenie).
+ * Kwoty są NETTO — Fakturownia dolicza VAT. Wszystko widoczne i edytowalne PRZED wysłaniem.
+ */
 export function InvoiceDialog({
-  load,
-  contractor,
+  loads,
+  contractors,
   onClose,
 }: {
-  load: Load;
-  contractor: Contractor | null;
+  loads: Load[];
+  contractors: Contractor[];
   onClose: () => void;
 }) {
   const updateLoad = useUpdateLoad();
-  const [exportOrigin, setExportOrigin] = useState<ExportOrigin>("poimport");
-  const [title, setTitle] = useState(() => buildInvoiceTitle(load, "poimport"));
-  const [titleTouched, setTitleTouched] = useState(false);
-  const [amount, setAmount] = useState<number | null>(load.invoice_amount);
+  const [positions, setPositions] = useState<PositionState[]>(() => initialPositions(loads));
+  const [sellDate, setSellDate] = useState(() => defaultSellDate(loads));
   const [paymentTermsDays, setPaymentTermsDays] = useState<number | null>(
-    load.payment_terms_days ?? contractor?.payment_terms_days ?? null
+    loads[0]?.payment_terms_days ?? null
   );
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedInvoice | null>(null);
 
-  const alreadyIssued = load.fakturownia_invoice_id !== null && load.fakturownia_invoice_id !== undefined;
+  const byLoadId = new Map(loads.map((l) => [l.id, l]));
+  const contractorIds = Array.from(new Set(loads.map((l) => l.contractor_id)));
+  const contractor = contractorIds.length === 1 ? contractors.find((c) => c.id === contractorIds[0]) ?? null : null;
+  const alreadyIssued = loads.filter((l) => l.fakturownia_invoice_id);
+  const totalNet = positions.reduce((sum, p) => sum + (p.amountNet ?? 0), 0);
+
+  if (paymentTermsDays === null && contractor?.payment_terms_days != null && !isSending && !created) {
+    // Kontrahent ma domyślny termin, zlecenie nie — podstawiamy raz, przy pierwszym renderze.
+    setPaymentTermsDays(contractor.payment_terms_days);
+  }
+
   const buyerStreet = contractor
     ? [contractor.address, [contractor.postal_code, contractor.city].filter(Boolean).join(" ")].filter(Boolean).join(", ")
     : "";
+
   const blockers: string[] = [];
+  if (contractorIds.length > 1) blockers.push("Zaznaczone zlecenia mają różnych kontrahentów — faktura zbiorcza musi dotyczyć jednego kontrahenta.");
   if (!contractor) blockers.push("Zlecenie nie ma kontrahenta — ustaw go w kolumnie „Kontrahent” (blok Fakturowanie).");
   if (contractor && !contractor.nip && !contractor.vat_eu) blockers.push(`Kontrahent ${contractor.name} nie ma NIP-u ani VAT-EU — uzupełnij w „Kontrahenci”.`);
-  if (!amount || amount <= 0) blockers.push("Brak dodatniej kwoty (Stawka / Kwota w zleceniu).");
-  if (!title.trim()) blockers.push("Tytuł pozycji nie może być pusty.");
+  if (positions.some((p) => !p.amountNet || p.amountNet <= 0)) blockers.push("Każda pozycja musi mieć dodatnią kwotę netto.");
+  if (positions.some((p) => !p.title.trim())) blockers.push("Każda pozycja musi mieć tytuł.");
+  if (alreadyIssued.length > 0) blockers.push(`Zlecenia z już wystawioną fakturą: ${alreadyIssued.map((l) => l.order_number ?? l.id).join(", ")} — odznacz je.`);
 
-  function changeOrigin(origin: ExportOrigin) {
-    setExportOrigin(origin);
-    if (!titleTouched) setTitle(buildInvoiceTitle(load, origin));
+  function updatePosition(loadId: string, patch: Partial<PositionState>) {
+    setPositions((prev) =>
+      prev.map((p) => {
+        if (p.loadId !== loadId) return p;
+        const next = { ...p, ...patch };
+        // Zmiana "skąd pusty" (eksport) przelicza tytuł, dopóki dyspozytor go ręcznie nie poprawił.
+        if (patch.origin && !next.titleTouched) {
+          const load = byLoadId.get(loadId);
+          if (load) next.title = buildInvoiceTitle(load, patch.origin);
+        }
+        return next;
+      })
+    );
   }
 
   async function handleSend() {
-    if (!contractor || blockers.length > 0 || amount === null) return;
+    if (!contractor || blockers.length > 0) return;
     setIsSending(true);
     setError(null);
     const result = await createInvoice({
-      loadId: load.id,
-      orderNumber: load.order_number ?? "",
-      title: title.trim(),
-      amount,
+      loadIds: positions.map((p) => p.loadId),
+      positions: positions.map((p) => ({ title: p.title.trim(), amountNet: p.amountNet as number })),
       currency: "PLN",
       paymentTermsDays,
-      paymentTermsNote: load.payment_terms_note ?? contractor.payment_terms_note,
-      sellDate: load.secondary_date ?? load.load_date,
+      paymentTermsNote: loads[0]?.payment_terms_note ?? contractor.payment_terms_note,
+      sellDate,
       buyer: { name: contractor.name, nip: contractor.nip, vatEu: contractor.vat_eu, street: buyerStreet || null, email: contractor.email },
     });
     setIsSending(false);
@@ -73,23 +123,31 @@ export function InvoiceDialog({
       return;
     }
     setCreated(result.invoice);
-    const saveError = await updateLoad(load.id, {
-      fakturownia_invoice_id: result.invoice.id,
-      invoice_number: result.invoice.number || null,
-      invoice_url: result.invoice.viewUrl,
-      invoice_issued_at: result.invoice.issueDate,
-      invoice_payment_date: result.invoice.paymentTo,
-      invoice_amount: amount,
-    });
-    if (saveError) setError(`Faktura wystawiona (${result.invoice.number}), ale nie udało się zapisać jej numeru przy zleceniu: ${saveError}`);
+
+    // Faktura wystawiona — podpinamy ją do KAŻDEGO zlecenia z osobna (kwota netto tej pozycji).
+    const failures: string[] = [];
+    for (const position of positions) {
+      const saveError = await updateLoad(position.loadId, {
+        fakturownia_invoice_id: result.invoice.id,
+        invoice_number: result.invoice.number || null,
+        invoice_url: result.invoice.viewUrl,
+        invoice_issued_at: result.invoice.issueDate,
+        invoice_payment_date: result.invoice.paymentTo,
+        invoice_amount: position.amountNet,
+      });
+      if (saveError) failures.push(`${position.orderNumber || position.loadId}: ${saveError}`);
+    }
+    if (failures.length > 0) {
+      setError(`Faktura wystawiona (${result.invoice.number}), ale nie udało się zapisać jej przy zleceniach: ${failures.join("; ")}`);
+    }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
+      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-            Faktura — zlecenie {load.order_number ?? ""}
+            {loads.length === 1 ? `Faktura — zlecenie ${loads[0].order_number ?? ""}` : `Faktura zbiorcza — ${loads.length} zleceń`}
           </h2>
           <button type="button" onClick={onClose} aria-label="Zamknij" className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">
             ✕
@@ -97,17 +155,13 @@ export function InvoiceDialog({
         </div>
 
         <div className="flex flex-1 flex-col gap-3 overflow-auto p-4">
-          {(alreadyIssued || created) && (
+          {created && (
             <p className="rounded border border-green-300 bg-green-50 px-3 py-2 text-xs text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-200">
-              Faktura wystawiona: <strong>{created?.number || load.invoice_number || "(bez numeru)"}</strong>
-              {(created?.viewUrl || load.invoice_url) && (
-                <>
-                  {" — "}
-                  <a href={created?.viewUrl || load.invoice_url || "#"} target="_blank" rel="noreferrer" className="underline">
-                    otwórz w Fakturowni
-                  </a>
-                </>
-              )}
+              Faktura wystawiona: <strong>{created.number || "(bez numeru)"}</strong>
+              {" — "}
+              <a href={created.viewUrl} target="_blank" rel="noreferrer" className="underline">
+                otwórz w Fakturowni
+              </a>
             </p>
           )}
           {error && (
@@ -115,7 +169,7 @@ export function InvoiceDialog({
               {error}
             </p>
           )}
-          {!alreadyIssued && !created && blockers.map((b) => (
+          {!created && blockers.map((b) => (
             <p key={b} className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
               {b}
             </p>
@@ -136,52 +190,76 @@ export function InvoiceDialog({
             )}
           </div>
 
-          {!alreadyIssued && !created && (
-            <div className="grid grid-cols-2 gap-3">
-              {load.direction === "E" && (
-                <Field label="Skąd pusty kontener (eksport)">
-                  <select className={inputClass} value={exportOrigin} onChange={(e) => changeOrigin(e.target.value as ExportOrigin)}>
-                    <option value="poimport">Poimport</option>
-                    <option value="depot">z Depotu</option>
-                  </select>
+          {!created && (
+            <>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="Data sprzedaży">
+                  <input type="date" className={inputClass} value={sellDate} onChange={(e) => setSellDate(e.target.value)} />
                 </Field>
-              )}
-              <Field label="Tytuł pozycji na fakturze" full>
-                <textarea
-                  className={inputClass}
-                  rows={2}
-                  value={title}
-                  onChange={(e) => {
-                    setTitle(e.target.value);
-                    setTitleTouched(true);
-                  }}
-                />
-              </Field>
-              <Field label="Kwota brutto (PLN)">
-                <input type="number" step="0.01" className={inputClass} value={amount ?? ""} onChange={(e) => setAmount(e.target.value === "" ? null : Number(e.target.value))} />
-              </Field>
-              <Field label="Termin płatności (dni od wystawienia)">
-                <input type="number" className={inputClass} value={paymentTermsDays ?? ""} onChange={(e) => setPaymentTermsDays(e.target.value === "" ? null : Number(e.target.value))} />
-              </Field>
-              <p className="col-span-2 text-xs text-zinc-500">
-                Data wystawienia: dziś. Data sprzedaży: {load.secondary_date ?? load.load_date ?? "dziś"}. VAT: 23% (krajowy) / np (VAT-EU).
+                <Field label="Termin płatności (dni od wystawienia)">
+                  <input type="number" className={inputClass} value={paymentTermsDays ?? ""} onChange={(e) => setPaymentTermsDays(e.target.value === "" ? null : Number(e.target.value))} />
+                </Field>
+                <Field label="Razem netto (PLN)">
+                  <input readOnly className={`${inputClass} bg-zinc-50 dark:bg-zinc-900`} value={totalNet.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} />
+                </Field>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                {positions.map((position, index) => (
+                  <div key={position.loadId} className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
+                    <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                      Pozycja {index + 1} — zlecenie {position.orderNumber || "(bez numeru)"}
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <Field label="Tytuł pozycji na fakturze" full>
+                        <textarea
+                          className={inputClass}
+                          rows={2}
+                          value={position.title}
+                          onChange={(e) => updatePosition(position.loadId, { title: e.target.value, titleTouched: true })}
+                        />
+                      </Field>
+                      <Field label="Kwota netto (PLN)">
+                        <input
+                          type="number"
+                          step="0.01"
+                          className={inputClass}
+                          value={position.amountNet ?? ""}
+                          onChange={(e) => updatePosition(position.loadId, { amountNet: e.target.value === "" ? null : Number(e.target.value) })}
+                        />
+                      </Field>
+                      {position.isExport && (
+                        <Field label="Skąd pusty kontener (eksport)">
+                          <select className={inputClass} value={position.origin} onChange={(e) => updatePosition(position.loadId, { origin: e.target.value as ExportOrigin })}>
+                            <option value="poimport">Poimport</option>
+                            <option value="depot">z Depotu</option>
+                          </select>
+                        </Field>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <p className="text-xs text-zinc-500">
+                Kwoty są NETTO — Fakturownia doliczy VAT (23% krajowy / „np” przy VAT-EU). Data wystawienia: dziś.
               </p>
-            </div>
+            </>
           )}
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
           <button type="button" onClick={onClose} className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
-            {created || alreadyIssued ? "Zamknij" : "Anuluj"}
+            {created ? "Zamknij" : "Anuluj"}
           </button>
-          {!alreadyIssued && !created && (
+          {!created && (
             <button
               type="button"
               disabled={isSending || blockers.length > 0}
               onClick={handleSend}
               className="rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
             >
-              {isSending ? "Wystawianie…" : "Wystaw fakturę w Fakturowni"}
+              {isSending ? "Wystawianie…" : `Wystaw fakturę (${totalNet.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} netto)`}
             </button>
           )}
         </div>
@@ -195,7 +273,7 @@ const inputClass =
 
 function Field({ label, full, children }: { label: string; full?: boolean; children: React.ReactNode }) {
   return (
-    <label className={`flex flex-col gap-0.5 text-xs text-zinc-600 dark:text-zinc-400 ${full ? "col-span-2" : ""}`}>
+    <label className={`flex flex-col gap-0.5 text-xs text-zinc-600 dark:text-zinc-400 ${full ? "col-span-3" : ""}`}>
       {label}
       {children}
     </label>

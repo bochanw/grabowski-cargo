@@ -1,10 +1,13 @@
 import { supabase } from "./client";
 
-export interface CreateInvoiceRequest {
-  loadId: string;
-  orderNumber: string;
+export interface InvoicePositionRequest {
   title: string;
-  amount: number;
+  amountNet: number;
+}
+
+export interface CreateInvoiceRequest {
+  loadIds: string[];
+  positions: InvoicePositionRequest[];
   currency?: string;
   paymentTermsDays: number | null;
   paymentTermsNote: string | null;

@@ -367,7 +367,29 @@ edycji inline tych kolumn w tabeli (`buildPatch` dokłada `gross_weight` do patc
   kwota, termin — wszystko do edycji przed kliknięciem; po sukcesie zapis numeru/linku przy zleceniu
   (trigger loguje to w `activity_log`). `src/lib/supabase/createInvoice.ts` — helper (404 = "nie
   wdrożona"). Test tytułów: `npx tsx scratch-invoice.test.mts` (9 przypadków, plik tymczasowy).
-  **NIE przetestowane na żywej Fakturowni** — pierwszy test u właściciela na jego koncie.
+  Pierwszy test u właściciela na żywej Fakturowni: **działa** (faktura wystawiona), z trzema
+  poprawkami zgłoszonymi od razu — patrz niżej.
+
+**Poprawki po pierwszej realnej fakturze + wyszukiwarka (zgłoszenie właściciela: "wysyła kwotę z
+frachtu jako brutto a to jest netto", "potrzebuję kilka pozycji na jednej fakturze i wybór daty
+sprzedaży", "bezwzględnie potrzebuję wyszukiwarkę"):**
+- **Kwoty NETTO**: pozycja idzie jako `price_net` (było `total_price_gross`) — Fakturownia dolicza
+  VAT. **Funkcję trzeba wdrożyć PONOWNIE** (Dashboard → Edge Functions → Via Editor, ten sam kod).
+- **Faktura zbiorcza**: funkcja przyjmuje `loadIds[]` + `positions[]` (jedna pozycja = jedno
+  zlecenie), `oid` = id zleceń złączone `+` (dubel dalej blokowany przez `oid_unique`). W tabeli
+  checkbox przy każdym wierszu → w pasku "Wystaw fakturę (N)". Blokady: różni kontrahenci w
+  zaznaczeniu, zlecenie już zafakturowane. Po sukcesie faktura podpina się do KAŻDEGO zlecenia
+  osobno (`invoice_amount` = kwota jego pozycji).
+- **Data sprzedaży wybierana** (ładunki bywają z różnych dni) — domyślnie najpóźniejsza data
+  rozładunku z zaznaczonych, do zmiany w oknie. Termin płatności też edytowalny.
+- **Wyszukiwarka** (`src/lib/search/loadSearch.ts`): filtr w pamięci po WSZYSTKICH polach rekordu
+  + nazwie kontrahenta; zapytanie dzielone na słowa (każde musi wystąpić, kolejność dowolna), bez
+  wielkości liter i polskich znaków, tablice dopasowywane też bez spacji/myślników ("gpuly42" ==
+  "GPU LY42"). Pole w pasku Zestawienia, **Ctrl+K** ustawia w nim kursor, Esc czyści, obok licznik
+  "N z M". Zgodnie z CLAUDE.md to świadomie filtr w pamięci — `pg_trgm` dopiero, gdy zbiór urośnie.
+  Test: `npx tsx scratch-search.test.mts` (14 przypadków, plik tymczasowy).
+  Zweryfikowane w przeglądarce: Ctrl+K, filtrowanie jedno- i wielosłowowe, zaznaczenie 2 zleceń →
+  okno faktury zbiorczej z dwiema pozycjami, poprawnymi tytułami (import/eksport), sumą netto.
 
 **Pułapka Realtime złapana NA PRODUKCJI (właściciel: po kliknięciu "Kontrahenci" ekran "This page
 couldn't load"): `supabase.channel(nazwa)` zwraca ISTNIEJĄCĄ instancję dla powtórzonej nazwy, a
