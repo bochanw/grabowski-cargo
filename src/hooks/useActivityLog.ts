@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase/client";
 import type { ActivityLogEntry } from "@/types/activityLog";
@@ -25,13 +25,15 @@ async function fetchActivityLog(): Promise<ActivityLogEntry[]> {
  */
 export function useActivityLog(enabled: boolean) {
   const queryClient = useQueryClient();
+  // Unikalna nazwa kanału per instancja — patrz komentarz w useContractors.
+  const channelId = useId();
   const query = useQuery({ queryKey: ACTIVITY_LOG_QUERY_KEY, queryFn: fetchActivityLog, enabled });
 
   useEffect(() => {
     if (!enabled) return;
     let subscribedBefore = false;
     const channel = supabase
-      .channel("activity-log-changes")
+      .channel(`activity-log-changes-${channelId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity_log" }, (payload) => {
         const entry = payload.new as ActivityLogEntry;
         queryClient.setQueryData<ActivityLogEntry[]>(ACTIVITY_LOG_QUERY_KEY, (current) => {
@@ -49,7 +51,7 @@ export function useActivityLog(enabled: boolean) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [enabled, queryClient]);
+  }, [enabled, queryClient, channelId]);
 
   return query;
 }

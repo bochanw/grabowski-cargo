@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase/client";
 import type { Contractor, ContractorInput } from "@/types/contractor";
@@ -13,15 +13,23 @@ async function fetchContractors(): Promise<Contractor[]> {
   return data ?? [];
 }
 
-/** Kontrahenci na żywo — ten sam wzorzec Realtime → cache co useLoads. */
+/**
+ * Kontrahenci na żywo — ten sam wzorzec Realtime → cache co useLoads.
+ *
+ * Nazwa kanału MUSI być unikalna per instancja hooka: `supabase.channel(nazwa)` zwraca ISTNIEJĄCY
+ * kanał o tej samej nazwie, a ponowne `subscribe()` na nim rzuca wyjątek ("tried to subscribe
+ * multiple times") — dokładnie tak wywalał się ekran "This page couldn't load" po kliknięciu
+ * "Kontrahenci" (tabela i okno wołały ten hook naraz). Stąd `useId()` w nazwie.
+ */
 export function useContractors() {
   const queryClient = useQueryClient();
+  const channelId = useId();
   const query = useQuery({ queryKey: CONTRACTORS_QUERY_KEY, queryFn: fetchContractors });
 
   useEffect(() => {
     let subscribedBefore = false;
     const channel = supabase
-      .channel("contractors-changes")
+      .channel(`contractors-changes-${channelId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "contractors" }, (payload) => {
         queryClient.setQueryData<Contractor[]>(CONTRACTORS_QUERY_KEY, (current) => {
           if (!current) return current;
@@ -49,7 +57,7 @@ export function useContractors() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [queryClient]);
+  }, [queryClient, channelId]);
 
   return query;
 }

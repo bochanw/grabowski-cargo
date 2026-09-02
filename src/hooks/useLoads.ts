@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase/client";
 import type { Load } from "@/types/load";
@@ -26,12 +26,15 @@ async function fetchLoads(): Promise<Load[]> {
 export function useLoads() {
   const queryClient = useQueryClient();
   const hasSubscribedBefore = useRef(false);
+  // Unikalna nazwa kanału per instancja — patrz komentarz w useContractors (duplikat nazwy = wyjątek
+  // przy drugim subscribe()).
+  const channelId = useId();
 
   const query = useQuery({ queryKey: LOADS_QUERY_KEY, queryFn: fetchLoads });
 
   useEffect(() => {
     const channel = supabase
-      .channel("loads-changes")
+      .channel(`loads-changes-${channelId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "loads" },
@@ -73,7 +76,7 @@ export function useLoads() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [queryClient]);
+  }, [queryClient, channelId]);
 
   return query;
 }

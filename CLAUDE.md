@@ -332,6 +332,19 @@ dodać alias. Wybór kontrahenta w tabeli też podstawia termin, jeśli zlecenie
 `bochanw/DAB/supabase/functions/fakturownia-create-invoice` z sekretami FAKTUROWNIA_SUBDOMAIN/
 FAKTUROWNIA_API_TOKEN (osobna decyzja właściciela: konto Fakturowni Grabowskiego, stawka VAT).
 
+**Pułapka Realtime złapana NA PRODUKCJI (właściciel: po kliknięciu "Kontrahenci" ekran "This page
+couldn't load"): `supabase.channel(nazwa)` zwraca ISTNIEJĄCĄ instancję dla powtórzonej nazwy, a
+drugie `.on(...).subscribe()` na niej rzuca wyjątek** ("cannot add postgres_changes callbacks ...
+after subscribe()") — `ZestawienieTable` i `ContractorsDialog` wołały `useContractors()` naraz, oba
+pod kanałem `contractors-changes`. Odtworzone w izolowanym Node (realtime-js 2.113). Naprawione:
+KAŻDY hook Realtime (`useLoads`, `useContractors`, `useActivityLog`) buduje nazwę kanału z
+`useId()` — jeden hook może być użyty w wielu komponentach naraz. Wniosek na przyszłość: nazwa
+kanału Realtime = per instancja, nigdy stała. Do tego `src/app/error.tsx` — własny ekran błędu z
+TREŚCIĄ wyjątku (domyślny Next.js pokazuje tylko "This page couldn't load", nie dało się zdalnie
+ustalić przyczyny bez repro). Testy przeglądarkowe w dev tego NIE złapały (mock bez backendu —
+subscribe bez połączenia nie doszedł do drugiego `.on()`), więc weryfikacja z prawdziwym
+backendem nadal jest niezastąpiona.
+
 **Do zrobienia w kolejnej sesji:**
 1. Właściciel aplikuje `0003_activity_log.sql` i `0004_contractors.sql` (+ reload cache PostgREST);
    potem pierwszy test panelu "Historia" i "Kontrahentów" na żywo (bez migracji oba pokażą błąd
