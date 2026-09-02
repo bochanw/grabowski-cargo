@@ -3,8 +3,9 @@
 // ============================================================
 // Guzik "Importuj zlecenie (PDF)" w Zestawieniu (patrz src/components/zestawienie/
 // ImportOrderDialog.tsx) — właściciel NIE chce ręcznie przepisywać pól z każdego zlecenia PDF do
-// formularza. Docelowo appka pozna szablony znanych klientów (regex/układ stały), a ta funkcja
-// zostanie fallbackiem dla nieznanych — na razie jest jedyną metodą, każdy PDF idzie przez model.
+// formularza. Appka najpierw próbuje szablonów znanych klientów (src/lib/orderTemplates/, regex na
+// tekście z pdf.js), a TA funkcja jest fallbackiem dla dokumentów spoza tych szablonów — do modelu
+// idzie więc tylko to, czego appka nie umie przeczytać sama (nowy spedytor, nietypowy układ, skan).
 //
 // Wzorowane wprost na bochanw/DAB/supabase/functions/parse-order-pdf (appka floty tego samego
 // klienta) — TEN SAM kontrakt "nic nie zapisuje się samo": funkcja tylko wypełnia formularz do
@@ -56,12 +57,16 @@ const MAX_PDF_BYTES = 8 * 1024 * 1024;
 
 const EXTRACT_TOOL = {
   name: 'extract_order',
-  description: 'Zapisuje pola zlecenia spedycyjnego (transport kontenerowy) wyciągnięte z dokumentu.',
+  description: 'Zapisuje pola zlecenia spedycyjnego / listu przewozowego (transport kontenerowy) wyciągnięte z dokumentu.',
   input_schema: {
     type: 'object',
     properties: {
       order_number: { type: 'string', description: 'Numer/oznaczenie zlecenia (np. "ZD/1797/6/2026"). Pusty string, jeśli nie występuje w dokumencie.' },
       forwarder: { type: 'string', description: 'Nazwa firmy ZLECENIODAWCY (spedytor zlecający transport — NIE firma wykonująca transport, czyli NIE Grabowski Mariusz Sp. z o.o., nawet jeśli to ona jest adresatem dokumentu). Pusty string, jeśli nieznana.' },
+      forwarder_nip: { type: 'string', description: 'NIP/VAT-ID ZLECENIODAWCY (same cyfry, ewentualnie z prefiksem kraju) — z nagłówka/stopki dokumentu. Pusty string, jeśli nie ma. NIE podawaj NIP-u firmy Grabowski.' },
+      forwarder_address: { type: 'string', description: 'Ulica i numer w adresie ZLECENIODAWCY, bez kodu pocztowego i miasta. Pusty string, jeśli nie ma.' },
+      forwarder_postal_code: { type: 'string', description: 'Kod pocztowy ZLECENIODAWCY (np. "81-537"). Pusty string, jeśli nie ma.' },
+      forwarder_city: { type: 'string', description: 'Miejscowość ZLECENIODAWCY. Pusty string, jeśli nie ma.' },
       direction: { type: 'string', enum: ['', 'I', 'E'], description: '"I" jeśli dokument wprost mówi "Import", "E" jeśli "Eksport"/"Export". Pusty string, jeśli dokument tego nie precyzuje — NIE zgaduj kierunku z samej trasy.' },
       container_number: { type: 'string', description: 'Numer kontenera (format ISO 6346, np. "NYKU9911861"). Pusty string, jeśli nie ma.' },
       container_size: { type: 'string', description: 'Wielkość/typ kontenera (np. "20DV", "40HC") — bez nazwy armatora/linii. Pusty string, jeśli nieznana.' },
@@ -78,15 +83,30 @@ const EXTRACT_TOOL = {
       payment_terms_days: { type: ['number', 'null'], description: 'Liczba dni terminu płatności (np. z "60 dni od..." -> 60). Null, jeśli nieznana.' },
       payment_terms_note: { type: 'string', description: 'Od jakiego zdarzenia liczony jest termin płatności (np. "od daty wpływu faktury i listu przewozowego"). Pusty string, jeśli nie podano albo nie ma osobnego terminu dni.' },
       notes: { type: 'string', description: 'Inne istotne informacje z dokumentu, których nie da się przypisać do pól wyżej (np. nietypowe wymagania, ważenie, kary umowne warte uwagi). Pusty string, jeśli nic takiego nie ma.' },
+      // Poniższe pola pochodzą zwykle z DRUGIEGO dokumentu tego samego zlecenia — listu
+      // przewozowego dla kierowcy. Jeden wgrany plik wypełni tylko część z nich; appka skleja
+      // dokumenty po stronie klienta (mergeParsedOrders), więc pusty string tu niczego nie psuje.
+      pickup_type: { type: 'string', description: 'Miejsce PODJĘCIA kontenera (terminal), dosłownie jak w dokumencie (np. "GCT Gdynia", "BCT", "Baltic Hub") — appka sama sprowadzi to do kodu terminala. Pusty string, jeśli nie podano.' },
+      pin_booking: { type: 'string', description: 'Numer PIN / numer wizyty / booking do awizacji na terminalu. Pusty string, jeśli nie ma.' },
+      goods_name: { type: 'string', description: 'Nazwa przewożonego towaru. Pusty string, jeśli nie podano.' },
+      net_weight_kg: { type: ['number', 'null'], description: 'Waga samego TOWARU w kilogramach (na listach przewozowych bywa podpisana "waga towaru brutto" — chodzi o towar BEZ tary kontenera; appka sama doliczy tarę). Sama liczba w kg. Null, jeśli nieznana.' },
+      submitted_where: { type: 'string', description: 'Miejsce złożenia/zdania pustego kontenera po rozładunku (depot/terminal). Pusty string, jeśli nie podano.' },
+      driver_name: { type: 'string', description: 'Imię i nazwisko kierowcy. Pusty string, jeśli nie podano.' },
+      driver_id_number: { type: 'string', description: 'Numer dowodu osobistego/paszportu kierowcy. Pusty string, jeśli nie podano.' },
+      vehicle_plate: { type: 'string', description: 'Numer rejestracyjny CIĄGNIKA/pojazdu. Pusty string, jeśli nie podano.' },
+      trailer_plate: { type: 'string', description: 'Numer rejestracyjny NACZEPY/przyczepy. Pusty string, jeśli nie podano.' },
+      driver_phone: { type: 'string', description: 'Telefon kierowcy. Pusty string, jeśli nie podano.' },
     },
-    required: ['order_number', 'forwarder', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'payment_terms_days', 'payment_terms_note', 'notes'],
+    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'goods_name', 'net_weight_kg', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
   },
 };
 
-const SYSTEM_PROMPT = `Jesteś ekstraktorem danych ze zleceń spedycyjnych (transport kontenerowy, import/eksport morski).
-Dostajesz plik PDF zlecenia — może być w języku polskim, niemieckim albo angielskim, w DOWOLNYM
-układzie (różni spedytorzy formatują to inaczej). Twoje jedyne zadanie to wywołać narzędzie
-extract_order z polami, które FAKTYCZNIE znajdziesz w dokumencie.
+const SYSTEM_PROMPT = `Jesteś ekstraktorem danych z dokumentów przewozowych (transport kontenerowy, import/eksport morski).
+Dostajesz plik PDF — zlecenie spedycyjne ALBO list przewozowy dla kierowcy do tego samego zlecenia
+(dane kierowcy, pojazdu, terminala podjęcia, towaru). Dokument może być w języku polskim,
+niemieckim albo angielskim, w DOWOLNYM układzie (różni spedytorzy formatują to inaczej). Twoje
+jedyne zadanie to wywołać narzędzie extract_order z polami, które FAKTYCZNIE znajdziesz w tym
+dokumencie — pola z drugiego dokumentu zostaw puste, appka sklei oba po swojej stronie.
 
 Zasady, których nie wolno złamać:
 1. NIGDY nie zgaduj ani nie wymyślaj wartości. Jeśli pola nie ma w dokumencie albo nie jesteś
@@ -102,7 +122,12 @@ Zasady, których nie wolno złamać:
    sama data bez jednoznacznego roku, zostaw pole puste zamiast zgadywać.
 5. rate_amount i payment_terms_days to same liczby, bez jednostek/tekstu/waluty.
 6. Jeśli dokument wymienia więcej niż jedno miejsce rozładunku, wybierz PIERWSZE — dyspozytor
-   doda pozostałe ręcznie, jeśli będzie trzeba (appka dziś obsługuje jedno miejsce na rekord).`;
+   doda pozostałe ręcznie, jeśli będzie trzeba (appka dziś obsługuje jedno miejsce na rekord).
+7. Kierowca, numery rejestracyjne i telefon to dane z listu przewozowego — jeśli dokument ich nie
+   zawiera, zostaw puste. NIE przepisuj tu danych firmy przewozowej ani osoby kontaktowej
+   spedytora, tylko faktycznego kierowcę i jego pojazd.
+8. net_weight_kg to waga TOWARU w kilogramach. Jeśli dokument podaje wagę w tonach, przelicz na
+   kilogramy. Nie dodawaj tary kontenera — appka dolicza ją sama.`;
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
@@ -140,7 +165,7 @@ Deno.serve(async (req: Request) => {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 1536,
+        max_tokens: 2048,
         system: SYSTEM_PROMPT,
         tools: [EXTRACT_TOOL],
         tool_choice: { type: 'tool', name: 'extract_order' },
@@ -149,7 +174,7 @@ Deno.serve(async (req: Request) => {
             role: 'user',
             content: [
               { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-              { type: 'text', text: 'Zlecenie spedycyjne w załączonym PDF-ie — wyciągnij pola.' },
+              { type: 'text', text: 'Dokument przewozowy w załączonym PDF-ie (zlecenie spedycyjne albo list przewozowy) — wyciągnij pola.' },
             ],
           },
         ],

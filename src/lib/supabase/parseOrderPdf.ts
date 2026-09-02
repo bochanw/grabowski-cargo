@@ -1,10 +1,12 @@
 import { supabase } from "./client";
-import type { ParsedOrder } from "@/types/parsedOrder";
+import { matchPickupLocation } from "@/lib/orderTemplates/pickupLocations";
+import { normalizeParsedOrder, type ParsedOrder } from "@/types/parsedOrder";
 
-// Ta funkcja (Edge Function przez Claude) jest DOCELOWYM fallbackiem dla zleceń spoza znanych
-// szablonów (patrz src/lib/orderTemplates/) — na razie NIEPODŁĄCZONA pod ImportOrderDialog, bo
-// właściciel świadomie chce najpierw same szablony znanych klientów, bez zależności od wdrożenia
-// Edge Function/klucza Anthropic. Zostaje gotowa do podłączenia, gdy przyjdzie czas (patrz CLAUDE.md).
+// Odczyt dokumentu przez Claude (Edge Function `parse-order-pdf`) — FALLBACK dla dokumentów spoza
+// znanych szablonów (src/lib/orderTemplates/). Znany szablon zawsze wygrywa: jest darmowy,
+// natychmiastowy i deterministyczny, więc do modelu idą tylko dokumenty, których appka nie umie
+// przeczytać sama. Kontrakt taki sam jak przy szablonie: funkcja NICZEGO nie zapisuje, tylko
+// wypełnia formularz do sprawdzenia przez dyspozytora przed zapisem.
 export type ParseOrderPdfResult =
   | { ok: true; parsed: ParsedOrder }
   | { ok: false; reason: string; error: string };
@@ -25,8 +27,8 @@ function fileToBase64(file: File): Promise<string> {
 
 /**
  * Woła Edge Function `parse-order-pdf` (patrz supabase/functions/parse-order-pdf) tokenem
- * zalogowanego użytkownika — funkcja i tak ma verify_jwt, ale bez nagłówka Authorization
- * dostaniemy 401 zamiast czytelnego błędu.
+ * zalogowanego użytkownika — funkcja ma verify_jwt, więc bez nagłówka Authorization dostaniemy
+ * 401 zamiast czytelnego błędu.
  */
 export async function parseOrderPdf(file: File): Promise<ParseOrderPdfResult> {
   const { data: sessionData } = await supabase.auth.getSession();
@@ -51,7 +53,25 @@ export async function parseOrderPdf(file: File): Promise<ParseOrderPdfResult> {
       },
       body: JSON.stringify({ pdfBase64 }),
     });
-    return (await res.json()) as ParseOrderPdfResult;
+    if (res.status === 404) {
+      return {
+        ok: false,
+        reason: "not_deployed",
+        error: "Funkcja parse-order-pdf nie jest wdrożona na projekcie Supabase (odczyt przez Claude jeszcze nie działa).",
+      };
+    }
+    const data = (await res.json().catch(() => null)) as { ok?: boolean; parsed?: unknown; reason?: string; error?: string } | null;
+    if (!data || typeof data !== "object" || typeof data.ok !== "boolean") {
+      return { ok: false, reason: "bad_response", error: `Nieoczekiwana odpowiedź serwera (HTTP ${res.status}).` };
+    }
+    if (!data.ok) {
+      return { ok: false, reason: data.reason ?? "error", error: data.error ?? "Nieznany błąd odczytu." };
+    }
+    // Model zwraca luźny obiekt (brakujące/nietypowe pola) — do formularza wchodzi dopiero po
+    // normalizacji. "Podjęcie" sprowadzamy do jednego z trzech terminali tak samo jak parsery
+    // szablonów, żeby wartość pasowała do listy rozwijanej.
+    const parsed = normalizeParsedOrder(data.parsed);
+    return { ok: true, parsed: { ...parsed, pickup_type: matchPickupLocation(parsed.pickup_type) } };
   } catch (e) {
     return { ok: false, reason: "network", error: e instanceof Error ? e.message : String(e) };
   }

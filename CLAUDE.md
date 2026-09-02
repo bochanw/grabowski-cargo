@@ -150,12 +150,9 @@ claude console"*. Poprawiony, docelowy kształt (i to jest to, co appka dziś ro
      pusty formularz do ręcznego wypełnienia.
    - Kolejni klienci: dopisać kolejny plik w `src/lib/orderTemplates/` (funkcja `detect`+`parse`) i
      dodać do rejestru w `index.ts` — dokładnie to, o co poprosił właściciel.
-2. **Edge Function przez Claude API (`supabase/functions/parse-order-pdf/index.ts`) — ZBUDOWANA, ale
-   ŚWIADOMIE NIEPODŁĄCZONA pod UI.** Zostaje jako gotowy, docelowy fallback dla NIEznanych szablonów
-   ("z czasem dopiero claude console") — `src/lib/supabase/parseOrderPdf.ts` (helper wołający ją) też
-   zostaje, po prostu `ImportOrderDialog.tsx` go dziś nie wywołuje. Gdy przyjdzie czas na podłączenie:
-   wywołać ten helper jako fallback w `handleFileChange`, gdy `matchKnownTemplate` zwróci `null`.
-   Funkcja wzorowana WPROST na `bochanw/DAB/supabase/functions/parse-order-pdf` (ten sam kontrakt:
+2. **Edge Function przez Claude API (`supabase/functions/parse-order-pdf/index.ts`) — PODŁĄCZONA jako
+   fallback** (od sesji 2026-09-02, patrz sekcja "Odczyt przez Claude podłączony" niżej; wcześniej
+   była świadomie odłączona). Funkcja wzorowana WPROST na `bochanw/DAB/supabase/functions/parse-order-pdf` (ten sam kontrakt:
    nic nie zapisuje się samo). Różnica od DAB: appka DAB wycina tekst z PDF-a po stronie klienta
    (pdf.js) + fallback JPEG dla skanów; ta funkcja wysyła PDF WPROST jako `document` (base64) do
    Anthropic Messages API — natywne wsparcie PDF ogarnia też skany. Model: Haiku 4.5. **Świadomie BEZ
@@ -404,7 +401,52 @@ ustalić przyczyny bez repro). Testy przeglądarkowe w dev tego NIE złapały (m
 subscribe bez połączenia nie doszedł do drugiego `.on()`), więc weryfikacja z prawdziwym
 backendem nadal jest niezastąpiona.
 
+**Odczyt przez Claude podłączony + widoczny wybór plików + tryb ręczny (zgłoszenie właściciela:
+"1. Potrzebuje polaczenie z platforma claude do odczytu. 2. Guzik wybierz pliki musi byc bardziej
+widoczny. 3. Musi byc manualne przejscie na reczne wpisywanie zlecenia."):**
+- **Kolejność odczytu: znany szablon → Claude → ręcznie.** `ImportOrderDialog.handleFiles` woła
+  `parseOrderPdf(file)` (Edge Function) dopiero, gdy `matchKnownTemplate` zwróci `null` — szablon
+  jest darmowy, natychmiastowy i deterministyczny, więc do modelu idą TYLKO nieznane dokumenty.
+  Ekstrakcja tekstu pdf.js, która się wywali (skan bez warstwy tekstowej), NIE kończy odczytu —
+  Claude dostaje oryginalny PDF, nie tekst, więc dla skanów to jedyna działająca ścieżka. Nierozpo-
+  znany dokument dalej nie jest błędem: zostaje formularz do ręcznego wypełnienia + ostrzeżenie z
+  TREŚCIĄ błędu (np. "funkcja nie wdrożona", "brak klucza ANTHROPIC_API_KEY").
+- Schemat narzędzia w Edge Function dopisany o brakujące pola (dawny punkt "UWAGA" z listy TODO):
+  `forwarder_nip/_address/_postal_code/_city` + 10 pól z listu przewozowego (kierowca, dowód,
+  pojazd, naczepa, telefon, podjęcie, PIN/booking, towar, waga, miejsce złożenia pustego). System
+  prompt mówi teraz wprost, że dokument bywa listem przewozowym, a nie zleceniem.
+- `normalizeParsedOrder(raw)` w `src/types/parsedOrder.ts` — KAŻDA odpowiedź modelu przechodzi przez
+  nią przed wejściem do formularza. Powód konkretny, nie kosmetyczny: `mergeParsedOrders` traktuje
+  `undefined` jak wartość (`isEmpty(undefined) === false`), więc brakujący klucz z modelu wpisałby
+  `undefined` w input i zamienił kontrolowany input Reacta w niekontrolowany. Normalizacja domyka
+  komplet kluczy, przycina spacje, wymusza `I`/`E` i parsuje liczby podane jako string ("1 250,50").
+  `pickup_type` z modelu przechodzi przez `matchPickupLocation`, żeby trafić w listę GCT/BCT/BHub.
+  Test: `npx tsx scratch-norm.test.mts` (14 przypadków, plik tymczasowy).
+- **Wdrożenia BRAK — do zrobienia przez właściciela** (ta sesja nadal nie ma MCP do projektu
+  Grabowskiego, `list_projects` widzi tylko DAB/Demo/ETB): Dashboard → Edge Functions → nowa funkcja
+  `parse-order-pdf`, wklejony kod z `supabase/functions/parse-order-pdf/index.ts`, oraz Project
+  Settings → Edge Functions → Secrets: `ANTHROPIC_API_KEY` (klucz z console.anthropic.com). Albo
+  CLI: `supabase functions deploy parse-order-pdf --project-ref itlgexjhznjsbonzdxyg` + `supabase
+  secrets set ANTHROPIC_API_KEY=sk-ant-... --project-ref itlgexjhznjsbonzdxyg`. Do czasu wdrożenia
+  appka działa jak dotąd (szablon albo ręcznie) i pisze wprost, że funkcja nie jest wdrożona.
+- **Guzik wyboru plików**: zamiast gołego `<input type="file">` (szara systemowa kontrolka "Wybierz
+  pliki / Nie wybrano pliku") jest pole zrzutu z dużym czarnym guzikiem "Wybierz pliki PDF" +
+  drag & drop ("albo przeciągnij je tutaj"). Sam input jest `hidden` i klikany przez `ref`.
+  W trybie przeglądu "Dopnij kolejny dokument" to też guzik (`<label>` z ukrytym inputem).
+- **Tryb ręczny**: guzik "Wpisz zlecenie ręcznie (bez PDF-a)" na pierwszym ekranie przechodzi od
+  razu do formularza (`startManual`) — ten sam formularz i ten sam zapis co przy imporcie, dokument
+  da się dopiąć później ("Dopnij PDF" przy wierszu). Guzik w pasku Zestawienia i tytuł okna zmienione
+  na "Nowe zlecenie (PDF / ręcznie)", żeby ręczna droga była widoczna, zanim ktoś otworzy okno.
+- Zweryfikowane w przeglądarce (Playwright, dev): ekran wyboru z widocznym guzikiem, przejście w tryb
+  ręczny, oraz ścieżka fallbacku na PDF-ie spoza znanych szablonów — appka faktycznie woła
+  `parseOrderPdf` i pokazuje czytelny powód niepowodzenia (w tym środowisku "Brak aktywnej sesji",
+  bo nie ma konta do zalogowania). **NIE zweryfikowany realny odczyt przez model** — wymaga wdrożonej
+  funkcji i klucza API, czyli pierwszego testu u właściciela.
+
 **Do zrobienia w kolejnej sesji:**
+0. Wdrożyć `parse-order-pdf` + `ANTHROPIC_API_KEY` (patrz wyżej) i sprawdzić odczyt nieznanego
+   zlecenia przez Claude na żywym PDF-ie; przy okazji zobaczyć, czy Haiku 4.5 wystarcza, czy warto
+   przełączyć `MODEL` na `claude-sonnet-5`.
 1. Właściciel aplikuje `0003_activity_log.sql` i `0004_contractors.sql` (+ reload cache PostgREST);
    potem pierwszy test panelu "Historia" i "Kontrahentów" na żywo (bez migracji oba pokażą błąd
    "relation ... does not exist" / brak w schema cache, reszta appki działa).
@@ -412,10 +454,9 @@ backendem nadal jest niezastąpiona.
 2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
    (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
    `between()`, nigdy `$`).
-3. Podłączyć Edge Function jako fallback dla nierozpoznanych szablonów, gdy właściciel zdecyduje że
-   pora ("z czasem dopiero claude console") — kod po obu stronach gotowy, brakuje wywołania w
-   `ImportOrderDialog.tsx` + wdrożenia funkcji/sekretu. UWAGA: schemat narzędzia w Edge Function
-   NIE zna 10 nowych pól z listu przewozowego — dopisać przy podłączaniu.
+3. Kontrola kosztu odczytu przez Claude, jeśli okaże się potrzebna (dziś funkcja jest dostępna dla
+   każdego zalogowanego, bez limitu wywołań) — świadoma decyzja do podjęcia z właścicielem, nie
+   kopiować `is_manager()` z DAB bez pytania.
 4. Edycja inline: nawigacja Tab/strzałkami między komórkami, jeśli dyspozytorzy o to poproszą.
 5. Dla eksportu: domyślna data liczy się dziś od `delivery_date` (jedyna data z szablonu Q4Road, tam
    "Miejsca rozładunku"). Gdy pojawi się zlecenie eksportowe z datą ZAŁADUNKU, upewnić się, że parser
