@@ -11,6 +11,7 @@ import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./colum
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
 import { ContractorsDialog } from "./ContractorsDialog";
+import { InvoiceDialog } from "./InvoiceDialog";
 import { useContractors } from "@/hooks/useContractors";
 import type { Contractor } from "@/types/contractor";
 
@@ -70,7 +71,7 @@ interface EditingCell {
   key: keyof Load;
 }
 
-type Dialog = { kind: "import" } | { kind: "attach"; load: Load } | { kind: "contractors" };
+type Dialog = { kind: "import" } | { kind: "attach"; load: Load } | { kind: "contractors" } | { kind: "invoice"; load: Load };
 
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [visibleBlocks, setVisibleBlocks] = useState<Record<ColumnBlock, boolean>>({
@@ -184,6 +185,14 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         <ImportOrderDialog recentLoads={recentLoads} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
+      {dialog?.kind === "invoice" && (
+        <InvoiceDialog
+          // Świeży rekord z listy (dialog mógł zostać otwarty przed aktualizacją Realtime).
+          load={loads.find((l) => l.id === dialog.load.id) ?? dialog.load}
+          contractor={contractors.find((c) => c.id === dialog.load.contractor_id) ?? null}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "attach" && (
         <ImportOrderDialog
           mode="attach"
@@ -235,6 +244,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 onCancelEdit={() => setEditingCell(null)}
                 onCommit={commitCell}
                 onAttach={(load) => setDialog({ kind: "attach", load })}
+                onInvoice={(load) => setDialog({ kind: "invoice", load })}
                 onDelete={handleDelete}
               />
             ))}
@@ -256,6 +266,7 @@ interface RowHandlers {
   onCancelEdit: () => void;
   onCommit: (load: Load, column: ColumnDef, raw: string) => void;
   onAttach: (load: Load) => void;
+  onInvoice: (load: Load) => void;
   onDelete: (load: Load) => void;
 }
 
@@ -311,6 +322,7 @@ function DirectionRows({
   onCancelEdit,
   onCommit,
   onAttach,
+  onInvoice,
   onDelete,
 }: { direction: Direction; loads: Load[]; columns: ColumnDef[]; isFirst: boolean } & RowHandlers) {
   return (
@@ -360,6 +372,18 @@ function DirectionRows({
             );
           })}
           <td className="whitespace-nowrap px-2 py-1">
+            <button
+              type="button"
+              onClick={() => onInvoice(load)}
+              title={load.fakturownia_invoice_id ? `Faktura ${load.invoice_number ?? ""} wystawiona` : "Wystaw fakturę w Fakturowni"}
+              className={`mr-1 rounded border px-2 py-0.5 text-[11px] ${
+                load.fakturownia_invoice_id
+                  ? "border-green-300 text-green-700 dark:border-green-800 dark:text-green-400"
+                  : "border-zinc-300 text-zinc-600 hover:border-zinc-500 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100"
+              }`}
+            >
+              {load.fakturownia_invoice_id ? "Faktura ✓" : "Faktura"}
+            </button>
             <button
               type="button"
               onClick={() => onAttach(load)}

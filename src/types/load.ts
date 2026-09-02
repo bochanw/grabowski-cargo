@@ -62,6 +62,9 @@ export interface Load {
   payment_terms_days: number | null;
   payment_terms_note: string | null;
   contractor_id: string | null; // public.contractors — dane do faktury, patrz migracja 0004
+  fakturownia_invoice_id: number | null; // migracja 0005 — ustawione = faktura już wystawiona
+  invoice_url: string | null;
+  invoice_issued_at: string | null;
 
   correct_data_flag: string | null;
   loading_number: string | null;

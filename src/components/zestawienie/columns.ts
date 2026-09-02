@@ -69,6 +69,7 @@ export const COLUMNS: ColumnDef[] = [
   { key: "contractor_id", label: "Kontrahent", block: "fakturowanie", kind: "contractor" },
   { key: "invoice_number", label: "Nr faktury", block: "fakturowanie" },
   { key: "invoice_amount", label: "Kwota", block: "fakturowanie", align: "right", kind: "number" },
+  { key: "invoice_issued_at", label: "Wystawiono", block: "fakturowanie", kind: "date" },
   { key: "invoice_payment_date", label: "Data płatności", block: "fakturowanie", kind: "date" },
   { key: "invoice_code", label: "KOD", block: "fakturowanie" },
   { key: "payment_terms_days", label: "Termin płatności (dni)", block: "fakturowanie", align: "right", kind: "number" },

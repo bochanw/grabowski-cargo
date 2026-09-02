@@ -346,9 +346,28 @@ jest teraz WYLICZANE (text, bo kolumna z arkusza bywa tekstem). Liczone: przy im
 dokumentów (typ z jednego, waga z drugiego), przy edycji pól wagi netto/typu w formularzu i przy
 edycji inline tych kolumn w tabeli (`buildPatch` dokłada `gross_weight` do patcha). Test:
 `npx tsx scratch-tare.test.mts` (19 przypadków, plik tymczasowy).
-**Wysyłka faktury do Fakturowni NIE jest jeszcze zbudowana** — dane są; sama funkcja to kopia
-`bochanw/DAB/supabase/functions/fakturownia-create-invoice` z sekretami FAKTUROWNIA_SUBDOMAIN/
-FAKTUROWNIA_API_TOKEN (osobna decyzja właściciela: konto Fakturowni Grabowskiego, stawka VAT).
+**Wysyłka faktury do Fakturowni — ZBUDOWANA** (właściciel: "podepnijmy testowo moją fakturownię").
+- `supabase/functions/fakturownia-create-invoice/index.ts` — kopia wzorca z DAB, bez `is_manager()`
+  (jak wszystko w tej appce), `oid` = id zlecenia + `oid_unique` (Fakturownia sama odrzuci dubel).
+  Data wystawienia = dziś, sprzedaży = rozładunek, `payment_to` = dziś + dni terminu, VAT 23%/np jak w
+  DAB. **NIE wdrożona przez tę sesję** (brak dostępu do projektu Grabowskiego): `supabase secrets
+  set FAKTUROWNIA_SUBDOMAIN=... FAKTUROWNIA_API_TOKEN=... --project-ref itlgexjhznjsbonzdxyg` +
+  `supabase functions deploy fakturownia-create-invoice --project-ref itlgexjhznjsbonzdxyg`
+  (albo Dashboard → Edge Functions → nowa funkcja, wklejony kod; sekrety w Project Settings → Edge
+  Functions → Secrets). Bez wdrożenia appka pokazuje czytelnie "funkcja nie wdrożona"/"brak sekretów".
+- `src/lib/invoice/invoiceTitle.ts` — tytuł pozycji wg reguły właściciela: "Transport kontenera
+  <nr>, na trasie <trasa>, nr zlecenia <nr>"; import "<port> - <miejscowość> - <port>", eksport
+  "Poimport|z Depotu - <miejscowość> - <port>" (wybór w oknie faktury, bo appka nie wie, skąd pusty).
+  **Założenie do potwierdzenia**: port po terminalu podjęcia — GCT/BCT = Gdynia, BHub/brak = Gdańsk
+  (właściciel napisał "Gdańsk", ale GCT/BCT leżą w Gdyni). Tytuł jest edytowalny przed wysłaniem.
+- `supabase/migrations/0005_loads_invoice_link.sql` (**NIE zaaplikowana**): `fakturownia_invoice_id`,
+  `invoice_url`, `invoice_issued_at`. Numer faktury → istniejące `invoice_number`, termin →
+  `invoice_payment_date`. `InvoiceDialog.tsx` (przycisk "Faktura" przy wierszu; "Faktura ✓" gdy
+  wystawiona — drugi raz nie wystawi): nabywca z kontrahenta (blokada bez kontrahenta/NIP-u), tytuł,
+  kwota, termin — wszystko do edycji przed kliknięciem; po sukcesie zapis numeru/linku przy zleceniu
+  (trigger loguje to w `activity_log`). `src/lib/supabase/createInvoice.ts` — helper (404 = "nie
+  wdrożona"). Test tytułów: `npx tsx scratch-invoice.test.mts` (9 przypadków, plik tymczasowy).
+  **NIE przetestowane na żywej Fakturowni** — pierwszy test u właściciela na jego koncie.
 
 **Pułapka Realtime złapana NA PRODUKCJI (właściciel: po kliknięciu "Kontrahenci" ekran "This page
 couldn't load"): `supabase.channel(nazwa)` zwraca ISTNIEJĄCĄ instancję dla powtórzonej nazwy, a
