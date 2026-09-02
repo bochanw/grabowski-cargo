@@ -69,6 +69,8 @@ export const COLUMNS: ColumnDef[] = [
   { key: "invoice_amount", label: "Kwota", block: "fakturowanie", align: "right", kind: "number" },
   { key: "invoice_payment_date", label: "Data płatności", block: "fakturowanie", kind: "date" },
   { key: "invoice_code", label: "KOD", block: "fakturowanie" },
+  { key: "payment_terms_days", label: "Termin płatności (dni)", block: "fakturowanie", align: "right", kind: "number" },
+  { key: "payment_terms_note", label: "Warunek płatności", block: "fakturowanie" },
 
   { key: "correct_data_flag", label: "Poprawne dane", block: "inne" },
   { key: "loading_number", label: "Nr załad.", block: "inne" },

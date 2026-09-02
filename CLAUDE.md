@@ -99,7 +99,8 @@ Next.js + Tailwind + TanStack Query + Supabase JS SDK + `cmdk` zainstalowane. `s
   (tabela jeszcze nie istnieje na projekcie Grabowskiego).
 
 **Do zrobienia w kolejnej sesji:**
-1. Właściciel aplikuje `0001_loads_schema_rls.sql` ręcznie w SQL Editor.
+1. Właściciel aplikuje `0001_loads_schema_rls.sql` (i `0002_loads_payment_terms.sql`, patrz niżej)
+   ręcznie w SQL Editor.
 2. Zweryfikować end-to-end na żywym projekcie (live insert → Realtime → UI bez odświeżania).
 3. Presence ("Jan edytuje..."), Ctrl+N/Ctrl+K (`cmdk`), globalne wyszukiwanie (czeka na
    realną skalę danych klienta), import z Excela (odporny na `#VALUE!` i inne błędy formuł),
@@ -107,3 +108,33 @@ Next.js + Tailwind + TanStack Query + Supabase JS SDK + `cmdk` zainstalowane. `s
 4. Wciąż do ustalenia z właścicielem: pełne słowniki wartości (pkt wyżej), skala danych,
    format faktury (Fakturownia vs appka generuje PDF — wzorzec `fakturownia-create-invoice`
    z `bochanw/DAB` prawdopodobnie da się powielić).
+
+## Import zleceń z PDF (docelowo: mail + szablony znanych klientów + Claude Console; na razie: ręczne)
+
+Właściciel chce w appce guzik do RĘCZNEGO importu zlecenia spedycyjnego (PDF) — zanim powstanie
+automatyczne czytanie z maila, per-klient szablony parserów i/lub odczyt przez Claude API/Console.
+Ta sesja zrobiła pierwszy krok: ręcznie odczytała przykładowe zlecenie (`Zlecenie_spedycyjne_
+ZD_1797_6_2026.pdf`, spedytor Q4Road, import, kontener NYKU9911861) i zmapowała pola na `loads`.
+
+**Trzy pola ze zlecenia PDF nie miały odpowiednika w schemacie z arkusza — potwierdzone z
+właścicielem (AskUserQuestion), jak je potraktować:**
+- **Miejsce odprawy celnej** (adres agencji celnej) → NIE nowe pole. Właściciel: pole `customs_status`
+  ("Odprawa") ma pomieścić zarówno status, jak i miejsce — jedno pole na oba znaczenia.
+- **Stawka uzgodniona ze spedytorem** (kwota z samego zlecenia, przed wystawieniem faktury) → NIE
+  nowe pole. Właściciel: użyć wprost istniejącego `invoice_amount` (blok Fakturowanie) — appka nie
+  rozróżnia "stawka uzgodniona" od "kwota na wystawionej fakturze".
+- **Warunek płatności** (np. "60 dni od daty wpływu faktury i listu przewozowego" — termin liczony
+  od zdarzenia, nie konkretna data) → NOWE pola, `supabase/migrations/0002_loads_payment_terms.sql`
+  (**NIE zaaplikowana**, jak 0001): `payment_terms_days numeric` (liczba dni) + `payment_terms_note
+  text` (od czego liczony, wolny tekst) — ustrukturyzowane bardziej niż jedno pole tekstowe,
+  właściciel świadomie wybrał to zamiast prostszego pojedynczego text.
+
+`src/types/load.ts` i `src/components/zestawienie/columns.ts` (blok "fakturowanie") już
+zaktualizowane o `payment_terms_days`/`payment_terms_note`.
+
+**Nie zbudowano jeszcze**: guzika/UI do ręcznego importu (upload PDF → wyciągnięte pola → podgląd/
+edycja → zapis), ani żadnego automatycznego parsowania PDF w kodzie appki — to zlecenie zostało
+odczytane ręcznie przez Claude w tej sesji, nie przez appkę. Do ustalenia z właścicielem w kolejnej
+sesji: czy budować UI importu teraz, czy poczekać na więcej przykładowych zleceń (różni klienci mają
+różne szablony — właściciel chce docelowo rozpoznawać znane szablony + fallback przez Claude
+Console dla nieznanych).

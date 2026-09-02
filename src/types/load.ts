@@ -59,6 +59,8 @@ export interface Load {
   invoice_amount: number | null;
   invoice_payment_date: string | null;
   invoice_code: string | null;
+  payment_terms_days: number | null;
+  payment_terms_note: string | null;
 
   correct_data_flag: string | null;
   loading_number: string | null;
