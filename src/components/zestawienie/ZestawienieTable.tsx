@@ -1,19 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent } from "react";
 import type { Load, Direction } from "@/types/load";
 import { useDeleteLoad, useUpdateLoad } from "@/hooks/useLoads";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
-import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
+import { BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
 import { ContractorsDialog } from "./ContractorsDialog";
 import { InvoiceDialog } from "./InvoiceDialog";
+import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { useContractors } from "@/hooks/useContractors";
+import { useSaveViewSettings, useViewSettings } from "@/hooks/useViewSettings";
+import { resolveColumns, toStoredSettings } from "@/lib/view/viewSettings";
 import type { Contractor } from "@/types/contractor";
 
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
@@ -37,6 +40,21 @@ function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Ma
   }
   if (kind === "contractor") return contractorNames.get(String(value)) ?? "(nieznany kontrahent)";
   return String(value);
+}
+
+/**
+ * Zamrożone kolumny (jak w Excelu): pierwsze N kolumn zostaje przy lewej krawędzi przy
+ * przewijaniu w bok. Indeks 0 to kolumna zaznaczenia, 1..N kolejne kolumny danych.
+ *
+ * `position: sticky` nie umie "przyklej za poprzednią" — `left` musi być konkretną wartością, a
+ * szerokości kolumn wynikają z treści. Zamiast narzucać kolumnom stałe szerokości, mierzymy
+ * nagłówek i wpisujemy odsunięcia w zmienne CSS na elemencie <table> (patrz applyFrozenOffsets);
+ * komórki czytają je przez var(). Zmienne, nie stan Reacta, świadomie: pomiar po każdym renderze
+ * przez setState kaskadowałby kolejne rendery całej tabeli.
+ */
+function stickyCellStyle(index: number, frozenCount: number, zIndex: number): CSSProperties | undefined {
+  if (frozenCount === 0 || index > frozenCount) return undefined;
+  return { position: "sticky", left: `var(--frozen-left-${index}, 0px)`, zIndex };
 }
 
 interface DayGroup {
@@ -76,15 +94,10 @@ type Dialog =
   | { kind: "import" }
   | { kind: "attach"; load: Load }
   | { kind: "contractors" }
+  | { kind: "view" }
   | { kind: "invoice"; loadIds: string[] };
 
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
-  const [visibleBlocks, setVisibleBlocks] = useState<Record<ColumnBlock, boolean>>({
-    ladunek: true,
-    rozliczenie: false,
-    fakturowanie: false,
-    inne: false,
-  });
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
@@ -99,10 +112,14 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const { data: contractors = [] } = useContractors();
   const contractorNames = useMemo(() => new Map(contractors.map((c) => [c.id, c.name])), [contractors]);
 
-  const columns = useMemo(
-    () => COLUMNS.filter((column) => visibleBlocks[column.block]),
-    [visibleBlocks]
-  );
+  // Widok jest PER UŻYTKOWNIK (Supabase, migracja 0007): które kolumny, w jakiej kolejności i ile
+  // pierwszych zamrożonych. Dopóki ustawienia się wczytują, `resolveColumns(null)` daje widok
+  // domyślny — tabela nie miga pustymi kolumnami.
+  const { data: viewSettings = null } = useViewSettings();
+  const saveViewSettings = useSaveViewSettings();
+  const view = useMemo(() => resolveColumns(viewSettings), [viewSettings]);
+  const columns = view.visible;
+  const frozenCount = view.frozen;
 
   // Wyszukiwarka: filtr w pamięci po WSZYSTKICH polach rekordu + nazwie kontrahenta. Tekst do
   // przeszukania liczony raz na rekord (nie przy każdym wciśnięciu klawisza).
@@ -121,6 +138,39 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     () => [...loads].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "")),
     [loads]
   );
+
+  // Pomiar zamrożonych kolumn: `left` dla `position: sticky` musi być liczbą, a szerokości
+  // kolumn wynikają z treści, więc bierzemy je z wyrenderowanego nagłówka. Indeks 0 = kolumna
+  // zaznaczenia, 1..N = kolejne zamrożone kolumny danych. Pomiar nie zmienia szerokości (sticky
+  // nie wyjmuje komórki z układu), więc nie ma pętli pomiar → layout → pomiar.
+  const headerRefs = useRef<(HTMLTableCellElement | null)[]>([]);
+  const tableRef = useRef<HTMLTableElement>(null);
+
+  const applyFrozenOffsets = useCallback(() => {
+    const table = tableRef.current;
+    if (!table) return;
+    let offset = 0;
+    for (let index = 0; index <= frozenCount; index += 1) {
+      table.style.setProperty(`--frozen-left-${index}`, `${offset}px`);
+      offset += headerRefs.current[index]?.offsetWidth ?? 0;
+    }
+  }, [frozenCount]);
+
+  // Przed malowaniem (useLayoutEffect), żeby przyklejone kolumny nie mrugnęły w złym miejscu po
+  // zmianie zestawu kolumn albo liczby wierszy.
+  useLayoutEffect(() => {
+    applyFrozenOffsets();
+  }, [applyFrozenOffsets, columns, visibleLoads.length]);
+
+  useEffect(() => {
+    const table = tableRef.current;
+    if (!table || typeof ResizeObserver === "undefined") return;
+    // Tabela ma `w-full min-w-max`, więc przy wąskiej zawartości szerokości kolumn zależą od
+    // szerokości okna — po zmianie rozmiaru trzeba przeliczyć odsunięcia.
+    const observer = new ResizeObserver(() => applyFrozenOffsets());
+    observer.observe(table);
+    return () => observer.disconnect();
+  }, [applyFrozenOffsets]);
 
   // Ctrl+K / Cmd+K — kursor w wyszukiwarce (UX dyspozytorski: bez myszki).
   useEffect(() => {
@@ -146,9 +196,20 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     });
   }
 
-  function toggleBlock(block: ColumnBlock) {
-    if (block === "ladunek") return;
-    setVisibleBlocks((prev) => ({ ...prev, [block]: !prev[block] }));
+  // Przełącznik bloku = skrót do "pokaż/ukryj wszystkie kolumny tej grupy". Pojedyncze kolumny i
+  // kolejność ustawia się w oknie "Widok"; jedno i drugie ląduje w tej samej konfiguracji.
+  async function toggleBlock(block: ColumnBlock) {
+    const hiddenKeys = new Set(
+      view.ordered.filter((column) => view.isHidden(column.key)).map((column) => String(column.key))
+    );
+    const blockKeys = view.ordered.filter((column) => column.block === block).map((column) => String(column.key));
+    const anyVisible = blockKeys.some((key) => !hiddenKeys.has(key));
+    for (const key of blockKeys) {
+      if (anyVisible) hiddenKeys.add(key);
+      else hiddenKeys.delete(key);
+    }
+    const error = await saveViewSettings(toStoredSettings(view.ordered, hiddenKeys, view.frozen));
+    setSaveError(error ? `Nie udało się zapisać widoku: ${error}` : null);
   }
 
   async function commitCell(load: Load, column: ColumnDef, raw: string) {
@@ -243,22 +304,32 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           >
             Historia
           </button>
-          {(Object.keys(BLOCK_LABELS) as ColumnBlock[])
-            .filter((block) => block !== "ladunek")
-            .map((block) => (
+          <button
+            type="button"
+            onClick={() => setDialog({ kind: "view" })}
+            title="Wybierz kolumny, ich kolejność i ile pierwszych zamrozić"
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
+          >
+            Widok
+          </button>
+          {(Object.keys(BLOCK_LABELS) as ColumnBlock[]).map((block) => {
+            const isVisible = columns.some((column) => column.block === block);
+            return (
               <button
                 key={block}
                 type="button"
-                onClick={() => toggleBlock(block)}
+                onClick={() => void toggleBlock(block)}
+                title={`Pokaż/ukryj wszystkie kolumny: ${BLOCK_LABELS[block]}`}
                 className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                  visibleBlocks[block]
+                  isVisible
                     ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
                     : "border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
                 }`}
               >
                 {BLOCK_LABELS[block]}
               </button>
-            ))}
+            );
+          })}
         </div>
       </div>
 
@@ -266,6 +337,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         <ImportOrderDialog recentLoads={recentLoads} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
+      {dialog?.kind === "view" && <ViewSettingsDialog onClose={() => setDialog(null)} />}
       {dialog?.kind === "invoice" && (
         <InvoiceDialog
           // Świeże rekordy z listy (dialog mógł zostać otwarty przed aktualizacją Realtime).
@@ -291,14 +363,28 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           ostatnim wierszem (zasłaniając go) zamiast na dole okna. */}
       <div className="flex min-h-0 flex-1">
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-        <table className="w-full min-w-max border-collapse text-xs">
+        {/* border-separate (zamiast collapse): przy zamrożonych kolumnach `border-collapse`
+            gubi krawędzie przyklejonych komórek — obramowania siedzą wtedy na wspólnej siatce
+            tabeli, nie na komórce, która się przesuwa. Stąd ramki wierszy są na <td>, nie na <tr>
+            (w trybie separate przeglądarka ignoruje obramowanie wiersza). */}
+        <table ref={tableRef} className="w-full min-w-max border-separate border-spacing-0 text-xs">
           <thead className="sticky top-0 z-10 bg-zinc-100 dark:bg-zinc-900">
             <tr>
-              <th className="w-8 border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800" />
-              {columns.map((column) => (
+              <th
+                ref={(element) => {
+                  headerRefs.current[0] = element;
+                }}
+                style={stickyCellStyle(0, frozenCount, 20)}
+                className="w-8 border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
+              />
+              {columns.map((column, index) => (
                 <th
                   key={column.key}
-                  className={`whitespace-nowrap border-b border-zinc-200 px-2 py-1.5 text-left font-medium text-zinc-600 dark:border-zinc-800 dark:text-zinc-400 ${
+                  ref={(element) => {
+                    headerRefs.current[index + 1] = element;
+                  }}
+                  style={stickyCellStyle(index + 1, frozenCount, 20)}
+                  className={`whitespace-nowrap border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 text-left font-medium text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 ${
                     column.align === "right" ? "text-right" : ""
                   }`}
                 >
@@ -321,6 +407,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 key={group.dateKey}
                 group={group}
                 columns={columns}
+                frozenCount={frozenCount}
                 fleet={fleet}
                 contractors={contractors}
                 contractorNames={contractorNames}
@@ -345,6 +432,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
 }
 
 interface RowHandlers {
+  /** Ile pierwszych kolumn jest przyklejonych do lewej — patrz stickyCellStyle. 0 = żadna. */
+  frozenCount: number;
   fleet: Fleet;
   selectedIds: Set<string>;
   onToggleSelected: (id: string) => void;
@@ -381,7 +470,9 @@ function DayGroupRows({
           colSpan={columns.length + 2}
           className="border-y border-zinc-300 bg-zinc-200 px-2 py-1 text-sm font-semibold text-zinc-800 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
         >
-          {formatDayHeading(group.dateKey || null)}
+          {/* Nagłówek dnia rozciąga się na całą szerokość — przyklejamy sam napis, żeby nie
+              uciekał z ekranu przy przewijaniu w bok. */}
+          <div className="sticky left-2 w-fit">{formatDayHeading(group.dateKey || null)}</div>
         </td>
       </tr>
       {presentDirections.map((direction, index) => (
@@ -403,6 +494,7 @@ function DirectionRows({
   loads,
   columns,
   isFirst,
+  frozenCount,
   fleet,
   selectedIds,
   onToggleSelected,
@@ -427,17 +519,25 @@ function DirectionRows({
             !isFirst ? "border-t-4 border-zinc-900 dark:border-zinc-100" : ""
           }`}
         >
-          {DIRECTION_LABELS[direction]}
+          <div className="sticky left-2 w-fit">{DIRECTION_LABELS[direction]}</div>
         </td>
       </tr>
       {loads.map((load) => (
+        // Tło wiersza jest jawne (nie przezroczyste), bo zamrożone komórki dziedziczą je przez
+        // `bg-inherit` — inaczej treść przewijanych kolumn byłaby przez nie widoczna. Dzięki
+        // dziedziczeniu podświetlenie (hover / zaznaczenie) działa też na przyklejonych komórkach.
         <tr
           key={load.id}
-          className={`border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900 ${
-            selectedIds.has(load.id) ? "bg-blue-50 dark:bg-blue-950/40" : ""
+          className={`bg-white hover:bg-zinc-50 dark:bg-zinc-950 dark:hover:bg-zinc-900 ${
+            selectedIds.has(load.id) ? "!bg-blue-50 dark:!bg-blue-950/40" : ""
           }`}
         >
-          <td className="px-2 py-1">
+          <td
+            style={stickyCellStyle(0, frozenCount, 1)}
+            className={`border-b border-zinc-100 px-2 py-1 dark:border-zinc-900 ${
+              frozenCount > 0 ? "bg-inherit" : ""
+            }`}
+          >
             <input
               type="checkbox"
               checked={selectedIds.has(load.id)}
@@ -445,17 +545,18 @@ function DirectionRows({
               aria-label={`Zaznacz zlecenie ${load.order_number ?? ""}`}
             />
           </td>
-          {columns.map((column) => {
+          {columns.map((column, index) => {
             const isEditing = editingCell?.id === load.id && editingCell.key === column.key;
             return (
               <td
                 key={column.key}
+                style={stickyCellStyle(index + 1, frozenCount, 1)}
                 onClick={() => {
                   if (!isEditing) onStartEdit({ id: load.id, key: column.key });
                 }}
-                className={`whitespace-nowrap px-2 py-1 text-zinc-800 dark:text-zinc-200 ${
+                className={`whitespace-nowrap border-b border-zinc-100 px-2 py-1 text-zinc-800 dark:border-zinc-900 dark:text-zinc-200 ${
                   column.align === "right" ? "text-right tabular-nums" : ""
-                } ${isEditing ? "p-0" : "cursor-text"}`}
+                } ${index + 1 <= frozenCount ? "bg-inherit" : ""} ${isEditing ? "p-0" : "cursor-text"}`}
               >
                 {isEditing ? (
                   <CellEditor
@@ -472,7 +573,7 @@ function DirectionRows({
               </td>
             );
           })}
-          <td className="whitespace-nowrap px-2 py-1">
+          <td className="whitespace-nowrap border-b border-zinc-100 px-2 py-1 dark:border-zinc-900">
             <button
               type="button"
               onClick={() => onInvoice(load)}

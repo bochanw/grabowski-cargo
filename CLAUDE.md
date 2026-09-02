@@ -489,6 +489,53 @@ transportowe_spedycja_TIIU218.pdf`, spedytor Euro Logistics, PasCom, załadunek 
   38/40, odprawa pusta, podjęcie POIMPORT, zdanie BCT, booking 9020956380, cukier 22288 kg, 1450 PLN,
   30 dni, kierowca/dowód/ciągnik/naczepa z dokumentu.
 
+**Widok per użytkownik — ZROBIONE** (właściciel: "konfiguracja w supabase — dałbym użytkownikom
+możliwość ręcznego ustalania co chcą widzieć bez narzucania. Wybór pól i kolejność daj. Wystarczy
+zamrozić pierwsze N kolumn — one zawsze będą na maksa z lewej"):
+- `supabase/migrations/0007_user_view_settings.sql` — **ZAAPLIKOWANA przez MCP** (pierwsza migracja
+  tej appki, której właściciel nie musiał wklejać ręcznie; cache PostgREST odświeżony przez
+  `notify pgrst, 'reload schema'` od razu po migracji). Tabela `user_view_settings`: wiersz per
+  użytkownik, `settings jsonb`, RLS **inne niż w reszcie appki** — nie "wymaga logowania" (każdy
+  zalogowany widzi wszystko), tylko `auth.uid() = user_id` w `using` I `with check`: to ustawienia
+  prywatne, nikt nie zmienia widoku koledze. Bez Realtime i bez `activity_log` (dane jednej osoby).
+- Kształt konfiguracji zna WYŁĄCZNIE appka (`src/lib/view/viewSettings.ts`), baza go nie waliduje —
+  kolejna opcja widoku nie będzie wymagać migracji. Stąd `normalizeViewSettings()` na każdym
+  odczycie (jsonb może zawierać cokolwiek: starsza wersja appki, ręczna edycja w SQL Editor).
+  `order` = kolejność kolumn I JEDNOCZEŚNIE lista kolumn znanych w chwili zapisu: kolumna dodana
+  później w kodzie ląduje na końcu i jest widoczna tylko, gdy należy do bloku `ladunek` — inaczej
+  nowe pole samo wskakiwałoby wszystkim do widoku.
+- `src/hooks/useViewSettings.ts` (odczyt + `upsert` z optymistycznym `setQueryData` — tabela
+  przestawia się w tej samej klatce, w której kliknięto), `ViewSettingsDialog.tsx` (guzik "Widok" w
+  pasku: checkbox per kolumna, strzałki ↑↓ na kolejność, "Zamroź pierwsze N", "Pokaż wszystkie",
+  "Przywróć domyślne"; każda zmiana zapisuje się od razu, okno nie ma guzika "Zapisz").
+  Przełączniki bloków (Ładunek/Rozliczenie/Fakturowanie/Inne) ZOSTAŁY, ale piszą teraz do tej samej
+  konfiguracji = "pokaż/ukryj wszystkie kolumny grupy"; blok `ladunek` przestał być wymuszony.
+- **Zamrażanie kolumn**: `position: sticky` z `left` czytanym ze zmiennych CSS `--frozen-left-N`,
+  które ustawia `applyFrozenOffsets()` po pomiarze szerokości komórek NAGŁÓWKA. Dlaczego tak:
+  (1) `left` musi być konkretną wartością — sticky nie umie "przyklej za poprzednią", a szerokości
+  kolumn wynikają z treści, więc gdyby nie pomiar, trzeba by narzucić kolumnom stałe szerokości;
+  (2) zmienne CSS zamiast stanu Reacta, bo `setState` w efekcie po każdym renderze kaskaduje
+  rendery całej tabeli (eslint `react-hooks/set-state-in-effect` to zresztą wyłapał). Przeliczane
+  też z `ResizeObserver` — tabela ma `w-full min-w-max`, więc przy wąskiej zawartości szerokości
+  zależą od szerokości okna.
+- **Pułapka do zapamiętania: `border-collapse` + kolumny sticky = znikające obramowania** (ramki
+  siedzą wtedy na wspólnej siatce tabeli, nie na przesuwanej komórce). Tabela przeszła na
+  `border-separate border-spacing-0`, a ramki wierszy MUSIAŁY przenieść się z `<tr>` na `<td>` —
+  w trybie separate przeglądarka ignoruje obramowanie wiersza. Do tego wiersze mają jawne tło
+  (`bg-white dark:bg-zinc-950`), a przyklejone komórki `bg-inherit`: bez tła treść przewijanych
+  kolumn prześwitywałaby przez zamrożone, a `inherit` sprawia, że podświetlenie wiersza (hover,
+  zaznaczenie) działa też na nich. Nagłówki dnia i kierunku (komórki `colSpan`) mają napis w
+  `<div class="sticky left-2">`, żeby nie uciekał przy przewijaniu w bok.
+- Zweryfikowane: logika — 25 przypadków (`scratch-viewsettings.test.mts`, plik tymczasowy, nie w
+  repo: domyślny widok, własna kolejność, przycinanie `frozen`, kolumna dodana po zapisie,
+  śmieci w jsonb, round-trip); przeglądarka (Playwright, `next dev`, tymczasowa strona
+  `/test-widok` z mockiem i konfiguracją wstrzykniętą do cache TanStack Query) — po przewinięciu o
+  700 px zamrożone kolumny i ich nagłówki stoją w miejscu i są sklejone bez dziury, niezamrożone
+  odjeżdżają, nagłówek dnia zostaje przy lewej. Baza — REST PostgREST widzi tabelę (brak błędu
+  cache schematu), zapis bez sesji odbity przez RLS (42501), `authenticated` ma komplet grantów.
+  **NIE zweryfikowany z przeglądarki zapis na żywym koncie** (to środowisko nie ma konta do
+  zalogowania) — pierwsze kliknięcie właściciela pokaże, czy upsert przechodzi.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -500,6 +547,10 @@ transportowe_spedycja_TIIU218.pdf`, spedytor Euro Logistics, PasCom, załadunek 
    każdego zalogowanego, bez limitu wywołań) — świadoma decyzja do podjęcia z właścicielem, nie
    kopiować `is_manager()` z DAB bez pytania.
 4. Edycja inline: nawigacja Tab/strzałkami między komórkami, jeśli dyspozytorzy o to poproszą.
+6. Widok: przeciąganie nagłówków (dziś kolejność ustawia się strzałkami w oknie "Widok") i
+   ewentualnie nazwane widoki do przełączania ("Dyspozytor", "Fakturowanie") — konfiguracja jest
+   już obiektem w jsonb, więc jedno i drugie da się dołożyć bez migracji. Do zrobienia dopiero,
+   gdy właściciel powie, że tego chce.
 5. Dla eksportu: domyślna data liczy się dziś od `delivery_date` (jedyna data z szablonu Q4Road, tam
    "Miejsca rozładunku"). Gdy pojawi się zlecenie eksportowe z datą ZAŁADUNKU, upewnić się, że parser
    szablonu wpisuje ją tak, żeby "dzień roboczy przed" liczył się od właściwej daty.
