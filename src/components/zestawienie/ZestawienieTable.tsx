@@ -8,6 +8,7 @@ import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
+import { ActivityLogPanel } from "./ActivityLogPanel";
 
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
   weekday: "short",
@@ -74,6 +75,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     inne: false,
   });
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const updateLoad = useUpdateLoad();
@@ -134,6 +136,17 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           <span className="text-xs text-zinc-400">Kliknij komórkę, żeby edytować — Enter zapisuje, Esc anuluje.</span>
         )}
         <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={() => setIsHistoryOpen((open) => !open)}
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              isHistoryOpen
+                ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                : "border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
+            }`}
+          >
+            Historia
+          </button>
           {(Object.keys(BLOCK_LABELS) as ColumnBlock[])
             .filter((block) => block !== "ladunek")
             .map((block) => (
@@ -168,7 +181,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       {/* min-h-0: bez tego element flex nie może być niższy niż jego zawartość, więc
           overflow-auto nigdy nie zadziała, a poziomy pasek przewijania ląduje TUŻ pod
           ostatnim wierszem (zasłaniając go) zamiast na dole okna. */}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="flex min-h-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         <table className="w-full min-w-max border-collapse text-xs">
           <thead className="sticky top-0 z-10 bg-zinc-100 dark:bg-zinc-900">
             <tr>
@@ -209,6 +223,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             ))}
           </tbody>
         </table>
+      </div>
+      {isHistoryOpen && <ActivityLogPanel onClose={() => setIsHistoryOpen(false)} />}
       </div>
     </div>
   );

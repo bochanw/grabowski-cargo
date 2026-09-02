@@ -295,10 +295,27 @@ z dowolnymi wartościami; jeżeli nie uda się dopasować — zassij z poprzedni
   `vehicles`/`drivers` są tam wypełnione; z pustą flotą appka zachowuje się jak przed zmianą
   (wartości z dokumentu + ostrzeżenia). Pierwszy test właściciela pokaże, czy dopasowanie trafia.
 
+**`activity_log` — ZROBIONY (właściciel: "jak to zrobisz, to ogarnij dziennik zmian").**
+`supabase/migrations/0003_activity_log.sql` (**NIE zaaplikowana**, jak poprzednie — ręcznie w SQL
+Editor + odświeżenie cache PostgREST). Zapis idzie **triggerem AFTER INSERT/UPDATE/DELETE na
+`loads`**, nie z kodu appki — od kiedy każda komórka jest edytowalna, a rekordy da się dopinać i
+usuwać, tylko trigger gwarantuje, że żadna ścieżka (import, "Dopnij PDF", Enter w komórce, "Usuń",
+przyszłe boty przez service_role) nie ominie dziennika. Diff liczony w SQL: update = tylko
+faktycznie zmienione pola (`updated_at` pomijany; update bez zmian NIE tworzy wpisu), insert =
+cały rekord w `after`, delete = cały rekord w `before`. Bez FK do `loads` (usunięcie zlecenia ma
+zostawić historię), `order_number` jako migawka. Aktor: `app.actor` (bot ustawia
+`select set_config('app.actor','bot:<źródło>',true)` w tej samej transakcji) → e-mail z JWT →
+`bot:<rola>`. RLS: SELECT + INSERT dla `authenticated`, brak update/delete = insert-only z appki.
+**Trigger zweryfikowany na żywym Postgresie** — kopia migracji odpalona przez MCP na projekcie
+Demo (`bkliskynjbrzqudvjizi`) w jednorazowym schemacie `scratch_cargo` (insert → update dwóch pól →
+update bez zmian → delete z `app.actor`), schemat skasowany po teście.
+Appka: `src/hooks/useActivityLog.ts` (TanStack + Realtime INSERT, 200 ostatnich),
+`src/components/zestawienie/ActivityLogPanel.tsx` (panel boczny "Historia" w pasku Zestawienia:
+kto, kiedy, "pole: przed → po" z etykietami kolumn). Realtime na `activity_log` włączony w migracji.
+
 **Do zrobienia w kolejnej sesji:**
-1. `activity_log` (tabela + zapis diffu przy insert z importu i przy każdym `useUpdateLoad`/delete) —
-   patrz sekcja "Audit trail" wyżej; edycja inline bez śladu to dokładnie ryzyko, którego appka
-   miała uniknąć.
+1. Właściciel aplikuje `0003_activity_log.sql`; potem pierwszy test panelu "Historia" na żywo (bez
+   migracji panel pokaże błąd "relation activity_log does not exist" / brak w schema cache).
 2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
    (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
    `between()`, nigdy `$`).
