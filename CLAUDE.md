@@ -18,10 +18,25 @@ Wspólny projekt z Panelem floty Grabowskiego (ten sam login): URL
 `https://itlgexjhznjsbonzdxyg.supabase.co`. Klucz publishable w `.env.local.example` (bezpieczny
 do użycia w kliencie — nie `service_role`).
 
-**To OSOBNE konto Supabase właściciela, poza zasięgiem Supabase MCP tej i najprawdopodobniej
-kolejnych sesji** (potwierdzone: `list_projects` w tej sesji widzi tylko DAB/Demo/ETB, inna
-organizacja). Migracje piszemy jako pliki `.sql` w `supabase/migrations/`, aplikowane RĘCZNIE
-przez właściciela w SQL Editor — chyba że sprawdzisz `list_projects` i faktycznie masz dostęp.
+**Supabase MCP MA DOSTĘP do tego projektu od 2026-09-02** (właściciel zaprosił konto spod konektora
+do organizacji Grabowskiego, org `vhiughdbmhsrsmzayjeh`, projekt `itlgexjhznjsbonzdxyg`). Wcześniej
+projekt był poza zasięgiem MCP i migracje aplikował właściciel ręcznie w SQL Editor.
+**PUŁAPKA: `list_projects`/`list_organizations` DALEJ pokazują tylko starą organizację
+(DAB/Demo/ETB) — nie wnioskuj z tego, że dostępu nie ma.** Sprawdzaj `get_project` z wprost podanym
+`itlgexjhznjsbonzdxyg`: jeśli zwróci projekt "Grabowski", masz dostęp i możesz aplikować migracje
+(`apply_migration`), wdrażać Edge Functions (`deploy_edge_function`) i czytać żywe dane.
+Migracje NADAL piszemy jako pliki `.sql` w `supabase/migrations/` (ślad w repo + możliwość cofnięcia)
+— MCP tylko je aplikuje. Czego MCP NIE potrafi: ustawiania sekretów Edge Functions (klucze API
+wpisuje właściciel w Dashboard → Project Settings → Edge Functions → Secrets).
+
+**Stan produkcji sprawdzony 2026-09-02 przez MCP:** migracje `0001`–`0005` WSZYSTKIE zaaplikowane
+(tabele `loads`, `activity_log`, `contractors`; kolumny terminów płatności, `contractor_id`, pola
+faktury), Realtime włączony na `loads`/`activity_log`/`contractors`/`fleet_store`. Edge Functions:
+`fakturownia-create-invoice` (v2) i `parse-order-pdf` (v1, wdrożona w tej sesji) — tej drugiej
+brakuje jeszcze sekretu `ANTHROPIC_API_KEY` (zwraca wtedy `not_configured`).
+`get_advisors` (security): nic pilnego; jedyna uwaga do NASZEGO kodu to `log_loads_activity()`
+wystawiona jako RPC dla `anon`/`authenticated` — wywołana wprost i tak rzuci błąd (funkcja
+triggerowa), ale przy okazji kolejnej migracji warto zrobić `revoke execute`.
 
 Panel floty Grabowskiego na tym projekcie ma już: `email_password` auth, `app_roles` +
 `is_manager()` (SECURITY DEFINER), RLS wzorem `"wymaga logowania"` (tylko `authenticated`, nigdy
@@ -422,13 +437,11 @@ widoczny. 3. Musi byc manualne przejscie na reczne wpisywanie zlecenia."):**
   komplet kluczy, przycina spacje, wymusza `I`/`E` i parsuje liczby podane jako string ("1 250,50").
   `pickup_type` z modelu przechodzi przez `matchPickupLocation`, żeby trafić w listę GCT/BCT/BHub.
   Test: `npx tsx scratch-norm.test.mts` (14 przypadków, plik tymczasowy).
-- **Wdrożenia BRAK — do zrobienia przez właściciela** (ta sesja nadal nie ma MCP do projektu
-  Grabowskiego, `list_projects` widzi tylko DAB/Demo/ETB): Dashboard → Edge Functions → nowa funkcja
-  `parse-order-pdf`, wklejony kod z `supabase/functions/parse-order-pdf/index.ts`, oraz Project
-  Settings → Edge Functions → Secrets: `ANTHROPIC_API_KEY` (klucz z console.anthropic.com). Albo
-  CLI: `supabase functions deploy parse-order-pdf --project-ref itlgexjhznjsbonzdxyg` + `supabase
-  secrets set ANTHROPIC_API_KEY=sk-ant-... --project-ref itlgexjhznjsbonzdxyg`. Do czasu wdrożenia
-  appka działa jak dotąd (szablon albo ręcznie) i pisze wprost, że funkcja nie jest wdrożona.
+- **Funkcja WDROŻONA na produkcji** (`parse-order-pdf` v1, przez MCP — patrz sekcja "Supabase" o
+  dostępie). Sprawdzona strzałem curl-em z kluczem publishable: odpowiada `{"ok":false,"reason":
+  "not_configured"}`, czyli działa i czeka na sekret. **BRAKUJE tylko `ANTHROPIC_API_KEY`** —
+  Dashboard → Project Settings → Edge Functions → Secrets (MCP nie ustawia sekretów). Do tego czasu
+  appka działa jak dotąd (szablon albo ręcznie) i pokazuje wprost powód: brak klucza.
 - **Guzik wyboru plików**: zamiast gołego `<input type="file">` (szara systemowa kontrolka "Wybierz
   pliki / Nie wybrano pliku") jest pole zrzutu z dużym czarnym guzikiem "Wybierz pliki PDF" +
   drag & drop ("albo przeciągnij je tutaj"). Sam input jest `hidden` i klikany przez `ref`.
@@ -444,13 +457,9 @@ widoczny. 3. Musi byc manualne przejscie na reczne wpisywanie zlecenia."):**
   funkcji i klucza API, czyli pierwszego testu u właściciela.
 
 **Do zrobienia w kolejnej sesji:**
-0. Wdrożyć `parse-order-pdf` + `ANTHROPIC_API_KEY` (patrz wyżej) i sprawdzić odczyt nieznanego
-   zlecenia przez Claude na żywym PDF-ie; przy okazji zobaczyć, czy Haiku 4.5 wystarcza, czy warto
-   przełączyć `MODEL` na `claude-sonnet-5`.
-1. Właściciel aplikuje `0003_activity_log.sql` i `0004_contractors.sql` (+ reload cache PostgREST);
-   potem pierwszy test panelu "Historia" i "Kontrahentów" na żywo (bez migracji oba pokażą błąd
-   "relation ... does not exist" / brak w schema cache, reszta appki działa).
-1a. Wysyłka faktury do Fakturowni z zamkniętego zlecenia (patrz wyżej) — gdy właściciel poda konto.
+0. Właściciel wpisuje sekret `ANTHROPIC_API_KEY`; potem sprawdzić odczyt nieznanego zlecenia przez
+   Claude na żywym PDF-ie i zobaczyć, czy Haiku 4.5 wystarcza, czy warto przełączyć `MODEL` na
+   `claude-sonnet-5`. (Migracje 0001–0005 i wdrożenie funkcji: ZROBIONE, patrz sekcja "Supabase".)
 2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
    (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
    `between()`, nigdy `$`).
