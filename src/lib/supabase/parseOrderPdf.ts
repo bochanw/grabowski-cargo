@@ -1,26 +1,10 @@
 import { supabase } from "./client";
+import type { ParsedOrder } from "@/types/parsedOrder";
 
-export interface ParsedOrder {
-  order_number: string;
-  forwarder: string;
-  direction: "" | "I" | "E";
-  container_number: string;
-  container_size: string;
-  shipping_line: string;
-  company_name: string;
-  address: string;
-  city: string;
-  load_date: string;
-  delivery_date: string;
-  delivery_time: string;
-  customs_location_or_status: string;
-  rate_amount: number | null;
-  rate_currency: string;
-  payment_terms_days: number | null;
-  payment_terms_note: string;
-  notes: string;
-}
-
+// Ta funkcja (Edge Function przez Claude) jest DOCELOWYM fallbackiem dla zleceń spoza znanych
+// szablonów (patrz src/lib/orderTemplates/) — na razie NIEPODŁĄCZONA pod ImportOrderDialog, bo
+// właściciel świadomie chce najpierw same szablony znanych klientów, bez zależności od wdrożenia
+// Edge Function/klucza Anthropic. Zostaje gotowa do podłączenia, gdy przyjdzie czas (patrz CLAUDE.md).
 export type ParseOrderPdfResult =
   | { ok: true; parsed: ParsedOrder }
   | { ok: false; reason: string; error: string };

@@ -132,54 +132,80 @@ właścicielem (AskUserQuestion), jak je potraktować:**
 `src/types/load.ts` i `src/components/zestawienie/columns.ts` (blok "fakturowanie") już
 zaktualizowane o `payment_terms_days`/`payment_terms_note`.
 
-**Guzik "Importuj zlecenie (PDF)" ZBUDOWANY w tej samej sesji** (właściciel: "zbuduj taki guzik, z
-czasem będziemy rozbudowywać go o kolejnych klientów, żebym ręcznie nie dodawał"):
-- `supabase/functions/parse-order-pdf/index.ts` — Edge Function wzorowana WPROST na
-  `bochanw/DAB/supabase/functions/parse-order-pdf` (ten sam kontrakt: nic nie zapisuje się samo,
-  tylko wypełnia formularz do zatwierdzenia). Różnica od DAB: appka DAB wycina tekst z PDF-a po
-  stronie klienta (pdf.js) + fallback JPEG dla skanów; ta appka wysyła PDF WPROST jako `document`
-  (base64) do Anthropic Messages API — natywne wsparcie PDF ogarnia też skany bez ekstrakcji tekstu
-  w przeglądarce, więc nie trzeba pdf.js ani osobnej ścieżki tekst/obraz. Model: Haiku 4.5 (ten sam
-  wybór kosztowy co DAB — zadanie to ekstrakcja strukturalna, nie kreatywne rozumowanie).
-  **NIE wdrożona** — właściciel musi ręcznie: `supabase functions deploy parse-order-pdf
-  --project-ref itlgexjhznjsbonzdxyg` + `supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-  --project-ref itlgexjhznjsbonzdxyg` (ten sam wzorzec co DAB, ONBOARDING_NOWY_KLIENT.md KROK 6c).
-- **Świadomie BEZ ograniczenia do managera** (DAB gate'uje tę samą funkcję przez `is_manager()` z
-  powodu kosztu API) — ta appka ma z założenia służyć WSZYSTKIM dyspozytorom naraz (główny cel
-  appki), i na razie w ogóle nie ma podziału ról. Kontrola kosztu wywołań to osobna decyzja do
-  podjęcia z właścicielem, jeśli okaże się potrzebna — nie skopiowana automatycznie z DAB.
-- `src/lib/supabase/parseOrderPdf.ts` — helper wołający funkcję tokenem zalogowanego użytkownika
-  (`supabase.auth.getSession()` → `Authorization: Bearer`), konwersja pliku na base64 przez
-  `FileReader`.
-- `src/components/zestawienie/ImportOrderDialog.tsx` — modal: wybór pliku → podgląd/edycja
-  WSZYSTKICH wyciągniętych pól (kierunek I/E jest WYMAGANY przed zapisem — kolumna `direction` w
-  bazie ma `not null check (direction in ('I','E'))`, model może go nie rozpoznać) → zapis przez
-  `supabase.from('loads').insert(...)`. Ostrzeżenie w UI, gdy stawka jest w innej walucie niż PLN
-  (appka dziś zakłada PLN, nie ma kolumny na walutę). Guzik w pasku Zestawienia
-  (`ZestawienieTable.tsx`).
-- **Zablokowany pre-istniejący brak**: appka NIE MIAŁA żadnego logowania — RLS `"wymaga logowania"`
-  na `loads` blokowało kompletnie WSZYSTKO (i odczyt, i zapis) bez sesji, a nic w kodzie appki nie
-  logowało. Dopisane w tej sesji jako fundament pod ten guzik (bez tego nawet widok Zestawienie nie
-  działał): `src/hooks/useSession.ts`, `src/components/auth/LoginForm.tsx` (e-mail+hasło,
-  `signInWithPassword` — pasuje do `login_mode: "email_password"` już ustawionego dla Grabowskiego
-  na wspólnym projekcie), `src/components/auth/AuthGate.tsx` (owija `<Home>`, pokazuje formularz
-  logowania bez sesji, pasek z e-mailem/wyloguj z sesją). Istniejące konto `wiktor@fleetprofit.eu`
-  (Panel floty) powinno działać też tutaj — TEN SAM projekt Supabase, wspólny `auth.users`.
-- Zweryfikowane lokalnie (mock/błędne odpowiedzi, zrzuty ekranu Playwright): ekran logowania renderuje
-  się poprawnie bez sesji; modal importu — wybór pliku, przejście w stan "przeglądu" z pełnym
-  formularzem (wszystkie pola), poprawny komunikat błędu przy braku sesji ("Sesja wygasła..."),
-  przycisk Zapisz poprawnie zablokowany bez wybranego kierunku. **NIE zweryfikowane end-to-end na
-  żywym projekcie** (funkcja niewdrożona, tabela `loads` nie istnieje na projekcie Grabowskiego,
-  brak prawdziwego konta do zalogowania w tym środowisku).
+**Guzik "Importuj zlecenie (PDF)" ZBUDOWANY** (właściciel: "zbuduj taki guzik, z czasem będziemy
+rozbudowywać go o kolejnych klientów, żebym ręcznie nie dodawał"). **WAŻNA KOREKTA w trakcie tej
+samej sesji**: pierwsza wersja od razu wołała Edge Function przez Claude API (patrz niżej) — właściciel
+zatrzymał to: *"przeciez my chcemy na ten moment zrobic odczyt ze zlecenia znanego - z czasem dopiero
+claude console"*. Poprawiony, docelowy kształt (i to jest to, co appka dziś robi):
 
-**Do zrobienia w kolejnej sesji (import PDF):**
-1. Właściciel: deploy funkcji + sekret `ANTHROPIC_API_KEY` (patrz wyżej), potwierdzić że
-   `wiktor@fleetprofit.eu` faktycznie loguje się do tej appki.
-2. Przetestować na żywo z prawdziwym PDF-em (ten sam `Zlecenie_spedycyjne_ZD_1797_6_2026.pdf` — dobry
-   pierwszy przypadek testowy, pola już ręcznie zweryfikowane w tej sesji).
-3. Gdy pojawi się więcej przykładowych zleceń od różnych klientów: rozważyć szablony/heurystyki per
-   klient (rozpoznawane po `forwarder`/układzie) z fallbackiem na tę funkcję dla nieznanych — właściciel
-   wprost o to poprosił ("z czasem będziemy rozbudowywać o kolejnych klientów").
-4. Formularz edycji istniejącego rekordu WCIĄŻ nie istnieje — dziś jedyna droga zapisu do `loads` przez
-   UI to ten import; poprawka błędnie zaimportowanego pola wymaga SQL-a wprost, dopóki nie powstanie
-   edycja.
+1. **Deterministyczny parser znanego szablonu — GŁÓWNA i na razie JEDYNA metoda, działa od ręki, bez
+   żadnego wdrożenia ani klucza API:**
+   - `src/lib/pdf/extractPdfText.ts` — wyciąga cały tekst PDF-a w przeglądarce przez `pdfjs-dist`
+     (worker ładowany przez `new URL(..., import.meta.url)`, potwierdzone że Turbopack poprawnie
+     bundluje plik workera do statycznego eksportu).
+   - `src/lib/orderTemplates/` — rejestr szablonów per spedytor (`index.ts` → `matchKnownTemplate`),
+     pierwszy wpis `q4road.ts` (regexy dopasowane do RZECZYWISTEGO tekstu z pdf.js dla
+     `Zlecenie_spedycyjne_ZD_1797_6_2026.pdf`, nie do tekstu odczytanego ręcznie — to miało
+     znaczenie, patrz pułapka niżej). Nierozpoznany PDF nie jest błędem — appka po prostu otwiera
+     pusty formularz do ręcznego wypełnienia.
+   - Kolejni klienci: dopisać kolejny plik w `src/lib/orderTemplates/` (funkcja `detect`+`parse`) i
+     dodać do rejestru w `index.ts` — dokładnie to, o co poprosił właściciel.
+2. **Edge Function przez Claude API (`supabase/functions/parse-order-pdf/index.ts`) — ZBUDOWANA, ale
+   ŚWIADOMIE NIEPODŁĄCZONA pod UI.** Zostaje jako gotowy, docelowy fallback dla NIEznanych szablonów
+   ("z czasem dopiero claude console") — `src/lib/supabase/parseOrderPdf.ts` (helper wołający ją) też
+   zostaje, po prostu `ImportOrderDialog.tsx` go dziś nie wywołuje. Gdy przyjdzie czas na podłączenie:
+   wywołać ten helper jako fallback w `handleFileChange`, gdy `matchKnownTemplate` zwróci `null`.
+   Funkcja wzorowana WPROST na `bochanw/DAB/supabase/functions/parse-order-pdf` (ten sam kontrakt:
+   nic nie zapisuje się samo). Różnica od DAB: appka DAB wycina tekst z PDF-a po stronie klienta
+   (pdf.js) + fallback JPEG dla skanów; ta funkcja wysyła PDF WPROST jako `document` (base64) do
+   Anthropic Messages API — natywne wsparcie PDF ogarnia też skany. Model: Haiku 4.5. **Świadomie BEZ
+   ograniczenia do managera** (DAB gate'uje tę samą funkcję przez `is_manager()` z powodu kosztu API)
+   — ta appka ma z założenia służyć WSZYSTKIM dyspozytorom naraz, i na razie w ogóle nie ma podziału
+   ról. Do wdrożenia dopiero, gdy właściciel faktycznie zechce podłączyć ten fallback: `supabase
+   functions deploy parse-order-pdf --project-ref itlgexjhznjsbonzdxyg` + `supabase secrets set
+   ANTHROPIC_API_KEY=sk-ant-... --project-ref itlgexjhznjsbonzdxyg`.
+3. `src/types/parsedOrder.ts` — wspólny kształt `ParsedOrder` (i `EMPTY_PARSED_ORDER`), używany przez
+   OBIE metody (parser szablonu i, docelowo, Edge Function) — `ImportOrderDialog.tsx` nie wie/nie dba,
+   które źródło dostarczyło dane.
+4. `src/components/zestawienie/ImportOrderDialog.tsx` — modal: wybór pliku → wyciągnięcie tekstu →
+   próba znanego szablonu → podgląd/edycja WSZYSTKICH pól (kierunek I/E jest WYMAGANY przed zapisem —
+   kolumna `direction` w bazie ma `not null check (direction in ('I','E'))`) → zapis przez
+   `supabase.from('loads').insert(...)`. Ostrzeżenie w UI, gdy stawka jest w innej walucie niż PLN.
+   Guzik w pasku Zestawienia (`ZestawienieTable.tsx`).
+5. **Zablokowany pre-istniejący brak**: appka NIE MIAŁA żadnego logowania — RLS `"wymaga logowania"`
+   na `loads` blokowało kompletnie WSZYSTKO (i odczyt, i zapis) bez sesji. Dopisane jako fundament:
+   `src/hooks/useSession.ts`, `src/components/auth/LoginForm.tsx` (e-mail+hasło, `signInWithPassword`
+   — pasuje do `login_mode: "email_password"` już ustawionego dla Grabowskiego), `src/components/
+   auth/AuthGate.tsx` (owija `<Home>`). Istniejące konto `wiktor@fleetprofit.eu` (Panel floty)
+   powinno działać też tutaj — TEN SAM projekt Supabase, wspólny `auth.users`.
+
+**Pułapka złapana i naprawiona w tej sesji — regex parsera testowany na TEKŚCIE Z JEDNEJ STRONY
+zamiast na tym, co appka faktycznie produkuje.** Pierwsza wersja `q4road.ts` kończyła dopasowanie
+stawki kotwicą `$` (koniec tekstu) po słowie "Stawka" — działało w izolowanym teście Node na samej
+stronie 1 PDF-a, ale appka skleja WSZYSTKIE strony w jeden ciąg (`extractPdfText`), więc w
+rzeczywistości po "Stawka" szedł dalej tekst strony 2 (Ogólne warunki zlecenia) i `$` nigdy nie
+pasował — pola Stawka/Termin płatności/Warunek płatności wychodziły puste, reszta pól OK. Znalezione
+dopiero przez faktyczny test w przeglądarce (Playwright + prawdziwy plik) z realną appką, nie przez
+ponowne odpalenie tego samego izolowanego skryptu Node — **wniosek: testować regex/parser na
+DOKŁADNIE tej samej ścieżce kodu i tych samych danych wejściowych, które produkuje appka, nie na
+uproszczonej reprodukcji.** Naprawione: `\s+Stawka\b` (granica słowa) zamiast `\s+Stawka\s*$`.
+
+Zweryfikowane w przeglądarce (Playwright, prawdziwy plik `Zlecenie_spedycyjne_ZD_1797_6_2026.pdf`,
+nie mock): rozpoznanie szablonu Q4Road, WSZYSTKIE pola poprawnie wypełnione (numer zlecenia,
+spedycja, kierunek, kontener, wielkość, gestia, firma/adres/miejscowość rozładunku, data i godzina
+rozładunku, miejsce odprawy celnej, stawka, termin i warunek płatności). **NIE zweryfikowane
+end-to-end zapisu do żywej bazy** (środowisko sesji nie ma prawdziwego konta do zalogowania) —
+właściciel już to testuje na produkcji, patrz zgłoszony błąd cache schematu PostgREST niżej.
+
+**Do zrobienia w kolejnej sesji:**
+1. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`.
+2. Podłączyć Edge Function jako fallback dla nierozpoznanych szablonów, gdy właściciel zdecyduje że
+   pora ("z czasem dopiero claude console") — kod po obu stronach już gotowy, brakuje tylko wywołania
+   w `ImportOrderDialog.tsx` + wdrożenia funkcji/sekretu.
+3. Formularz edycji istniejącego rekordu WCIĄŻ nie istnieje — dziś jedyna droga zapisu do `loads`
+   przez UI to import; poprawka błędnie zaimportowanego pola wymaga SQL-a wprost.
+4. Po stronie właściciela: `Could not find the 'payment_terms_days' column of 'loads' in the schema
+   cache` mimo zaaplikowania 0001+0002 — klasyczny stały cache PostgREST, prawdopodobnie
+   `NOTIFY pgrst, 'reload schema'` nie propaguje się przez connection pooling. Do potwierdzenia:
+   czy kolumna faktycznie istnieje (`information_schema.columns`) i czy pomógł manualny przycisk
+   "Reload schema cache" w Project Settings → API.

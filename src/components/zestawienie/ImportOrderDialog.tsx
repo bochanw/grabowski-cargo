@@ -2,47 +2,18 @@
 
 import { useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
-import { parseOrderPdf, type ParsedOrder } from "@/lib/supabase/parseOrderPdf";
+import { extractPdfText } from "@/lib/pdf/extractPdfText";
+import { matchKnownTemplate } from "@/lib/orderTemplates";
+import { EMPTY_PARSED_ORDER, type ParsedOrder } from "@/types/parsedOrder";
 import type { Direction } from "@/types/load";
-
-const REASON_MESSAGES: Record<string, string> = {
-  not_configured: "Import przez AI nie jest jeszcze skonfigurowany (brak klucza API na serwerze) — dopisz pola ręcznie poniżej albo poproś administratora o konfigurację.",
-  api_error: "Model nie odpowiedział poprawnie — spróbuj ponownie albo dopisz pola ręcznie.",
-  no_result: "Nie udało się rozpoznać żadnych pól z tego pliku — dopisz je ręcznie poniżej.",
-  network: "Nie udało się połączyć z serwerem — sprawdź połączenie i spróbuj ponownie.",
-  unauthorized: "Sesja wygasła — zaloguj się ponownie.",
-  too_large: "Plik jest za duży (limit 8 MB).",
-  empty: "Nie wybrano pliku.",
-  bad_request: "Nieprawidłowe zapytanie — spróbuj ponownie.",
-};
-
-const EMPTY_FORM: ParsedOrder = {
-  order_number: "",
-  forwarder: "",
-  direction: "",
-  container_number: "",
-  container_size: "",
-  shipping_line: "",
-  company_name: "",
-  address: "",
-  city: "",
-  load_date: "",
-  delivery_date: "",
-  delivery_time: "",
-  customs_location_or_status: "",
-  rate_amount: null,
-  rate_currency: "",
-  payment_terms_days: null,
-  payment_terms_note: "",
-  notes: "",
-};
 
 type Stage = "pick" | "parsing" | "review" | "saving";
 
 export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
   const [stage, setStage] = useState<Stage>("pick");
-  const [form, setForm] = useState<ParsedOrder>(EMPTY_FORM);
+  const [form, setForm] = useState<ParsedOrder>(EMPTY_PARSED_ORDER);
   const [carrierName, setCarrierName] = useState("Grabowski Mariusz Sp. z o.o.");
+  const [notice, setNotice] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -50,16 +21,31 @@ export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
   async function handleFileChange(file: File | undefined) {
     if (!file) return;
     setStage("parsing");
+    setNotice(null);
     setWarning(null);
-    const result = await parseOrderPdf(file);
-    if (!result.ok) {
-      setWarning(REASON_MESSAGES[result.reason] ?? result.error);
+
+    let text: string;
+    try {
+      text = await extractPdfText(file);
+    } catch (e) {
+      setWarning(`Nie udało się odczytać pliku PDF: ${e instanceof Error ? e.message : String(e)}`);
       setStage("review");
       return;
     }
-    setForm(result.parsed);
-    if (result.parsed.rate_currency && result.parsed.rate_currency.toUpperCase() !== "PLN") {
-      setWarning(`Uwaga: dokument podaje stawkę w ${result.parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
+
+    // Rozpoznawanie po znanych szablonach klientów — na razie JEDYNA metoda (bez wysyłania
+    // pliku do modelu). Nierozpoznany PDF nie jest błędem: appka po prostu otwiera pusty
+    // formularz do ręcznego wypełnienia, zamiast czegokolwiek zgadywać.
+    const match = matchKnownTemplate(text);
+    if (match) {
+      setForm(match.parsed);
+      setNotice(`Rozpoznano szablon: ${match.name}. Sprawdź pola przed zapisem.`);
+      if (match.parsed.rate_currency && match.parsed.rate_currency.toUpperCase() !== "PLN") {
+        setWarning(`Uwaga: dokument podaje stawkę w ${match.parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
+      }
+    } else {
+      setForm(EMPTY_PARSED_ORDER);
+      setNotice("Nie rozpoznano znanego szablonu zlecenia — uzupełnij pola ręcznie poniżej. Z czasem dopiszemy więcej szablonów.");
     }
     setStage("review");
   }
@@ -143,6 +129,11 @@ export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
 
           {(stage === "review" || stage === "saving") && (
             <div className="flex flex-col gap-3">
+              {notice && (
+                <p className="rounded border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+                  {notice}
+                </p>
+              )}
               {warning && (
                 <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
                   {warning}
