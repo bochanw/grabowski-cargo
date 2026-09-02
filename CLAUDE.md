@@ -197,15 +197,49 @@ rozładunku, miejsce odprawy celnej, stawka, termin i warunek płatności). **NI
 end-to-end zapisu do żywej bazy** (środowisko sesji nie ma prawdziwego konta do zalogowania) —
 właściciel już to testuje na produkcji, patrz zgłoszony błąd cache schematu PostgREST niżej.
 
+**Potwierdzone NA PRODUKCJI przez właściciela (Netlify + żywy projekt Supabase, konto
+`wiktor@fleetprofit.eu`)**: logowanie działa, import Q4Road odczytuje pola poprawnie, zapis do `loads`
+działa (pierwszy rekord ZD/1797/6/2026 widoczny w Zestawieniu). Błąd `Could not find the
+'payment_terms_days' column ... in the schema cache` po drodze był stałym cache'em PostgREST po
+ręcznej migracji — ustąpił po stronie właściciela (dokładna metoda nieustalona: `NOTIFY pgrst,
+'reload schema'` / przycisk "Reload schema cache" / restart projektu). Na przyszłość: po KAŻDEJ
+ręcznej migracji w SQL Editor spodziewać się tego błędu i od razu odświeżać cache.
+
+**Poprawki po pierwszym teście produkcyjnym (zgłoszenia właściciela, ta sama sesja):**
+- **Poziomy pasek przewijania zasłaniał ostatni wiersz** — klasyczny błąd flexboxa: element
+  `flex-1 overflow-auto` bez `min-h-0` nie może być niższy niż zawartość, więc kontener rósł do
+  wysokości danych i scrollbar lądował tuż pod nimi. Naprawione: `h-dvh overflow-hidden` na
+  korzeniu strony (`page.tsx`) + `min-h-0` w całym łańcuchu (`AuthGate`, `ZestawienieTable`).
+  Zweryfikowane Playwrightem: kontener przewijania = pełna wysokość okna.
+- **Domyślna "Data" = poprzedni dzień roboczy przed rozładunkiem/załadunkiem** (właściciel:
+  "docelowo będzie to poprzedni dzień roboczy poprzedzający rozładunek/załadunek").
+  `src/lib/dates/workingDays.ts` — pon-pt z pominięciem polskich dni ustawowo wolnych (stałe +
+  Poniedziałek Wielkanocny + Boże Ciało liczone z Wielkanocy; Wigilia wolna od 2025). Stosowane w
+  `ImportOrderDialog` po rozpoznaniu szablonu, gdy `load_date` puste a `delivery_date` znane —
+  TYLKO jako propozycja do formularza, dyspozytor może zmienić. Testy (Node `--experimental-
+  strip-types`, 8 przypadków: weekend, majówka, Wielkanoc, Boże Ciało, Boże Narodzenie, Nowy Rok)
+  przechodzą. Rekord zaimportowany PRZED tą zmianą ma pustą datę ("Bez daty") — do ręcznego
+  ustawienia przez "Edytuj".
+- **Edycja istniejącego rekordu — ZBUDOWANA** (właściciel: "dodaj możliwość edytowania zlecenia
+  (na samym końcu) i ręcznego przestawienia tego"). Przycisk "Edytuj" w OSTATNIEJ kolumnie każdego
+  wiersza Zestawienia → ten sam `ImportOrderDialog` z propem `existingLoad` (stage od razu
+  "review", pola z rekordu przez `loadToForm`, zapis `update ... eq('id')` zamiast `insert`).
+  **Ograniczenie**: edycja obejmuje TE SAME pola co import (ok. 18), nie wszystkie ~60 kolumn —
+  pełny formularz edycji to osobne zadanie. Zmiana wraca do tabeli przez Realtime (UPDATE →
+  `setQueryData`). **BEZ `activity_log`** — wg architektury każda edycja ma zostawiać diff
+  before/after; to następny krok (nowa migracja do ręcznego zaaplikowania), świadomie nie
+  doklejony teraz, żeby nie mnożyć ręcznych migracji w trakcie testów właściciela.
+
 **Do zrobienia w kolejnej sesji:**
-1. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`.
-2. Podłączyć Edge Function jako fallback dla nierozpoznanych szablonów, gdy właściciel zdecyduje że
+1. `activity_log` (tabela + zapis diffu przy każdym insert/update z `ImportOrderDialog`) — patrz
+   sekcja "Audit trail" wyżej; pierwsza edycja bez śladu to dokładnie ryzyko, którego appka miała
+   uniknąć.
+2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`.
+3. Podłączyć Edge Function jako fallback dla nierozpoznanych szablonów, gdy właściciel zdecyduje że
    pora ("z czasem dopiero claude console") — kod po obu stronach już gotowy, brakuje tylko wywołania
    w `ImportOrderDialog.tsx` + wdrożenia funkcji/sekretu.
-3. Formularz edycji istniejącego rekordu WCIĄŻ nie istnieje — dziś jedyna droga zapisu do `loads`
-   przez UI to import; poprawka błędnie zaimportowanego pola wymaga SQL-a wprost.
-4. Po stronie właściciela: `Could not find the 'payment_terms_days' column of 'loads' in the schema
-   cache` mimo zaaplikowania 0001+0002 — klasyczny stały cache PostgREST, prawdopodobnie
-   `NOTIFY pgrst, 'reload schema'` nie propaguje się przez connection pooling. Do potwierdzenia:
-   czy kolumna faktycznie istnieje (`information_schema.columns`) i czy pomógł manualny przycisk
-   "Reload schema cache" w Project Settings → API.
+4. Pełny formularz edycji (wszystkie kolumny, w tym blok rozliczenia/fakturowania) — dziś "Edytuj"
+   pokrywa tylko pola importu.
+5. Dla eksportu: domyślna data liczy się dziś od `delivery_date` (jedyna data z szablonu Q4Road, tam
+   "Miejsca rozładunku"). Gdy pojawi się zlecenie eksportowe z datą ZAŁADUNKU, upewnić się, że parser
+   szablonu wpisuje ją tak, żeby "dzień roboczy przed" liczył się od właściwej daty.

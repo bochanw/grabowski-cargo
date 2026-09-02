@@ -4,15 +4,75 @@ import { useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { extractPdfText } from "@/lib/pdf/extractPdfText";
 import { matchKnownTemplate } from "@/lib/orderTemplates";
+import { previousWorkingDay } from "@/lib/dates/workingDays";
 import { EMPTY_PARSED_ORDER, type ParsedOrder } from "@/types/parsedOrder";
-import type { Direction } from "@/types/load";
+import type { Direction, Load } from "@/types/load";
 
 type Stage = "pick" | "parsing" | "review" | "saving";
 
-export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
-  const [stage, setStage] = useState<Stage>("pick");
-  const [form, setForm] = useState<ParsedOrder>(EMPTY_PARSED_ORDER);
-  const [carrierName, setCarrierName] = useState("Grabowski Mariusz Sp. z o.o.");
+const DEFAULT_CARRIER = "Grabowski Mariusz Sp. z o.o.";
+
+// Ten sam formularz służy do importu (insert) i do edycji istniejącego rekordu (update) —
+// edycja obejmuje na razie TE SAME pola co import, nie wszystkie ~60 kolumn tabeli.
+function loadToForm(load: Load): ParsedOrder {
+  return {
+    order_number: load.order_number ?? "",
+    forwarder: load.forwarder ?? "",
+    direction: load.direction,
+    container_number: load.container_number ?? "",
+    container_size: load.container_size ?? "",
+    shipping_line: load.shipping_line ?? "",
+    company_name: load.company_name ?? "",
+    address: load.address ?? "",
+    city: load.city ?? "",
+    load_date: load.load_date ?? "",
+    delivery_date: load.secondary_date ?? "",
+    delivery_time: load.time_of_day ?? "",
+    customs_location_or_status: load.customs_status ?? "",
+    rate_amount: load.invoice_amount,
+    rate_currency: "",
+    payment_terms_days: load.payment_terms_days,
+    payment_terms_note: load.payment_terms_note ?? "",
+    notes: load.notes ?? "",
+  };
+}
+
+function formToRow(form: ParsedOrder, carrierName: string) {
+  return {
+    order_number: form.order_number || null,
+    forwarder: form.forwarder || null,
+    direction: form.direction as Direction,
+    container_number: form.container_number || null,
+    container_size: form.container_size || null,
+    shipping_line: form.shipping_line || null,
+    company_name: form.company_name || null,
+    address: form.address || null,
+    city: form.city || null,
+    load_date: form.load_date || null,
+    secondary_date: form.delivery_date || null,
+    time_of_day: form.delivery_time || null,
+    customs_status: form.customs_location_or_status || null,
+    invoice_amount: form.rate_amount,
+    payment_terms_days: form.payment_terms_days,
+    payment_terms_note: form.payment_terms_note || null,
+    notes: form.notes || null,
+    carrier_name: carrierName || null,
+  };
+}
+
+export function ImportOrderDialog({
+  onClose,
+  existingLoad,
+}: {
+  onClose: () => void;
+  existingLoad?: Load;
+}) {
+  const isEdit = Boolean(existingLoad);
+  const [stage, setStage] = useState<Stage>(isEdit ? "review" : "pick");
+  const [form, setForm] = useState<ParsedOrder>(() =>
+    existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER
+  );
+  const [carrierName, setCarrierName] = useState(existingLoad?.carrier_name ?? DEFAULT_CARRIER);
   const [notice, setNotice] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -38,10 +98,16 @@ export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
     // formularz do ręcznego wypełnienia, zamiast czegokolwiek zgadywać.
     const match = matchKnownTemplate(text);
     if (match) {
-      setForm(match.parsed);
+      const parsed = { ...match.parsed };
+      // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu — dyspozytor
+      // może ją zmienić tutaj albo później przez "Edytuj".
+      if (!parsed.load_date && parsed.delivery_date) {
+        parsed.load_date = previousWorkingDay(parsed.delivery_date);
+      }
+      setForm(parsed);
       setNotice(`Rozpoznano szablon: ${match.name}. Sprawdź pola przed zapisem.`);
-      if (match.parsed.rate_currency && match.parsed.rate_currency.toUpperCase() !== "PLN") {
-        setWarning(`Uwaga: dokument podaje stawkę w ${match.parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
+      if (parsed.rate_currency && parsed.rate_currency.toUpperCase() !== "PLN") {
+        setWarning(`Uwaga: dokument podaje stawkę w ${parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
       }
     } else {
       setForm(EMPTY_PARSED_ORDER);
@@ -59,26 +125,10 @@ export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
     setStage("saving");
     setSaveError(null);
 
-    const { error } = await supabase.from("loads").insert({
-      order_number: form.order_number || null,
-      forwarder: form.forwarder || null,
-      direction: form.direction as Direction,
-      container_number: form.container_number || null,
-      container_size: form.container_size || null,
-      shipping_line: form.shipping_line || null,
-      company_name: form.company_name || null,
-      address: form.address || null,
-      city: form.city || null,
-      load_date: form.load_date || null,
-      secondary_date: form.delivery_date || null,
-      time_of_day: form.delivery_time || null,
-      customs_status: form.customs_location_or_status || null,
-      invoice_amount: form.rate_amount,
-      payment_terms_days: form.payment_terms_days,
-      payment_terms_note: form.payment_terms_note || null,
-      notes: form.notes || null,
-      carrier_name: carrierName || null,
-    });
+    const row = formToRow(form, carrierName);
+    const { error } = existingLoad
+      ? await supabase.from("loads").update(row).eq("id", existingLoad.id)
+      : await supabase.from("loads").insert(row);
 
     if (error) {
       setSaveError(error.message);
@@ -93,7 +143,7 @@ export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
       <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-            Importuj zlecenie (PDF)
+            {isEdit ? "Edytuj zlecenie" : "Importuj zlecenie (PDF)"}
           </h2>
           <button
             type="button"
@@ -189,7 +239,7 @@ export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
                   <input className={inputClass} value={form.address} onChange={(e) => updateField("address", e.target.value)} />
                 </Field>
 
-                <Field label="Data załadunku">
+                <Field label="Data (domyślnie dzień roboczy przed rozładunkiem)">
                   <input type="date" className={inputClass} value={form.load_date} onChange={(e) => updateField("load_date", e.target.value)} />
                 </Field>
                 <Field label="Data rozładunku">
@@ -251,7 +301,7 @@ export function ImportOrderDialog({ onClose }: { onClose: () => void }) {
               onClick={handleSave}
               className="rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
             >
-              {stage === "saving" ? "Zapisywanie…" : "Zapisz zlecenie"}
+              {stage === "saving" ? "Zapisywanie…" : isEdit ? "Zapisz zmiany" : "Zapisz zlecenie"}
             </button>
           </div>
         )}
