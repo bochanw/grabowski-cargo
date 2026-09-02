@@ -1,8 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import type { KeyboardEvent } from "react";
 import type { Load, Direction } from "@/types/load";
-import { COLUMNS, BLOCK_LABELS, type ColumnBlock } from "./columns";
+import { useUpdateLoadField } from "@/hooks/useLoads";
+import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
+import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
@@ -55,6 +58,11 @@ const DIRECTION_LABELS: Record<Direction, string> = {
   I: "Import",
 };
 
+interface EditingCell {
+  id: string;
+  key: keyof Load;
+}
+
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [visibleBlocks, setVisibleBlocks] = useState<Record<ColumnBlock, boolean>>({
     ladunek: true,
@@ -63,7 +71,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     inne: false,
   });
   const [isImportOpen, setIsImportOpen] = useState(false);
-  const [editingLoad, setEditingLoad] = useState<Load | null>(null);
+  const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const updateLoadField = useUpdateLoadField();
 
   const columns = useMemo(
     () => COLUMNS.filter((column) => visibleBlocks[column.block]),
@@ -75,6 +85,15 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   function toggleBlock(block: ColumnBlock) {
     if (block === "ladunek") return;
     setVisibleBlocks((prev) => ({ ...prev, [block]: !prev[block] }));
+  }
+
+  async function commitCell(load: Load, column: ColumnDef, raw: string) {
+    setEditingCell(null);
+    setSaveError(null);
+    const value = coerceCellValue(column, raw);
+    if (value === load[column.key]) return;
+    const error = await updateLoadField(load.id, column.key, value as Load[typeof column.key]);
+    if (error) setSaveError(`Nie udało się zapisać pola "${column.label}": ${error}`);
   }
 
   return (
@@ -90,6 +109,11 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         >
           + Importuj zlecenie (PDF)
         </button>
+        {saveError ? (
+          <span className="text-xs text-red-600">{saveError}</span>
+        ) : (
+          <span className="text-xs text-zinc-400">Kliknij komórkę, żeby edytować — Enter zapisuje, Esc anuluje.</span>
+        )}
         <div className="ml-auto flex gap-2">
           {(Object.keys(BLOCK_LABELS) as ColumnBlock[])
             .filter((block) => block !== "ladunek")
@@ -111,9 +135,6 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       </div>
 
       {isImportOpen && <ImportOrderDialog onClose={() => setIsImportOpen(false)} />}
-      {editingLoad && (
-        <ImportOrderDialog existingLoad={editingLoad} onClose={() => setEditingLoad(null)} />
-      )}
 
       {/* min-h-0: bez tego element flex nie może być niższy niż jego zawartość, więc
           overflow-auto nigdy nie zadziała, a poziomy pasek przewijania ląduje TUŻ pod
@@ -132,19 +153,26 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                   {column.label}
                 </th>
               ))}
-              <th className="border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800" />
             </tr>
           </thead>
           <tbody>
             {dayGroups.length === 0 && (
               <tr>
-                <td colSpan={columns.length + 1} className="px-2 py-6 text-center text-zinc-500">
+                <td colSpan={columns.length} className="px-2 py-6 text-center text-zinc-500">
                   Brak ładunków.
                 </td>
               </tr>
             )}
             {dayGroups.map((group) => (
-              <DayGroupRows key={group.dateKey} group={group} columns={columns} onEdit={setEditingLoad} />
+              <DayGroupRows
+                key={group.dateKey}
+                group={group}
+                columns={columns}
+                editingCell={editingCell}
+                onStartEdit={setEditingCell}
+                onCancelEdit={() => setEditingCell(null)}
+                onCommit={commitCell}
+              />
             ))}
           </tbody>
         </table>
@@ -153,15 +181,18 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   );
 }
 
+interface RowHandlers {
+  editingCell: EditingCell | null;
+  onStartEdit: (cell: EditingCell) => void;
+  onCancelEdit: () => void;
+  onCommit: (load: Load, column: ColumnDef, raw: string) => void;
+}
+
 function DayGroupRows({
   group,
   columns,
-  onEdit,
-}: {
-  group: DayGroup;
-  columns: typeof COLUMNS;
-  onEdit: (load: Load) => void;
-}) {
+  ...handlers
+}: { group: DayGroup; columns: ColumnDef[] } & RowHandlers) {
   const byDirection = new Map<Direction, Load[]>();
   for (const direction of DIRECTION_ORDER) byDirection.set(direction, []);
   for (const load of group.loads) {
@@ -176,7 +207,7 @@ function DayGroupRows({
     <>
       <tr>
         <td
-          colSpan={columns.length + 1}
+          colSpan={columns.length}
           className="border-y border-zinc-300 bg-zinc-200 px-2 py-1 text-sm font-semibold text-zinc-800 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
         >
           {formatDayHeading(group.dateKey || null)}
@@ -189,7 +220,7 @@ function DayGroupRows({
           loads={byDirection.get(direction) ?? []}
           columns={columns}
           isFirst={index === 0}
-          onEdit={onEdit}
+          {...handlers}
         />
       ))}
     </>
@@ -201,21 +232,18 @@ function DirectionRows({
   loads,
   columns,
   isFirst,
-  onEdit,
-}: {
-  direction: Direction;
-  loads: Load[];
-  columns: typeof COLUMNS;
-  isFirst: boolean;
-  onEdit: (load: Load) => void;
-}) {
+  editingCell,
+  onStartEdit,
+  onCancelEdit,
+  onCommit,
+}: { direction: Direction; loads: Load[]; columns: ColumnDef[]; isFirst: boolean } & RowHandlers) {
   return (
     <>
       <tr>
         {/* Gruba kreska oddziela eksporty od importów w obrębie dnia — nie
             tylko kolor tła, ale wyraźna, pogrubiona krawędź. */}
         <td
-          colSpan={columns.length + 1}
+          colSpan={columns.length}
           className={`bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:bg-zinc-950 dark:text-zinc-500 ${
             !isFirst ? "border-t-4 border-zinc-900 dark:border-zinc-100" : ""
           }`}
@@ -228,27 +256,124 @@ function DirectionRows({
           key={load.id}
           className="border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900"
         >
-          {columns.map((column) => (
-            <td
-              key={column.key}
-              className={`whitespace-nowrap px-2 py-1 text-zinc-800 dark:text-zinc-200 ${
-                column.align === "right" ? "text-right tabular-nums" : ""
-              }`}
-            >
-              {formatCell(load[column.key], column.kind)}
-            </td>
-          ))}
-          <td className="whitespace-nowrap px-2 py-1">
-            <button
-              type="button"
-              onClick={() => onEdit(load)}
-              className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:border-zinc-500 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100"
-            >
-              Edytuj
-            </button>
-          </td>
+          {columns.map((column) => {
+            const isEditing = editingCell?.id === load.id && editingCell.key === column.key;
+            return (
+              <td
+                key={column.key}
+                onClick={() => {
+                  if (!isEditing) onStartEdit({ id: load.id, key: column.key });
+                }}
+                className={`whitespace-nowrap px-2 py-1 text-zinc-800 dark:text-zinc-200 ${
+                  column.align === "right" ? "text-right tabular-nums" : ""
+                } ${isEditing ? "p-0" : "cursor-text"}`}
+              >
+                {isEditing ? (
+                  <CellEditor
+                    load={load}
+                    column={column}
+                    onCancel={onCancelEdit}
+                    onCommit={(raw) => onCommit(load, column, raw)}
+                  />
+                ) : (
+                  formatCell(load[column.key], column.kind)
+                )}
+              </td>
+            );
+          })}
         </tr>
       ))}
     </>
   );
+}
+
+// Edycja inline: Enter zapisuje, Esc anuluje, kliknięcie poza komórką anuluje (zapis TYLKO
+// świadomym Enterem — przypadkowy zapis jest gorszy niż utrata jednej poprawki). Listy rozwijane
+// (kierunek, podjęcie) zapisują od razu po wyborze — wybór z listy jest już świadomą decyzją.
+function CellEditor({
+  load,
+  column,
+  onCancel,
+  onCommit,
+}: {
+  load: Load;
+  column: ColumnDef;
+  onCancel: () => void;
+  onCommit: (raw: string) => void;
+}) {
+  const initial = load[column.key];
+  const [draft, setDraft] = useState(initial === null || initial === undefined ? "" : String(initial));
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement | HTMLSelectElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      onCommit(draft);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  const editorClass =
+    "w-full min-w-24 border border-zinc-900 bg-white px-2 py-1 text-xs text-zinc-900 outline-none dark:border-zinc-100 dark:bg-zinc-900 dark:text-zinc-50";
+
+  const selectOptions = selectOptionsFor(column, draft);
+  if (selectOptions) {
+    return (
+      <select
+        autoFocus
+        value={draft}
+        onChange={(e) => onCommit(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={onCancel}
+        className={editorClass}
+      >
+        {column.key !== "direction" && <option value="">—</option>}
+        {selectOptions.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <input
+      autoFocus
+      type={column.kind === "date" ? "date" : column.kind === "number" ? "number" : "text"}
+      step={column.kind === "number" ? "any" : undefined}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={handleKeyDown}
+      onBlur={onCancel}
+      className={editorClass}
+    />
+  );
+}
+
+function selectOptionsFor(column: ColumnDef, current: string): { value: string; label: string }[] | null {
+  if (column.key === "direction") {
+    return [
+      { value: "I", label: "Import" },
+      { value: "E", label: "Eksport" },
+    ];
+  }
+  if (column.key === "pickup_type") {
+    // Wartość spoza listy (np. "poimport" z arkusza) pokazujemy jako opcję zamiast ją gubić.
+    const options = [...PICKUP_LOCATIONS] as string[];
+    if (current && !options.includes(current)) options.push(current);
+    return options.map((value) => ({ value, label: value }));
+  }
+  return null;
+}
+
+function coerceCellValue(column: ColumnDef, raw: string): string | number | null {
+  const trimmed = raw.trim();
+  if (column.kind === "number") {
+    if (trimmed === "") return null;
+    const value = Number(trimmed.replace(",", "."));
+    return Number.isFinite(value) ? value : null;
+  }
+  return trimmed === "" ? null : trimmed;
 }

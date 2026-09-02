@@ -1,15 +1,34 @@
-import { EMPTY_PARSED_ORDER, type ParsedOrder } from "@/types/parsedOrder";
+import { EMPTY_PARSED_ORDER, type ParsedOrder } from "../../types/parsedOrder";
+import { matchPickupLocation } from "./pickupLocations";
 
-// Parser szablonu Q4Road ("ZLECENIE SPEDYCYJNE" / q4road.com) — pierwszy znany klient appki,
-// zbudowany i zweryfikowany na przykładowym zleceniu (ZD/1797/6/2026, import, kontener
-// NYKU9911861). Regexy dopasowane do FAKTYCZNEGO tekstu wyciąganego przez pdf.js z tego layoutu
-// (dwukolumnowy nagłówek Zleceniodawca/Zleceniobiorca, tabela "Miejsca rozładunku") — kolejność
-// tekstu w warstwie PDF-a odpowiada kolejności czytania, ale każde dopasowanie jest niewymagające
-// (grupy `.+?` między znanymi etykietami), żeby drobne różnice w kolejnym zleceniu tego samego
-// klienta (inny adres, więcej miejsc rozładunku) nie wywaliły całego parsera na null.
+// Szablony Q4Road — pierwszy znany klient appki. Jedno zlecenie = DWA dokumenty PDF:
+//  1. "ZLECENIE SPEDYCYJNE" — spedytor, stawka, warunek płatności, miejsce rozładunku, odprawa.
+//  2. "KONTENEROWY LIST PRZEWOZOWY" (dokument dla kierowcy) — kierowca, dowód, ciągnik/naczepa,
+//     telefon, miejsce podjęcia (GCT/BCT/BHub), PIN/booking, nazwa towaru, waga, złożenie pustego.
+// Wspólne dla obu: numer zlecenia + kierunek w nagłówku, kontener, miejsce rozładunku, odprawa.
+//
+// Regexy dopasowane do FAKTYCZNEGO tekstu wyciąganego przez pdf.js z tych layoutów (zweryfikowane
+// na parze dokumentów do ZD/1797/6/2026). Każde dopasowanie jest niewymagające (grupa między dwiema
+// znanymi etykietami), żeby drobne różnice w kolejnym zleceniu tego klienta (inny adres, więcej
+// miejsc rozładunku, puste pole) nie wywaliły całego parsera. Dokument to zwykle kilka stron
+// sklejonych w jeden ciąg — NIGDY nie kotwiczyć do końca tekstu (`$`), tylko do następnej etykiety
+// (patrz pułapka opisana w CLAUDE.md). Test: `npx tsx scratch-templates.test.mts` na prawdziwych
+// PDF-ach (tsx rozwiązuje aliasy `@/` i importy bez rozszerzeń tak jak Next).
 
-export function detectQ4Road(text: string): boolean {
-  return /q4road/i.test(text);
+export function detectQ4RoadOrder(text: string): boolean {
+  return /q4road/i.test(text) && /ZLECENIE\s+SPEDYCYJNE/i.test(text);
+}
+
+export function detectQ4RoadWaybill(text: string): boolean {
+  return /q4road/i.test(text) && /KONTENEROWY\s+LIST\s+PRZEWOZOWY/i.test(text);
+}
+
+function between(text: string, startLabel: RegExp, endLabel: RegExp): string {
+  const start = text.match(startLabel);
+  if (!start || start.index === undefined) return "";
+  const rest = text.slice(start.index + start[0].length);
+  const end = rest.match(endLabel);
+  return (end && end.index !== undefined ? rest.slice(0, end.index) : rest).trim();
 }
 
 function parseAmount(raw: string): number | null {
@@ -20,58 +39,56 @@ function parseAmount(raw: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-export function parseQ4Road(text: string): ParsedOrder {
-  const result: ParsedOrder = { ...EMPTY_PARSED_ORDER };
-
-  // "Import | ZD/1797/6/2026" — kierunek i numer zlecenia w jednym miejscu.
+// "Import | ZD/1797/6/2026" — ten sam nagłówek w obu dokumentach.
+function parseHeader(text: string, result: ParsedOrder) {
   const headerMatch = text.match(/\b(Import|Eksport|Export)\s*\|\s*([A-Za-z0-9/._-]+)/i);
   if (headerMatch) {
     result.direction = headerMatch[1].toLowerCase() === "import" ? "I" : "E";
     result.order_number = headerMatch[2];
   }
+}
+
+// Pierwszy wiersz tabeli "Miejsca rozładunku": firma + adres, potem data i godzina — ta sama
+// tabela w obu dokumentach. Świadomie tylko wiersz "1" — appka obsługuje jedno miejsce
+// rozładunku na rekord; kolejne dyspozytor dopisze ręcznie.
+function parseUnloadingRow(text: string, result: ParsedOrder) {
+  const rowMatch = text.match(/Uwagi\s+1\s+(.+?)\s+(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})/i);
+  if (!rowMatch) return;
+  const [, place, dateStr, time] = rowMatch;
+  const parts = place.split(/\s+(?=ul\.)/i);
+  result.company_name = parts[0]?.trim() ?? "";
+  if (parts[1]) {
+    result.address = parts[1].trim();
+    const cityMatch = parts[1].match(/,\s*\d{2}-\d{3}\s+(.+)$/);
+    if (cityMatch) result.city = cityMatch[1].trim();
+  }
+  const [dd, mm, yyyy] = dateStr.split(".");
+  result.delivery_date = `${yyyy}-${mm}-${dd}`;
+  result.delivery_time = time;
+}
+
+export function parseQ4RoadOrder(text: string): ParsedOrder {
+  const result: ParsedOrder = { ...EMPTY_PARSED_ORDER };
+  parseHeader(text, result);
 
   // Blok Zleceniodawcy stoi między numerem zlecenia a etykietą "Zleceniodawca" (etykieta w tym
-  // layoucie idzie PO treści bloku, nie przed nią). Sama nazwa firmy to wszystko przed adresem
-  // (zaczynającym się od "ul.").
+  // layoucie idzie PO treści bloku). Sama nazwa firmy to wszystko przed adresem ("ul.").
   const forwarderBlock = text.match(/\|\s*[A-Za-z0-9/._-]+\s+(.+?)\s+Zleceniodawca\b/i);
-  if (forwarderBlock) {
-    result.forwarder = forwarderBlock[1].split(/\s+ul\.\s/i)[0].trim();
-  }
+  if (forwarderBlock) result.forwarder = forwarderBlock[1].split(/\s+ul\.\s/i)[0].trim();
 
-  // Pierwszy wiersz tabeli "Miejsca rozładunku": firma + adres, potem data i godzina.
-  // Świadomie tylko wiersz "1" — appka dziś obsługuje jedno miejsce rozładunku na rekord
-  // (patrz komentarz w Edge Function o tym samym ograniczeniu).
-  const rowMatch = text.match(/Uwagi\s+1\s+(.+?)\s+(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})/i);
-  if (rowMatch) {
-    const [, place, dateStr, time] = rowMatch;
-    const parts = place.split(/\s+(?=ul\.)/i);
-    result.company_name = parts[0]?.trim() ?? "";
-    if (parts[1]) {
-      result.address = parts[1].trim();
-      const cityMatch = parts[1].match(/,\s*\d{2}-\d{3}\s+(.+)$/);
-      if (cityMatch) result.city = cityMatch[1].trim();
-    }
-    const [dd, mm, yyyy] = dateStr.split(".");
-    result.delivery_date = `${yyyy}-${mm}-${dd}`;
-    result.delivery_time = time;
-  }
+  parseUnloadingRow(text, result);
 
-  const containerTypeMatch = text.match(/Typ i gestia kontenera:\s*(.+?)\s*Numer kontenera:/i);
-  if (containerTypeMatch) {
-    const [size, ...rest] = containerTypeMatch[1].trim().split(/\s+/);
+  const containerType = between(text, /Typ i gestia kontenera:/i, /Numer kontenera:/i);
+  if (containerType) {
+    const [size, ...rest] = containerType.split(/\s+/);
     result.container_size = size ?? "";
     result.shipping_line = rest.join(" ");
   }
+  result.container_number = between(text, /Numer kontenera:/i, /Miejsce odprawy celnej:/i);
+  result.customs_location_or_status = between(text, /Miejsce odprawy celnej:/i, /\s(?:Zlecenie|Stawka)\b/i);
 
-  const containerNumberMatch = text.match(/Numer kontenera:\s*(.+?)\s*Miejsce odprawy celnej:/i);
-  if (containerNumberMatch) result.container_number = containerNumberMatch[1].trim();
-
-  const customsMatch = text.match(/Miejsce odprawy celnej:\s*(.+?)(?:\s+Zlecenie\b|\s+Stawka\b|$)/i);
-  if (customsMatch) result.customs_location_or_status = customsMatch[1].trim();
-
-  // "3296,00 PLN - płatność 60 dni od daty wpływu faktury i listu przewozowego" — terminuje na
-  // granicy słowa "Stawka" (etykieta sekcji), NIE końcem tekstu: appka skleja wszystkie strony
-  // PDF-a w jeden ciąg, więc po "Stawka" idzie dalej strona 2 (Ogólne warunki zlecenia).
+  // "3296,00 PLN - płatność 60 dni od daty wpływu faktury i listu przewozowego" — do granicy słowa
+  // "Stawka" (etykieta sekcji), NIE końca tekstu.
   const rateMatch = text.match(/([\d\s.]+,\d{2})\s*(PLN|EUR)\s*-\s*płatność\s*(\d+)\s*dni\s*(.+?)\s*Stawka\b/i);
   if (rateMatch) {
     result.rate_amount = parseAmount(rateMatch[1]);
@@ -79,6 +96,41 @@ export function parseQ4Road(text: string): ParsedOrder {
     result.payment_terms_days = Number(rateMatch[3]);
     result.payment_terms_note = rateMatch[4].trim();
   }
+  return result;
+}
 
+export function parseQ4RoadWaybill(text: string): ParsedOrder {
+  const result: ParsedOrder = { ...EMPTY_PARSED_ORDER };
+  parseHeader(text, result);
+
+  result.driver_name = between(text, /Imię i nazwisko:/i, /Dokument tożsamości:/i);
+  result.driver_id_number = between(text, /Dokument tożsamości:/i, /Ciągnik \/ Naczepa:/i);
+  const plates = between(text, /Ciągnik \/ Naczepa:/i, /Numer telefonu:/i);
+  if (plates) {
+    const [vehicle, trailer] = plates.split("/").map((p) => p.trim());
+    result.vehicle_plate = vehicle ?? "";
+    result.trailer_plate = trailer ?? "";
+  }
+  result.driver_phone = between(text, /Numer telefonu:/i, /\sKierowca\b/i);
+
+  result.container_number = between(text, /Numer kontenera:/i, /Typ kontenera:/i);
+  result.container_size = between(text, /Typ kontenera:/i, /Gestia:/i);
+  result.shipping_line = between(text, /Gestia:/i, /\sKontener\b/i);
+
+  // "GCT Gdynia" → "GCT". Jeśli w dokumencie jest coś spoza listy, zostawiamy surowy tekst —
+  // formularz pokaże go jako dodatkową opcję zamiast zgubić.
+  const pickupRaw = between(text, /Miejsce podjęcia kontenera:/i, /Numer wizyty \/ PIN:/i);
+  result.pickup_type = matchPickupLocation(pickupRaw) || pickupRaw;
+  const pin = between(text, /Numer wizyty \/ PIN:/i, /Booking:/i);
+  const booking = between(text, /Booking:/i, /\sPodjęcie\b/i);
+  result.pin_booking = pin && booking ? `${pin} / ${booking}` : pin || booking;
+
+  parseUnloadingRow(text, result);
+  result.customs_location_or_status = between(text, /Miejsce odprawy celnej:/i, /Nazwa towaru:/i);
+  result.goods_name = between(text, /Nazwa towaru:/i, /Waga towaru brutto:/i);
+  // Puste pole drukuje się jako sama jednostka ("kg") — bez cyfry to brak wagi, nie waga "kg".
+  const weight = between(text, /Waga towaru brutto:/i, /Miejsce złożenia pustego:/i);
+  result.gross_weight = /\d/.test(weight) ? weight : "";
+  result.submitted_where = between(text, /Miejsce złożenia pustego:/i, /\sRozładunek\b/i);
   return result;
 }

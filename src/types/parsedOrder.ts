@@ -1,8 +1,11 @@
-// Wspólny kształt "pól wyciągniętych ze zlecenia PDF", niezależnie od METODY odczytu —
-// deterministyczny parser znanego szablonu (src/lib/orderTemplates/) albo, docelowo, Edge Function
-// odpytująca Claude dla nieznanych szablonów (supabase/functions/parse-order-pdf, na razie
+// Wspólny kształt "pól wyciągniętych z dokumentów zlecenia", niezależnie od METODY odczytu —
+// deterministyczne parsery znanych szablonów (src/lib/orderTemplates/) albo, docelowo, Edge
+// Function odpytująca Claude dla nieznanych szablonów (supabase/functions/parse-order-pdf, na razie
 // niepodłączona pod UI — patrz CLAUDE.md, "Import zleceń z PDF"). ImportOrderDialog nie wie/nie
-// dba o to, które źródło dostarczyło dane — ten sam formularz podglądu/edycji dla obu.
+// dba o to, które źródło dostarczyło dane — ten sam formularz podglądu/edycji.
+//
+// Jedno zlecenie u klienta to zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
+// kierowcy) — każdy parser wypełnia tylko to, co ma, a `mergeParsedOrders` skleja je w jeden rekord.
 export interface ParsedOrder {
   order_number: string;
   forwarder: string;
@@ -22,6 +25,17 @@ export interface ParsedOrder {
   payment_terms_days: number | null;
   payment_terms_note: string;
   notes: string;
+  // Z listu przewozowego (dokument dla kierowcy):
+  pickup_type: string; // miejsce podjęcia kontenera — jedno z PICKUP_LOCATIONS (GCT/BCT/BHub)
+  pin_booking: string; // numer wizyty / PIN albo booking
+  goods_name: string;
+  gross_weight: string;
+  submitted_where: string; // miejsce złożenia pustego
+  driver_name: string;
+  driver_id_number: string;
+  vehicle_plate: string;
+  trailer_plate: string;
+  driver_phone: string;
 }
 
 export const EMPTY_PARSED_ORDER: ParsedOrder = {
@@ -43,4 +57,33 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   payment_terms_days: null,
   payment_terms_note: "",
   notes: "",
+  pickup_type: "",
+  pin_booking: "",
+  goods_name: "",
+  gross_weight: "",
+  submitted_where: "",
+  driver_name: "",
+  driver_id_number: "",
+  vehicle_plate: "",
+  trailer_plate: "",
+  driver_phone: "",
 };
+
+function isEmpty(value: string | number | null): boolean {
+  return value === null || value === "";
+}
+
+/**
+ * Skleja pola z kolejnego dokumentu w istniejący rekord: wypełnia TYLKO puste pola, nigdy nie
+ * nadpisuje tego, co już jest (w tym ręcznych poprawek dyspozytora). Kolejność wgrywania
+ * dokumentów nie ma więc znaczenia dla pól, które występują tylko w jednym z nich.
+ */
+export function mergeParsedOrders(base: ParsedOrder, incoming: ParsedOrder): ParsedOrder {
+  const merged = { ...base };
+  for (const key of Object.keys(incoming) as (keyof ParsedOrder)[]) {
+    if (isEmpty(merged[key] as string | number | null) && !isEmpty(incoming[key] as string | number | null)) {
+      (merged as Record<keyof ParsedOrder, ParsedOrder[keyof ParsedOrder]>)[key] = incoming[key];
+    }
+  }
+  return merged;
+}

@@ -1,11 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { extractPdfText } from "@/lib/pdf/extractPdfText";
 import { matchKnownTemplate } from "@/lib/orderTemplates";
+import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { previousWorkingDay } from "@/lib/dates/workingDays";
-import { EMPTY_PARSED_ORDER, type ParsedOrder } from "@/types/parsedOrder";
+import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import type { Direction, Load } from "@/types/load";
 
 type Stage = "pick" | "parsing" | "review" | "saving";
@@ -34,6 +35,16 @@ function loadToForm(load: Load): ParsedOrder {
     payment_terms_days: load.payment_terms_days,
     payment_terms_note: load.payment_terms_note ?? "",
     notes: load.notes ?? "",
+    pickup_type: load.pickup_type ?? "",
+    pin_booking: load.pin_booking ?? "",
+    goods_name: load.goods_name ?? "",
+    gross_weight: load.gross_weight ?? "",
+    submitted_where: load.submitted_where ?? "",
+    driver_name: load.driver_name ?? "",
+    driver_id_number: load.driver_id_number ?? "",
+    vehicle_plate: load.vehicle_plate ?? "",
+    trailer_plate: load.trailer_plate ?? "",
+    driver_phone: load.driver_phone ?? "",
   };
 }
 
@@ -57,6 +68,16 @@ function formToRow(form: ParsedOrder, carrierName: string) {
     payment_terms_note: form.payment_terms_note || null,
     notes: form.notes || null,
     carrier_name: carrierName || null,
+    pickup_type: form.pickup_type || null,
+    pin_booking: form.pin_booking || null,
+    goods_name: form.goods_name || null,
+    gross_weight: form.gross_weight || null,
+    submitted_where: form.submitted_where || null,
+    driver_name: form.driver_name || null,
+    driver_id_number: form.driver_id_number || null,
+    vehicle_plate: form.vehicle_plate || null,
+    trailer_plate: form.trailer_plate || null,
+    driver_phone: form.driver_phone || null,
   };
 }
 
@@ -73,46 +94,64 @@ export function ImportOrderDialog({
     existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER
   );
   const [carrierName, setCarrierName] = useState(existingLoad?.carrier_name ?? DEFAULT_CARRIER);
+  const [recognized, setRecognized] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function handleFileChange(file: File | undefined) {
-    if (!file) return;
+  // Jedno zlecenie to u klienta zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
+  // kierowcy) — można wgrać oba naraz albo dopiąć drugi później; każdy kolejny dokument wypełnia
+  // TYLKO puste pola, więc nie nadpisuje ręcznych poprawek dyspozytora.
+  async function handleFiles(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []);
+    if (files.length === 0) return;
     setStage("parsing");
-    setNotice(null);
-    setWarning(null);
+    setSaveError(null);
 
-    let text: string;
-    try {
-      text = await extractPdfText(file);
-    } catch (e) {
-      setWarning(`Nie udało się odczytać pliku PDF: ${e instanceof Error ? e.message : String(e)}`);
-      setStage("review");
-      return;
+    let merged = form;
+    const newRecognized: string[] = [];
+    const newWarnings: string[] = [];
+
+    for (const file of files) {
+      let text: string;
+      try {
+        text = await extractPdfText(file);
+      } catch (e) {
+        newWarnings.push(`${file.name}: nie udało się odczytać pliku PDF (${e instanceof Error ? e.message : String(e)}).`);
+        continue;
+      }
+      // Rozpoznawanie po znanych szablonach klientów — na razie JEDYNA metoda (bez wysyłania
+      // pliku do modelu). Nierozpoznany PDF nie jest błędem: pola zostają do ręcznego wypełnienia.
+      const match = matchKnownTemplate(text);
+      if (!match) {
+        newWarnings.push(`${file.name}: nie rozpoznano znanego szablonu — uzupełnij pola z tego dokumentu ręcznie.`);
+        continue;
+      }
+      if (merged.order_number && match.parsed.order_number && merged.order_number !== match.parsed.order_number) {
+        newWarnings.push(`${file.name}: numer zlecenia ${match.parsed.order_number} różni się od już wczytanego ${merged.order_number} — sprawdź, czy to to samo zlecenie.`);
+      }
+      if (match.parsed.rate_currency && match.parsed.rate_currency.toUpperCase() !== "PLN") {
+        newWarnings.push(`${file.name}: stawka w ${match.parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
+      }
+      merged = mergeParsedOrders(merged, match.parsed);
+      newRecognized.push(match.name);
     }
 
-    // Rozpoznawanie po znanych szablonach klientów — na razie JEDYNA metoda (bez wysyłania
-    // pliku do modelu). Nierozpoznany PDF nie jest błędem: appka po prostu otwiera pusty
-    // formularz do ręcznego wypełnienia, zamiast czegokolwiek zgadywać.
-    const match = matchKnownTemplate(text);
-    if (match) {
-      const parsed = { ...match.parsed };
-      // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu — dyspozytor
-      // może ją zmienić tutaj albo później przez "Edytuj".
-      if (!parsed.load_date && parsed.delivery_date) {
-        parsed.load_date = previousWorkingDay(parsed.delivery_date);
-      }
-      setForm(parsed);
-      setNotice(`Rozpoznano szablon: ${match.name}. Sprawdź pola przed zapisem.`);
-      if (parsed.rate_currency && parsed.rate_currency.toUpperCase() !== "PLN") {
-        setWarning(`Uwaga: dokument podaje stawkę w ${parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
-      }
-    } else {
-      setForm(EMPTY_PARSED_ORDER);
-      setNotice("Nie rozpoznano znanego szablonu zlecenia — uzupełnij pola ręcznie poniżej. Z czasem dopiszemy więcej szablonów.");
+    // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu — dyspozytor
+    // może ją zmienić tutaj albo później przez "Edytuj".
+    if (!merged.load_date && merged.delivery_date) {
+      merged = { ...merged, load_date: previousWorkingDay(merged.delivery_date) };
     }
+
+    const allRecognized = [...recognized, ...newRecognized];
+    setForm(merged);
+    setRecognized(allRecognized);
+    setNotice(
+      allRecognized.length > 0
+        ? `Rozpoznano: ${allRecognized.join(", ")}. Sprawdź pola przed zapisem.`
+        : "Nie rozpoznano znanego szablonu zlecenia — uzupełnij pola ręcznie poniżej. Z czasem dopiszemy więcej szablonów."
+    );
+    setWarnings((prev) => [...prev, ...newWarnings]);
     setStage("review");
   }
 
@@ -138,9 +177,16 @@ export function ImportOrderDialog({
     onClose();
   }
 
+  // Wartość spoza listy (np. "poimport" z arkusza albo nierozpoznany tekst z dokumentu) pokazujemy
+  // jako dodatkową opcję zamiast ją gubić — kolumna w bazie nie ma CHECK.
+  const pickupOptions: string[] =
+    form.pickup_type && !(PICKUP_LOCATIONS as readonly string[]).includes(form.pickup_type)
+      ? [...PICKUP_LOCATIONS, form.pickup_type]
+      : [...PICKUP_LOCATIONS];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
+      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
             {isEdit ? "Edytuj zlecenie" : "Importuj zlecenie (PDF)"}
@@ -158,14 +204,15 @@ export function ImportOrderDialog({
         <div className="flex-1 overflow-auto p-4">
           {stage === "pick" && (
             <div className="flex flex-col items-center justify-center gap-3 py-12">
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                Wybierz plik PDF ze zleceniem spedycyjnym — pola spróbujemy wyciągnąć automatycznie.
+              <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
+                Wybierz pliki PDF do zlecenia — zlecenie spedycyjne i/lub list przewozowy dla kierowcy
+                (można zaznaczyć oba naraz). Pola spróbujemy wyciągnąć automatycznie.
               </p>
               <input
-                ref={fileInputRef}
                 type="file"
                 accept="application/pdf"
-                onChange={(e) => handleFileChange(e.target.files?.[0])}
+                multiple
+                onChange={(e) => handleFiles(e.target.files)}
                 className="text-sm text-zinc-700 dark:text-zinc-300"
               />
             </div>
@@ -173,7 +220,7 @@ export function ImportOrderDialog({
 
           {stage === "parsing" && (
             <div className="flex flex-col items-center justify-center gap-2 py-12 text-zinc-500">
-              <span>Odczytywanie zlecenia…</span>
+              <span>Odczytywanie dokumentów…</span>
             </div>
           )}
 
@@ -184,19 +231,32 @@ export function ImportOrderDialog({
                   {notice}
                 </p>
               )}
-              {warning && (
-                <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+              {warnings.map((warning) => (
+                <p
+                  key={warning}
+                  className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+                >
                   {warning}
                 </p>
-              )}
+              ))}
               {saveError && (
                 <p className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
                   Nie udało się zapisać: {saveError}
                 </p>
               )}
-              <p className="text-xs text-zinc-500">
-                Sprawdź i popraw pola przed zapisem — appka niczego nie zapisuje bez Twojej zgody.
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                <span>Sprawdź i popraw pola przed zapisem — appka niczego nie zapisuje bez Twojej zgody.</span>
+                <label className="flex items-center gap-2">
+                  <span>Dopnij kolejny dokument (np. list przewozowy):</span>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    multiple
+                    onChange={(e) => handleFiles(e.target.files)}
+                    className="text-xs text-zinc-700 dark:text-zinc-300"
+                  />
+                </label>
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Numer zlecenia">
@@ -217,8 +277,26 @@ export function ImportOrderDialog({
                     <option value="E">Eksport</option>
                   </select>
                 </Field>
+                <Field label="Podjęcie (terminal)">
+                  <select
+                    className={inputClass}
+                    value={form.pickup_type}
+                    onChange={(e) => updateField("pickup_type", e.target.value)}
+                  >
+                    <option value="">— wybierz —</option>
+                    {pickupOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
                 <Field label="Numer kontenera">
                   <input className={inputClass} value={form.container_number} onChange={(e) => updateField("container_number", e.target.value)} />
+                </Field>
+                <Field label="PIN / booking">
+                  <input className={inputClass} value={form.pin_booking} onChange={(e) => updateField("pin_booking", e.target.value)} />
                 </Field>
 
                 <Field label="Wielkość kontenera">
@@ -253,6 +331,38 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.customs_location_or_status} onChange={(e) => updateField("customs_location_or_status", e.target.value)} />
                 </Field>
 
+                <Field label="Nazwa towaru">
+                  <input className={inputClass} value={form.goods_name} onChange={(e) => updateField("goods_name", e.target.value)} />
+                </Field>
+                <Field label="Waga brutto">
+                  <input className={inputClass} value={form.gross_weight} onChange={(e) => updateField("gross_weight", e.target.value)} placeholder="np. 18450 kg / według armatora" />
+                </Field>
+
+                <Field label="Miejsce złożenia pustego" full>
+                  <input className={inputClass} value={form.submitted_where} onChange={(e) => updateField("submitted_where", e.target.value)} />
+                </Field>
+
+                <Field label="Kierowca">
+                  <input className={inputClass} value={form.driver_name} onChange={(e) => updateField("driver_name", e.target.value)} />
+                </Field>
+                <Field label="Nr dowodu kierowcy">
+                  <input className={inputClass} value={form.driver_id_number} onChange={(e) => updateField("driver_id_number", e.target.value)} />
+                </Field>
+
+                <Field label="Pojazd (ciągnik)">
+                  <input className={inputClass} value={form.vehicle_plate} onChange={(e) => updateField("vehicle_plate", e.target.value)} />
+                </Field>
+                <Field label="Naczepa">
+                  <input className={inputClass} value={form.trailer_plate} onChange={(e) => updateField("trailer_plate", e.target.value)} />
+                </Field>
+
+                <Field label="Telefon kierowcy">
+                  <input className={inputClass} value={form.driver_phone} onChange={(e) => updateField("driver_phone", e.target.value)} />
+                </Field>
+                <Field label="Przewoźnik">
+                  <input className={inputClass} value={carrierName} onChange={(e) => setCarrierName(e.target.value)} />
+                </Field>
+
                 <Field label="Stawka (PLN)">
                   <input
                     type="number"
@@ -262,10 +372,6 @@ export function ImportOrderDialog({
                     onChange={(e) => updateField("rate_amount", e.target.value === "" ? null : Number(e.target.value))}
                   />
                 </Field>
-                <Field label="Przewoźnik">
-                  <input className={inputClass} value={carrierName} onChange={(e) => setCarrierName(e.target.value)} />
-                </Field>
-
                 <Field label="Termin płatności (dni)">
                   <input
                     type="number"
@@ -274,7 +380,8 @@ export function ImportOrderDialog({
                     onChange={(e) => updateField("payment_terms_days", e.target.value === "" ? null : Number(e.target.value))}
                   />
                 </Field>
-                <Field label="Warunek płatności">
+
+                <Field label="Warunek płatności" full>
                   <input className={inputClass} value={form.payment_terms_note} onChange={(e) => updateField("payment_terms_note", e.target.value)} placeholder="np. od wpływu faktury" />
                 </Field>
 

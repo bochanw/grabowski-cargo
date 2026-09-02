@@ -230,16 +230,50 @@ ręcznej migracji w SQL Editor spodziewać się tego błędu i od razu odśwież
   before/after; to następny krok (nowa migracja do ręcznego zaaplikowania), świadomie nie
   doklejony teraz, żeby nie mnożyć ręcznych migracji w trakcie testów właściciela.
 
+**Import z DWÓCH dokumentów + edycja inline (ta sama sesja, kolejne zgłoszenia właściciela):**
+- U Q4Road (i "pewnie innych w przyszłości") jedno zlecenie = DWA PDF-y: zlecenie spedycyjne +
+  **"Kontenerowy list przewozowy"** (dokument dla kierowcy: kierowca, dowód, ciągnik/naczepa,
+  telefon, miejsce podjęcia, PIN/booking, nazwa towaru, waga brutto, miejsce złożenia pustego).
+  Przykład: `36729_Import_NYKU9911861_Oleksandr_Boichenko.pdf` do tego samego ZD/1797/6/2026.
+- `src/lib/orderTemplates/q4road.ts` ma teraz DWA parsery (`parseQ4RoadOrder`, `parseQ4RoadWaybill`)
+  ze wspólnymi kawałkami (nagłówek "Import | nr", tabela rozładunku). Wykrywanie po nagłówku
+  dokumentu ("ZLECENIE SPEDYCYJNE" vs "KONTENEROWY LIST PRZEWOZOWY") + "q4road" — samo "q4road"
+  już nie wystarcza, bo oba dokumenty je mają. Rejestr w `index.ts`: bardziej specyficzny przed
+  ogólnym.
+- `ParsedOrder` rozszerzony o 10 pól z listu; `mergeParsedOrders(base, incoming)` wypełnia TYLKO
+  puste pola — kolejność wgrywania nie ma znaczenia, ręczne poprawki dyspozytora nie są nadpisywane.
+  `ImportOrderDialog`: wybór wielu plików naraz + "Dopnij kolejny dokument" w trakcie przeglądu;
+  ostrzeżenie, gdy numery zleceń z dwóch dokumentów się różnią.
+- **"Podjęcie" = lista rozwijana GCT / BCT / BHub** (właściciel: "możliwe tylko jedno z 3 — dopasuj
+  ze zlecenia, zostaw możliwość przestawienia"). `pickupLocations.ts`: `matchPickupLocation("GCT
+  Gdynia") → "GCT"`. Kolumna w bazie to nadal zwykły text bez CHECK — wartość spoza listy (np.
+  "poimport" z arkusza) formularz/edytor pokazują jako dodatkową opcję zamiast gubić.
+- Test `npx tsx scratch-templates.test.mts` (plik tymczasowy, nie w repo — wzorzec do odtworzenia):
+  oba PDF-y przez DOKŁADNIE tę samą ścieżkę co appka (wszystkie strony sklejone), 38 sprawdzeń pól +
+  symetria scalania. Zweryfikowane też w przeglądarce (Playwright, oba pliki jednym wgraniem).
+- **Edycja inline ZAMIAST okna "Edytuj"** (właściciel: "bezpośrednio na tabeli wykonamy operację i
+  zatwierdzimy enterem"). `ZestawienieTable`: klik w komórkę → `CellEditor` (input wg `kind`:
+  date/number/text; `<select>` dla `direction` i `pickup_type`) → **Enter zapisuje, Esc anuluje,
+  klik poza komórką ANULUJE** (zapis tylko świadomym Enterem; listy zapisują od razu po wyborze).
+  `useUpdateLoadField` (`useLoads.ts`): optymistyczny `setQueryData` + `update ... eq('id')`,
+  cofnięcie i komunikat w pasku przy błędzie. Kolumna/przycisk "Edytuj" USUNIĘTE; `ImportOrderDialog`
+  zachował prop `existingLoad` (nieużywany — może się przydać do edycji "wszystkiego naraz").
+  Edycja inline obejmuje KAŻDĄ widoczną kolumnę (także bloki rozliczenie/fakturowanie/inne po
+  włączeniu) — więcej niż dawne okno.
+- Nadal BEZ `activity_log` — teraz jeszcze ważniejsze, bo każda komórka jest edytowalna.
+
 **Do zrobienia w kolejnej sesji:**
-1. `activity_log` (tabela + zapis diffu przy każdym insert/update z `ImportOrderDialog`) — patrz
-   sekcja "Audit trail" wyżej; pierwsza edycja bez śladu to dokładnie ryzyko, którego appka miała
-   uniknąć.
-2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`.
+1. `activity_log` (tabela + zapis diffu przy insert z importu i przy każdym `useUpdateLoadField`) —
+   patrz sekcja "Audit trail" wyżej; edycja inline bez śladu to dokładnie ryzyko, którego appka
+   miała uniknąć.
+2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
+   (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
+   `between()`, nigdy `$`).
 3. Podłączyć Edge Function jako fallback dla nierozpoznanych szablonów, gdy właściciel zdecyduje że
-   pora ("z czasem dopiero claude console") — kod po obu stronach już gotowy, brakuje tylko wywołania
-   w `ImportOrderDialog.tsx` + wdrożenia funkcji/sekretu.
-4. Pełny formularz edycji (wszystkie kolumny, w tym blok rozliczenia/fakturowania) — dziś "Edytuj"
-   pokrywa tylko pola importu.
+   pora ("z czasem dopiero claude console") — kod po obu stronach gotowy, brakuje wywołania w
+   `ImportOrderDialog.tsx` + wdrożenia funkcji/sekretu. UWAGA: schemat narzędzia w Edge Function
+   NIE zna 10 nowych pól z listu przewozowego — dopisać przy podłączaniu.
+4. Edycja inline: nawigacja Tab/strzałkami między komórkami, jeśli dyspozytorzy o to poproszą.
 5. Dla eksportu: domyślna data liczy się dziś od `delivery_date` (jedyna data z szablonu Q4Road, tam
    "Miejsca rozładunku"). Gdy pojawi się zlecenie eksportowe z datą ZAŁADUNKU, upewnić się, że parser
    szablonu wpisuje ją tak, żeby "dzień roboczy przed" liczył się od właściwej daty.

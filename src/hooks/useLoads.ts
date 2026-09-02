@@ -77,3 +77,29 @@ export function useLoads() {
 
   return query;
 }
+
+/**
+ * Zapis jednego pola wprost z tabeli (edycja inline, Enter zatwierdza). Optymistycznie od razu w
+ * cache TanStack Query — Realtime i tak przyśle UPDATE, ale bez czekania na niego komórka nie
+ * "mruga". Przy błędzie cofamy do poprzedniej wartości i zwracamy komunikat.
+ */
+export function useUpdateLoadField() {
+  const queryClient = useQueryClient();
+
+  return async function updateLoadField<K extends keyof Load>(
+    id: string,
+    key: K,
+    value: Load[K]
+  ): Promise<string | null> {
+    const previous = queryClient.getQueryData<Load[]>(LOADS_QUERY_KEY);
+    queryClient.setQueryData<Load[]>(LOADS_QUERY_KEY, (current) =>
+      current?.map((load) => (load.id === id ? { ...load, [key]: value } : load))
+    );
+    const { error } = await supabase.from("loads").update({ [key]: value }).eq("id", id);
+    if (error) {
+      queryClient.setQueryData(LOADS_QUERY_KEY, previous);
+      return error.message;
+    }
+    return null;
+  };
+}
