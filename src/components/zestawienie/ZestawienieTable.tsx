@@ -9,6 +9,9 @@ import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/flee
 import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
+import { ContractorsDialog } from "./ContractorsDialog";
+import { useContractors } from "@/hooks/useContractors";
+import type { Contractor } from "@/types/contractor";
 
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
   weekday: "short",
@@ -24,11 +27,12 @@ function formatDayHeading(loadDate: string | null): string {
   return WEEKDAY_FORMATTER.format(parsed);
 }
 
-function formatCell(value: unknown, kind: "number" | "date" | undefined): string {
+function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Map<string, string>): string {
   if (value === null || value === undefined || value === "") return "";
   if (kind === "number" && typeof value === "number") {
     return value.toLocaleString("pl-PL");
   }
+  if (kind === "contractor") return contractorNames.get(String(value)) ?? "(nieznany kontrahent)";
   return String(value);
 }
 
@@ -65,7 +69,7 @@ interface EditingCell {
   key: keyof Load;
 }
 
-type Dialog = { kind: "import" } | { kind: "attach"; load: Load };
+type Dialog = { kind: "import" } | { kind: "attach"; load: Load } | { kind: "contractors" };
 
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [visibleBlocks, setVisibleBlocks] = useState<Record<ColumnBlock, boolean>>({
@@ -82,6 +86,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const deleteLoad = useDeleteLoad();
   const { data: fleetData } = useFleet();
   const fleet = fleetData ?? EMPTY_FLEET;
+  const { data: contractors = [] } = useContractors();
+  const contractorNames = useMemo(() => new Map(contractors.map((c) => [c.id, c.name])), [contractors]);
 
   const columns = useMemo(
     () => COLUMNS.filter((column) => visibleBlocks[column.block]),
@@ -103,7 +109,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   async function commitCell(load: Load, column: ColumnDef, raw: string) {
     setEditingCell(null);
     setSaveError(null);
-    const patch = buildPatch(column, raw, fleet);
+    const patch = buildPatch(column, raw, fleet, contractors, load);
     if (patch[column.key] === load[column.key]) return;
     const error = await updateLoad(load.id, patch);
     if (error) setSaveError(`Nie udało się zapisać pola "${column.label}": ${error}`);
@@ -138,6 +144,13 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         <div className="ml-auto flex gap-2">
           <button
             type="button"
+            onClick={() => setDialog({ kind: "contractors" })}
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
+          >
+            Kontrahenci
+          </button>
+          <button
+            type="button"
             onClick={() => setIsHistoryOpen((open) => !open)}
             className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
               isHistoryOpen
@@ -169,6 +182,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       {dialog?.kind === "import" && (
         <ImportOrderDialog recentLoads={recentLoads} onClose={() => setDialog(null)} />
       )}
+      {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
       {dialog?.kind === "attach" && (
         <ImportOrderDialog
           mode="attach"
@@ -213,6 +227,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 group={group}
                 columns={columns}
                 fleet={fleet}
+                contractors={contractors}
+                contractorNames={contractorNames}
                 editingCell={editingCell}
                 onStartEdit={setEditingCell}
                 onCancelEdit={() => setEditingCell(null)}
@@ -232,6 +248,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
 
 interface RowHandlers {
   fleet: Fleet;
+  contractors: Contractor[];
+  contractorNames: Map<string, string>;
   editingCell: EditingCell | null;
   onStartEdit: (cell: EditingCell) => void;
   onCancelEdit: () => void;
@@ -285,6 +303,8 @@ function DirectionRows({
   columns,
   isFirst,
   fleet,
+  contractors,
+  contractorNames,
   editingCell,
   onStartEdit,
   onCancelEdit,
@@ -328,11 +348,12 @@ function DirectionRows({
                     load={load}
                     column={column}
                     fleet={fleet}
+                    contractors={contractors}
                     onCancel={onCancelEdit}
                     onCommit={(raw) => onCommit(load, column, raw)}
                   />
                 ) : (
-                  formatCell(load[column.key], column.kind)
+                  formatCell(load[column.key], column.kind, contractorNames)
                 )}
               </td>
             );
@@ -369,12 +390,14 @@ function CellEditor({
   load,
   column,
   fleet,
+  contractors,
   onCancel,
   onCommit,
 }: {
   load: Load;
   column: ColumnDef;
   fleet: Fleet;
+  contractors: Contractor[];
   onCancel: () => void;
   onCommit: (raw: string) => void;
 }) {
@@ -394,7 +417,7 @@ function CellEditor({
   const editorClass =
     "w-full min-w-24 border border-zinc-900 bg-white px-2 py-1 text-xs text-zinc-900 outline-none dark:border-zinc-100 dark:bg-zinc-900 dark:text-zinc-50";
 
-  const selectOptions = selectOptionsFor(column, draft, fleet);
+  const selectOptions = selectOptionsFor(column, draft, fleet, contractors);
   if (selectOptions) {
     return (
       <select
@@ -429,8 +452,15 @@ function CellEditor({
   );
 }
 
-function selectOptionsFor(column: ColumnDef, current: string, fleet: Fleet): { value: string; label: string }[] | null {
+function selectOptionsFor(
+  column: ColumnDef,
+  current: string,
+  fleet: Fleet,
+  contractors: Contractor[]
+): { value: string; label: string }[] | null {
   switch (column.key) {
+    case "contractor_id":
+      return contractors.map((c) => ({ value: c.id, label: c.name }));
     case "direction":
       return [
         { value: "I", label: "Import" },
@@ -450,12 +480,20 @@ function selectOptionsFor(column: ColumnDef, current: string, fleet: Fleet): { v
 }
 
 // Wybór kierowcy z Panelu floty ustawia też nr dowodu (z `driver_documents`), jeśli Panel go zna.
-function buildPatch(column: ColumnDef, raw: string, fleet: Fleet): Partial<Load> {
+// Wybór kontrahenta podstawia jego domyślny termin płatności TYLKO gdy zlecenie jeszcze go nie ma.
+function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: Contractor[], load?: Load): Partial<Load> {
   const value = coerceCellValue(column, raw);
   const patch: Partial<Load> = { [column.key]: value } as Partial<Load>;
   if (column.key === "driver_name" && typeof value === "string") {
     const driver = fleet.drivers.find((d) => d.name === value);
     if (driver?.docNumber) patch.driver_id_number = driver.docNumber;
+  }
+  if (column.key === "contractor_id" && typeof value === "string") {
+    const contractor = contractors.find((c) => c.id === value);
+    if (contractor && load && load.payment_terms_days === null && contractor.payment_terms_days !== null) {
+      patch.payment_terms_days = contractor.payment_terms_days;
+      patch.payment_terms_note = load.payment_terms_note ?? contractor.payment_terms_note;
+    }
   }
   return patch;
 }

@@ -7,6 +7,8 @@ import { matchKnownTemplate } from "@/lib/orderTemplates";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { previousWorkingDay } from "@/lib/dates/workingDays";
 import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
+import { useContractors } from "@/hooks/useContractors";
+import { findContractorByName, type Contractor } from "@/types/contractor";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import type { Direction, Load } from "@/types/load";
 
@@ -49,8 +51,9 @@ function loadToForm(load: Load): ParsedOrder {
   };
 }
 
-function formToRow(form: ParsedOrder, carrierName: string) {
+function formToRow(form: ParsedOrder, carrierName: string, contractorId: string) {
   return {
+    contractor_id: contractorId || null,
     order_number: form.order_number || null,
     forwarder: form.forwarder || null,
     direction: form.direction as Direction,
@@ -97,9 +100,11 @@ export function ImportOrderDialog({
 }) {
   const { data: fleetData } = useFleet();
   const fleet: Fleet = fleetData ?? EMPTY_FLEET;
+  const { data: contractors = [] } = useContractors();
   const [stage, setStage] = useState<Stage>(mode === "edit" ? "review" : "pick");
   const [form, setForm] = useState<ParsedOrder>(() => (existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER));
   const [carrierName, setCarrierName] = useState(existingLoad?.carrier_name ?? DEFAULT_CARRIER);
+  const [contractorId, setContractorId] = useState(existingLoad?.contractor_id ?? "");
   const [recognized, setRecognized] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -151,9 +156,22 @@ export function ImportOrderDialog({
     // Kierowca/pojazdy: dopasowanie do Panelu floty, fallback z poprzedniego zlecenia.
     const reconciled = reconcileWithFleet(merged, fleet, recentLoads);
     newWarnings.push(...reconciled.warnings);
+    let order = reconciled.order;
+
+    // Kontrahent: spedytor z dokumentu → skonfigurowany kontrahent (po nazwie/aliasach). Jego
+    // domyślny termin płatności wchodzi TYLKO, gdy dokument go nie podał.
+    if (!contractorId && order.forwarder) {
+      const contractor = findContractorByName(contractors, order.forwarder);
+      if (contractor) {
+        setContractorId(contractor.id);
+        order = applyContractorDefaults(order, contractor, newWarnings);
+      } else if (contractors.length > 0) {
+        newWarnings.push(`Spedytor "${order.forwarder}" nie pasuje do żadnego kontrahenta — wybierz z listy albo dodaj go w "Kontrahenci" (z nazwą z dokumentu jako aliasem).`);
+      }
+    }
 
     const allRecognized = [...recognized, ...newRecognized];
-    setForm(reconciled.order);
+    setForm(order);
     setRecognized(allRecognized);
     setNotice(
       allRecognized.length > 0
@@ -166,6 +184,12 @@ export function ImportOrderDialog({
 
   function updateField<K extends keyof ParsedOrder>(key: K, value: ParsedOrder[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function selectContractor(id: string) {
+    setContractorId(id);
+    const contractor = contractors.find((c) => c.id === id);
+    if (contractor) setForm((prev) => applyContractorDefaults(prev, contractor));
   }
 
   function selectDriver(name: string) {
@@ -191,7 +215,7 @@ export function ImportOrderDialog({
     setStage("saving");
     setSaveError(null);
 
-    const row = formToRow(form, carrierName);
+    const row = formToRow(form, carrierName, contractorId);
     const { error } = existingLoad
       ? await supabase.from("loads").update(row).eq("id", existingLoad.id)
       : await supabase.from("loads").insert(row);
@@ -295,6 +319,19 @@ export function ImportOrderDialog({
                 </Field>
                 <Field label="Spedycja (zleceniodawca)">
                   <input className={inputClass} value={form.forwarder} onChange={(e) => updateField("forwarder", e.target.value)} />
+                </Field>
+
+                <Field label="Kontrahent (dane do faktury)" full>
+                  <select className={inputClass} value={contractorId} onChange={(e) => selectContractor(e.target.value)}>
+                    <option value="">— brak / dodaj w „Kontrahenci” —</option>
+                    {contractors.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                        {c.nip ? ` · NIP ${c.nip}` : ""}
+                        {c.payment_terms_days !== null ? ` · ${c.payment_terms_days} dni` : ""}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
 
                 <Field label="Kierunek *">
@@ -428,6 +465,24 @@ export function ImportOrderDialog({
       </div>
     </div>
   );
+}
+
+// Domyślny termin płatności kontrahenta wchodzi tylko w PUSTE pola — jeśli dokument (albo
+// dyspozytor) podał własny termin, ten z dokumentu wygrywa; rozbieżność tylko sygnalizujemy.
+function applyContractorDefaults(order: ParsedOrder, contractor: Contractor, warnings?: string[]): ParsedOrder {
+  const next = { ...order };
+  if (next.payment_terms_days === null && contractor.payment_terms_days !== null) {
+    next.payment_terms_days = contractor.payment_terms_days;
+    if (!next.payment_terms_note && contractor.payment_terms_note) next.payment_terms_note = contractor.payment_terms_note;
+  } else if (
+    warnings &&
+    next.payment_terms_days !== null &&
+    contractor.payment_terms_days !== null &&
+    next.payment_terms_days !== contractor.payment_terms_days
+  ) {
+    warnings.push(`Termin płatności z dokumentu (${next.payment_terms_days} dni) różni się od ustawionego dla kontrahenta ${contractor.name} (${contractor.payment_terms_days} dni) — zostawiono wartość z dokumentu.`);
+  }
+  return next;
 }
 
 const inputClass =

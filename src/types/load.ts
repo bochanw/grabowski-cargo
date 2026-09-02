@@ -61,6 +61,7 @@ export interface Load {
   invoice_code: string | null;
   payment_terms_days: number | null;
   payment_terms_note: string | null;
+  contractor_id: string | null; // public.contractors — dane do faktury, patrz migracja 0004
 
   correct_data_flag: string | null;
   loading_number: string | null;

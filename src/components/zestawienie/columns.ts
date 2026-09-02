@@ -11,7 +11,8 @@ export interface ColumnDef {
   label: string;
   block: ColumnBlock;
   align?: "right";
-  kind?: "number" | "date";
+  // "contractor": wartość to id z public.contractors, wyświetlana/edytowana przez nazwę.
+  kind?: "number" | "date" | "contractor";
 }
 
 export const COLUMNS: ColumnDef[] = [
@@ -65,6 +66,7 @@ export const COLUMNS: ColumnDef[] = [
   { key: "baf_amount", label: "Kwota BAF", block: "rozliczenie", align: "right", kind: "number" },
   { key: "total_amount", label: "SUMA", block: "rozliczenie", align: "right", kind: "number" },
 
+  { key: "contractor_id", label: "Kontrahent", block: "fakturowanie", kind: "contractor" },
   { key: "invoice_number", label: "Nr faktury", block: "fakturowanie" },
   { key: "invoice_amount", label: "Kwota", block: "fakturowanie", align: "right", kind: "number" },
   { key: "invoice_payment_date", label: "Data płatności", block: "fakturowanie", kind: "date" },

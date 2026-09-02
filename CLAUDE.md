@@ -313,9 +313,30 @@ Appka: `src/hooks/useActivityLog.ts` (TanStack + Realtime INSERT, 200 ostatnich)
 `src/components/zestawienie/ActivityLogPanel.tsx` (panel boczny "Historia" w pasku Zestawienia:
 kto, kiedy, "pole: przed → po" z etykietami kolumn). Realtime na `activity_log` włączony w migracji.
 
+**Kontrahenci — ZROBIONE** (właściciel: "dodamy opcję kontrahenci, skonfigurujemy na sztywno termin
+płatności, nr NIP i inne dane potrzebne do wysyłki faktur bezpośrednio do Fakturowni").
+`supabase/migrations/0004_contractors.sql` (**NIE zaaplikowana**): tabela `contractors` z polami
+dobranymi pod kontrakt `fakturownia-create-invoice` z DAB (`name`→buyer_name, `nip`→buyer_tax_no,
+`address`/`postal_code`/`city`→buyer_street, `email`→buyer_email, `vat_eu` → stawka "np",
+`payment_terms_days`/`_note` → payment_to) + `aliases text[]` (nazwy z dokumentów) + `loads.
+contractor_id` (FK `on delete set null` — usunięcie kontrahenta nie kasuje zleceń). `forwarder`
+(tekst z PDF-a) ZOSTAJE obok — to, co spedytor sam o sobie napisał; `contractor_id` to nasze dane.
+Appka: `src/types/contractor.ts` (`findContractorByName` — bez wielkości liter, interpunkcji i
+formy prawnej: "Q4Road Sp. z o.o" == "q4road"), `src/hooks/useContractors.ts` (Realtime + zapis/
+usuwanie), `ContractorsDialog.tsx` (przycisk "Kontrahenci" w pasku: lista + formularz), kolumna
+"Kontrahent" w bloku Fakturowanie (wyświetla nazwę, edycja inline listą). Import: spedytor z PDF-a
+→ kontrahent po nazwie/aliasie; **domyślny termin płatności kontrahenta wchodzi TYLKO w puste pola**
+(dokument wygrywa, rozbieżność = ostrzeżenie); brak dopasowania = ostrzeżenie z podpowiedzią, żeby
+dodać alias. Wybór kontrahenta w tabeli też podstawia termin, jeśli zlecenie go nie ma.
+**Wysyłka faktury do Fakturowni NIE jest jeszcze zbudowana** — dane są; sama funkcja to kopia
+`bochanw/DAB/supabase/functions/fakturownia-create-invoice` z sekretami FAKTUROWNIA_SUBDOMAIN/
+FAKTUROWNIA_API_TOKEN (osobna decyzja właściciela: konto Fakturowni Grabowskiego, stawka VAT).
+
 **Do zrobienia w kolejnej sesji:**
-1. Właściciel aplikuje `0003_activity_log.sql`; potem pierwszy test panelu "Historia" na żywo (bez
-   migracji panel pokaże błąd "relation activity_log does not exist" / brak w schema cache).
+1. Właściciel aplikuje `0003_activity_log.sql` i `0004_contractors.sql` (+ reload cache PostgREST);
+   potem pierwszy test panelu "Historia" i "Kontrahentów" na żywo (bez migracji oba pokażą błąd
+   "relation ... does not exist" / brak w schema cache, reszta appki działa).
+1a. Wysyłka faktury do Fakturowni z zamkniętego zlecenia (patrz wyżej) — gdy właściciel poda konto.
 2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
    (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
    `between()`, nigdy `$`).
