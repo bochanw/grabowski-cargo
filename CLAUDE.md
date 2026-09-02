@@ -18,10 +18,25 @@ Wspólny projekt z Panelem floty Grabowskiego (ten sam login): URL
 `https://itlgexjhznjsbonzdxyg.supabase.co`. Klucz publishable w `.env.local.example` (bezpieczny
 do użycia w kliencie — nie `service_role`).
 
-**To OSOBNE konto Supabase właściciela, poza zasięgiem Supabase MCP tej i najprawdopodobniej
-kolejnych sesji** (potwierdzone: `list_projects` w tej sesji widzi tylko DAB/Demo/ETB, inna
-organizacja). Migracje piszemy jako pliki `.sql` w `supabase/migrations/`, aplikowane RĘCZNIE
-przez właściciela w SQL Editor — chyba że sprawdzisz `list_projects` i faktycznie masz dostęp.
+**Supabase MCP MA DOSTĘP do tego projektu od 2026-09-02** (właściciel zaprosił konto spod konektora
+do organizacji Grabowskiego, org `vhiughdbmhsrsmzayjeh`, projekt `itlgexjhznjsbonzdxyg`). Wcześniej
+projekt był poza zasięgiem MCP i migracje aplikował właściciel ręcznie w SQL Editor.
+**PUŁAPKA: `list_projects`/`list_organizations` DALEJ pokazują tylko starą organizację
+(DAB/Demo/ETB) — nie wnioskuj z tego, że dostępu nie ma.** Sprawdzaj `get_project` z wprost podanym
+`itlgexjhznjsbonzdxyg`: jeśli zwróci projekt "Grabowski", masz dostęp i możesz aplikować migracje
+(`apply_migration`), wdrażać Edge Functions (`deploy_edge_function`) i czytać żywe dane.
+Migracje NADAL piszemy jako pliki `.sql` w `supabase/migrations/` (ślad w repo + możliwość cofnięcia)
+— MCP tylko je aplikuje. Czego MCP NIE potrafi: ustawiania sekretów Edge Functions (klucze API
+wpisuje właściciel w Dashboard → Project Settings → Edge Functions → Secrets).
+
+**Stan produkcji sprawdzony 2026-09-02 przez MCP:** migracje `0001`–`0005` WSZYSTKIE zaaplikowane
+(tabele `loads`, `activity_log`, `contractors`; kolumny terminów płatności, `contractor_id`, pola
+faktury), Realtime włączony na `loads`/`activity_log`/`contractors`/`fleet_store`. Edge Functions:
+`fakturownia-create-invoice` (v2) i `parse-order-pdf` (v1, wdrożona w tej sesji) — tej drugiej
+brakuje jeszcze sekretu `ANTHROPIC_API_KEY` (zwraca wtedy `not_configured`).
+`get_advisors` (security): nic pilnego; jedyna uwaga do NASZEGO kodu to `log_loads_activity()`
+wystawiona jako RPC dla `anon`/`authenticated` — wywołana wprost i tak rzuci błąd (funkcja
+triggerowa), ale przy okazji kolejnej migracji warto zrobić `revoke execute`.
 
 Panel floty Grabowskiego na tym projekcie ma już: `email_password` auth, `app_roles` +
 `is_manager()` (SECURITY DEFINER), RLS wzorem `"wymaga logowania"` (tylko `authenticated`, nigdy
@@ -150,12 +165,9 @@ claude console"*. Poprawiony, docelowy kształt (i to jest to, co appka dziś ro
      pusty formularz do ręcznego wypełnienia.
    - Kolejni klienci: dopisać kolejny plik w `src/lib/orderTemplates/` (funkcja `detect`+`parse`) i
      dodać do rejestru w `index.ts` — dokładnie to, o co poprosił właściciel.
-2. **Edge Function przez Claude API (`supabase/functions/parse-order-pdf/index.ts`) — ZBUDOWANA, ale
-   ŚWIADOMIE NIEPODŁĄCZONA pod UI.** Zostaje jako gotowy, docelowy fallback dla NIEznanych szablonów
-   ("z czasem dopiero claude console") — `src/lib/supabase/parseOrderPdf.ts` (helper wołający ją) też
-   zostaje, po prostu `ImportOrderDialog.tsx` go dziś nie wywołuje. Gdy przyjdzie czas na podłączenie:
-   wywołać ten helper jako fallback w `handleFileChange`, gdy `matchKnownTemplate` zwróci `null`.
-   Funkcja wzorowana WPROST na `bochanw/DAB/supabase/functions/parse-order-pdf` (ten sam kontrakt:
+2. **Edge Function przez Claude API (`supabase/functions/parse-order-pdf/index.ts`) — PODŁĄCZONA jako
+   fallback** (od sesji 2026-09-02, patrz sekcja "Odczyt przez Claude podłączony" niżej; wcześniej
+   była świadomie odłączona). Funkcja wzorowana WPROST na `bochanw/DAB/supabase/functions/parse-order-pdf` (ten sam kontrakt:
    nic nie zapisuje się samo). Różnica od DAB: appka DAB wycina tekst z PDF-a po stronie klienta
    (pdf.js) + fallback JPEG dla skanów; ta funkcja wysyła PDF WPROST jako `document` (base64) do
    Anthropic Messages API — natywne wsparcie PDF ogarnia też skany. Model: Haiku 4.5. **Świadomie BEZ
@@ -404,18 +416,56 @@ ustalić przyczyny bez repro). Testy przeglądarkowe w dev tego NIE złapały (m
 subscribe bez połączenia nie doszedł do drugiego `.on()`), więc weryfikacja z prawdziwym
 backendem nadal jest niezastąpiona.
 
+**Odczyt przez Claude podłączony + widoczny wybór plików + tryb ręczny (zgłoszenie właściciela:
+"1. Potrzebuje polaczenie z platforma claude do odczytu. 2. Guzik wybierz pliki musi byc bardziej
+widoczny. 3. Musi byc manualne przejscie na reczne wpisywanie zlecenia."):**
+- **Kolejność odczytu: znany szablon → Claude → ręcznie.** `ImportOrderDialog.handleFiles` woła
+  `parseOrderPdf(file)` (Edge Function) dopiero, gdy `matchKnownTemplate` zwróci `null` — szablon
+  jest darmowy, natychmiastowy i deterministyczny, więc do modelu idą TYLKO nieznane dokumenty.
+  Ekstrakcja tekstu pdf.js, która się wywali (skan bez warstwy tekstowej), NIE kończy odczytu —
+  Claude dostaje oryginalny PDF, nie tekst, więc dla skanów to jedyna działająca ścieżka. Nierozpo-
+  znany dokument dalej nie jest błędem: zostaje formularz do ręcznego wypełnienia + ostrzeżenie z
+  TREŚCIĄ błędu (np. "funkcja nie wdrożona", "brak klucza ANTHROPIC_API_KEY").
+- Schemat narzędzia w Edge Function dopisany o brakujące pola (dawny punkt "UWAGA" z listy TODO):
+  `forwarder_nip/_address/_postal_code/_city` + 10 pól z listu przewozowego (kierowca, dowód,
+  pojazd, naczepa, telefon, podjęcie, PIN/booking, towar, waga, miejsce złożenia pustego). System
+  prompt mówi teraz wprost, że dokument bywa listem przewozowym, a nie zleceniem.
+- `normalizeParsedOrder(raw)` w `src/types/parsedOrder.ts` — KAŻDA odpowiedź modelu przechodzi przez
+  nią przed wejściem do formularza. Powód konkretny, nie kosmetyczny: `mergeParsedOrders` traktuje
+  `undefined` jak wartość (`isEmpty(undefined) === false`), więc brakujący klucz z modelu wpisałby
+  `undefined` w input i zamienił kontrolowany input Reacta w niekontrolowany. Normalizacja domyka
+  komplet kluczy, przycina spacje, wymusza `I`/`E` i parsuje liczby podane jako string ("1 250,50").
+  `pickup_type` z modelu przechodzi przez `matchPickupLocation`, żeby trafić w listę GCT/BCT/BHub.
+  Test: `npx tsx scratch-norm.test.mts` (14 przypadków, plik tymczasowy).
+- **Funkcja WDROŻONA na produkcji** (`parse-order-pdf` v1, przez MCP — patrz sekcja "Supabase" o
+  dostępie). Sprawdzona strzałem curl-em z kluczem publishable: odpowiada `{"ok":false,"reason":
+  "not_configured"}`, czyli działa i czeka na sekret. **BRAKUJE tylko `ANTHROPIC_API_KEY`** —
+  Dashboard → Project Settings → Edge Functions → Secrets (MCP nie ustawia sekretów). Do tego czasu
+  appka działa jak dotąd (szablon albo ręcznie) i pokazuje wprost powód: brak klucza.
+- **Guzik wyboru plików**: zamiast gołego `<input type="file">` (szara systemowa kontrolka "Wybierz
+  pliki / Nie wybrano pliku") jest pole zrzutu z dużym czarnym guzikiem "Wybierz pliki PDF" +
+  drag & drop ("albo przeciągnij je tutaj"). Sam input jest `hidden` i klikany przez `ref`.
+  W trybie przeglądu "Dopnij kolejny dokument" to też guzik (`<label>` z ukrytym inputem).
+- **Tryb ręczny**: guzik "Wpisz zlecenie ręcznie (bez PDF-a)" na pierwszym ekranie przechodzi od
+  razu do formularza (`startManual`) — ten sam formularz i ten sam zapis co przy imporcie, dokument
+  da się dopiąć później ("Dopnij PDF" przy wierszu). Guzik w pasku Zestawienia i tytuł okna zmienione
+  na "Nowe zlecenie (PDF / ręcznie)", żeby ręczna droga była widoczna, zanim ktoś otworzy okno.
+- Zweryfikowane w przeglądarce (Playwright, dev): ekran wyboru z widocznym guzikiem, przejście w tryb
+  ręczny, oraz ścieżka fallbacku na PDF-ie spoza znanych szablonów — appka faktycznie woła
+  `parseOrderPdf` i pokazuje czytelny powód niepowodzenia (w tym środowisku "Brak aktywnej sesji",
+  bo nie ma konta do zalogowania). **NIE zweryfikowany realny odczyt przez model** — wymaga wdrożonej
+  funkcji i klucza API, czyli pierwszego testu u właściciela.
+
 **Do zrobienia w kolejnej sesji:**
-1. Właściciel aplikuje `0003_activity_log.sql` i `0004_contractors.sql` (+ reload cache PostgREST);
-   potem pierwszy test panelu "Historia" i "Kontrahentów" na żywo (bez migracji oba pokażą błąd
-   "relation ... does not exist" / brak w schema cache, reszta appki działa).
-1a. Wysyłka faktury do Fakturowni z zamkniętego zlecenia (patrz wyżej) — gdy właściciel poda konto.
+0. Właściciel wpisuje sekret `ANTHROPIC_API_KEY`; potem sprawdzić odczyt nieznanego zlecenia przez
+   Claude na żywym PDF-ie i zobaczyć, czy Haiku 4.5 wystarcza, czy warto przełączyć `MODEL` na
+   `claude-sonnet-5`. (Migracje 0001–0005 i wdrożenie funkcji: ZROBIONE, patrz sekcja "Supabase".)
 2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
    (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
    `between()`, nigdy `$`).
-3. Podłączyć Edge Function jako fallback dla nierozpoznanych szablonów, gdy właściciel zdecyduje że
-   pora ("z czasem dopiero claude console") — kod po obu stronach gotowy, brakuje wywołania w
-   `ImportOrderDialog.tsx` + wdrożenia funkcji/sekretu. UWAGA: schemat narzędzia w Edge Function
-   NIE zna 10 nowych pól z listu przewozowego — dopisać przy podłączaniu.
+3. Kontrola kosztu odczytu przez Claude, jeśli okaże się potrzebna (dziś funkcja jest dostępna dla
+   każdego zalogowanego, bez limitu wywołań) — świadoma decyzja do podjęcia z właścicielem, nie
+   kopiować `is_manager()` z DAB bez pytania.
 4. Edycja inline: nawigacja Tab/strzałkami między komórkami, jeśli dyspozytorzy o to poproszą.
 5. Dla eksportu: domyślna data liczy się dziś od `delivery_date` (jedyna data z szablonu Q4Road, tam
    "Miejsca rozładunku"). Gdy pojawi się zlecenie eksportowe z datą ZAŁADUNKU, upewnić się, że parser

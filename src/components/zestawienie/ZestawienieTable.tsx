@@ -179,7 +179,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           onClick={() => setDialog({ kind: "import" })}
           className="rounded-full border border-zinc-900 bg-zinc-900 px-3 py-1 text-xs font-medium text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
         >
-          + Importuj zlecenie (PDF)
+          + Nowe zlecenie (PDF / ręcznie)
         </button>
         <div className="relative">
           <input

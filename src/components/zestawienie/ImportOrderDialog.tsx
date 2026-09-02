@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { extractPdfText } from "@/lib/pdf/extractPdfText";
+import { parseOrderPdf } from "@/lib/supabase/parseOrderPdf";
 import { matchKnownTemplate } from "@/lib/orderTemplates";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { previousWorkingDay } from "@/lib/dates/workingDays";
@@ -117,6 +118,9 @@ export function ImportOrderDialog({
   const [notice, setNotice] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [progress, setProgress] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Jedno zlecenie to u klienta zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
   // kierowcy) — można wgrać oba naraz albo dopiąć drugi później (także do już zapisanego zlecenia);
@@ -131,30 +135,54 @@ export function ImportOrderDialog({
     const newRecognized: string[] = [];
     const newWarnings: string[] = [];
 
+    // Pola z każdego kolejnego dokumentu wchodzą tą samą drogą, niezależnie od tego, czy przeczytał
+    // go znany szablon czy Claude — te same ostrzeżenia i to samo scalanie "tylko puste pola".
+    function absorb(parsed: ParsedOrder, fileName: string, source: string) {
+      if (merged.order_number && parsed.order_number && merged.order_number !== parsed.order_number) {
+        newWarnings.push(`${fileName}: numer zlecenia ${parsed.order_number} różni się od już wczytanego ${merged.order_number} — sprawdź, czy to to samo zlecenie.`);
+      }
+      if (parsed.rate_currency && parsed.rate_currency.toUpperCase() !== "PLN") {
+        newWarnings.push(`${fileName}: stawka w ${parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
+      }
+      merged = mergeParsedOrders(merged, parsed);
+      newRecognized.push(source);
+    }
+
     for (const file of files) {
-      let text: string;
+      setProgress(`Odczytywanie ${file.name}…`);
+      let text = "";
+      let extractError = "";
       try {
         text = await extractPdfText(file);
       } catch (e) {
-        newWarnings.push(`${file.name}: nie udało się odczytać pliku PDF (${e instanceof Error ? e.message : String(e)}).`);
+        // Nie kończymy na tym: plik bez warstwy tekstowej (skan) i tak może przeczytać Claude,
+        // który dostaje oryginalny PDF, a nie wyciągnięty tekst.
+        extractError = e instanceof Error ? e.message : String(e);
+      }
+
+      // 1. Znane szablony klientów (regex na tekście z pdf.js) — pierwsze, bo są darmowe,
+      //    natychmiastowe i deterministyczne. Do modelu idzie tylko to, czego nie umiemy sami.
+      const match = text ? matchKnownTemplate(text) : null;
+      if (match) {
+        absorb(match.parsed, file.name, match.name);
         continue;
       }
-      // Rozpoznawanie po znanych szablonach klientów — na razie JEDYNA metoda (bez wysyłania
-      // pliku do modelu). Nierozpoznany PDF nie jest błędem: pola zostają do ręcznego wypełnienia.
-      const match = matchKnownTemplate(text);
-      if (!match) {
-        newWarnings.push(`${file.name}: nie rozpoznano znanego szablonu — uzupełnij pola z tego dokumentu ręcznie.`);
+
+      // 2. Fallback: odczyt przez Claude (Edge Function parse-order-pdf). Nierozpoznany dokument
+      //    nadal nie jest błędem — jeśli i to nie zadziała, pola zostają do ręcznego wpisania.
+      setProgress(`${file.name}: nieznany szablon — czytam przez Claude…`);
+      const result = await parseOrderPdf(file);
+      if (result.ok) {
+        absorb(result.parsed, file.name, `${file.name} — odczyt przez Claude`);
         continue;
       }
-      if (merged.order_number && match.parsed.order_number && merged.order_number !== match.parsed.order_number) {
-        newWarnings.push(`${file.name}: numer zlecenia ${match.parsed.order_number} różni się od już wczytanego ${merged.order_number} — sprawdź, czy to to samo zlecenie.`);
-      }
-      if (match.parsed.rate_currency && match.parsed.rate_currency.toUpperCase() !== "PLN") {
-        newWarnings.push(`${file.name}: stawka w ${match.parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
-      }
-      merged = mergeParsedOrders(merged, match.parsed);
-      newRecognized.push(match.name);
+      newWarnings.push(
+        extractError
+          ? `${file.name}: nie udało się odczytać pliku PDF (${extractError}), a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
+          : `${file.name}: nie rozpoznano znanego szablonu, a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
+      );
     }
+    setProgress("");
 
     // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu.
     if (!merged.load_date && merged.delivery_date) {
@@ -187,10 +215,18 @@ export function ImportOrderDialog({
     setRecognized(allRecognized);
     setNotice(
       allRecognized.length > 0
-        ? `Rozpoznano: ${allRecognized.join(", ")}. Sprawdź pola przed zapisem.`
-        : "Nie rozpoznano znanego szablonu zlecenia — uzupełnij pola ręcznie poniżej. Z czasem dopiszemy więcej szablonów."
+        ? `Odczytano: ${allRecognized.join(", ")}. Sprawdź pola przed zapisem.`
+        : "Nie udało się odczytać dokumentu automatycznie — wpisz pola ręcznie poniżej. Zapis działa tak samo jak przy imporcie."
     );
     setWarnings((prev) => [...prev, ...newWarnings]);
+    setStage("review");
+  }
+
+  // Ręczne wpisanie zlecenia bez żadnego dokumentu — właściciel wprost o to poprosił: dyspozytor
+  // musi móc wbić zlecenie z telefonu/maila, nie tylko z PDF-a. Ten sam formularz i ten sam zapis;
+  // dokument (jeśli w ogóle będzie) da się dopiąć później przyciskiem "Dopnij PDF" przy wierszu.
+  function startManual() {
+    setNotice("Ręczne wpisywanie zlecenia — wypełnij pola i zapisz. Dokument PDF możesz dopiąć później.");
     setStage("review");
   }
 
@@ -284,7 +320,7 @@ export function ImportOrderDialog({
       ? `Dopnij dokument do zlecenia ${existingLoad?.order_number ?? ""}`
       : mode === "edit"
         ? "Edytuj zlecenie"
-        : "Importuj zlecenie (PDF)";
+        : "Nowe zlecenie (PDF albo ręcznie)";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -303,25 +339,64 @@ export function ImportOrderDialog({
 
         <div className="flex-1 overflow-auto p-4">
           {stage === "pick" && (
-            <div className="flex flex-col items-center justify-center gap-3 py-12">
-              <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
+            <div className="flex flex-col items-center gap-4 py-6">
+              <p className="max-w-xl text-center text-sm text-zinc-600 dark:text-zinc-400">
                 {mode === "attach"
                   ? "Wybierz brakujący dokument (np. list przewozowy) — wypełni tylko puste pola tego zlecenia."
-                  : "Wybierz pliki PDF do zlecenia — zlecenie spedycyjne i/lub list przewozowy dla kierowcy (można zaznaczyć oba naraz). Pola spróbujemy wyciągnąć automatycznie."}
+                  : "Wgraj PDF-y zlecenia — zlecenie spedycyjne i/lub list przewozowy dla kierowcy (można zaznaczyć oba naraz). Pola wyciągniemy automatycznie: znany szablon spedytora, a jeśli nieznany — odczyt przez Claude."}
               </p>
-              <input
-                type="file"
-                accept="application/pdf"
-                multiple
-                onChange={(e) => handleFiles(e.target.files)}
-                className="text-sm text-zinc-700 dark:text-zinc-300"
-              />
+
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragging(false);
+                  handleFiles(e.dataTransfer.files);
+                }}
+                className={`flex w-full flex-col items-center gap-3 rounded-lg border-2 border-dashed px-6 py-10 transition-colors ${
+                  dragging
+                    ? "border-blue-500 bg-blue-50 dark:bg-blue-950"
+                    : "border-zinc-300 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-md bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+                >
+                  Wybierz pliki PDF
+                </button>
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">albo przeciągnij je tutaj</span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="application/pdf"
+                  multiple
+                  onChange={(e) => handleFiles(e.target.files)}
+                  className="hidden"
+                />
+              </div>
+
+              {mode !== "attach" && (
+                <button
+                  type="button"
+                  onClick={startManual}
+                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                >
+                  Wpisz zlecenie ręcznie (bez PDF-a)
+                </button>
+              )}
             </div>
           )}
 
           {stage === "parsing" && (
             <div className="flex flex-col items-center justify-center gap-2 py-12 text-zinc-500">
-              <span>Odczytywanie dokumentów…</span>
+              <span>{progress || "Odczytywanie dokumentów…"}</span>
+              <span className="text-xs">Nic nie zapisuje się samo — pola pokażemy do sprawdzenia.</span>
             </div>
           )}
 
@@ -347,14 +422,14 @@ export function ImportOrderDialog({
               )}
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
                 <span>Sprawdź i popraw pola przed zapisem — appka niczego nie zapisuje bez Twojej zgody.</span>
-                <label className="flex items-center gap-2">
-                  <span>Dopnij kolejny dokument:</span>
+                <label className="cursor-pointer rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
+                  + Dopnij kolejny dokument (PDF)
                   <input
                     type="file"
                     accept="application/pdf"
                     multiple
                     onChange={(e) => handleFiles(e.target.files)}
-                    className="text-xs text-zinc-700 dark:text-zinc-300"
+                    className="hidden"
                   />
                 </label>
               </div>
