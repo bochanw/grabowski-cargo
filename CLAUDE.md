@@ -132,9 +132,54 @@ właścicielem (AskUserQuestion), jak je potraktować:**
 `src/types/load.ts` i `src/components/zestawienie/columns.ts` (blok "fakturowanie") już
 zaktualizowane o `payment_terms_days`/`payment_terms_note`.
 
-**Nie zbudowano jeszcze**: guzika/UI do ręcznego importu (upload PDF → wyciągnięte pola → podgląd/
-edycja → zapis), ani żadnego automatycznego parsowania PDF w kodzie appki — to zlecenie zostało
-odczytane ręcznie przez Claude w tej sesji, nie przez appkę. Do ustalenia z właścicielem w kolejnej
-sesji: czy budować UI importu teraz, czy poczekać na więcej przykładowych zleceń (różni klienci mają
-różne szablony — właściciel chce docelowo rozpoznawać znane szablony + fallback przez Claude
-Console dla nieznanych).
+**Guzik "Importuj zlecenie (PDF)" ZBUDOWANY w tej samej sesji** (właściciel: "zbuduj taki guzik, z
+czasem będziemy rozbudowywać go o kolejnych klientów, żebym ręcznie nie dodawał"):
+- `supabase/functions/parse-order-pdf/index.ts` — Edge Function wzorowana WPROST na
+  `bochanw/DAB/supabase/functions/parse-order-pdf` (ten sam kontrakt: nic nie zapisuje się samo,
+  tylko wypełnia formularz do zatwierdzenia). Różnica od DAB: appka DAB wycina tekst z PDF-a po
+  stronie klienta (pdf.js) + fallback JPEG dla skanów; ta appka wysyła PDF WPROST jako `document`
+  (base64) do Anthropic Messages API — natywne wsparcie PDF ogarnia też skany bez ekstrakcji tekstu
+  w przeglądarce, więc nie trzeba pdf.js ani osobnej ścieżki tekst/obraz. Model: Haiku 4.5 (ten sam
+  wybór kosztowy co DAB — zadanie to ekstrakcja strukturalna, nie kreatywne rozumowanie).
+  **NIE wdrożona** — właściciel musi ręcznie: `supabase functions deploy parse-order-pdf
+  --project-ref itlgexjhznjsbonzdxyg` + `supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+  --project-ref itlgexjhznjsbonzdxyg` (ten sam wzorzec co DAB, ONBOARDING_NOWY_KLIENT.md KROK 6c).
+- **Świadomie BEZ ograniczenia do managera** (DAB gate'uje tę samą funkcję przez `is_manager()` z
+  powodu kosztu API) — ta appka ma z założenia służyć WSZYSTKIM dyspozytorom naraz (główny cel
+  appki), i na razie w ogóle nie ma podziału ról. Kontrola kosztu wywołań to osobna decyzja do
+  podjęcia z właścicielem, jeśli okaże się potrzebna — nie skopiowana automatycznie z DAB.
+- `src/lib/supabase/parseOrderPdf.ts` — helper wołający funkcję tokenem zalogowanego użytkownika
+  (`supabase.auth.getSession()` → `Authorization: Bearer`), konwersja pliku na base64 przez
+  `FileReader`.
+- `src/components/zestawienie/ImportOrderDialog.tsx` — modal: wybór pliku → podgląd/edycja
+  WSZYSTKICH wyciągniętych pól (kierunek I/E jest WYMAGANY przed zapisem — kolumna `direction` w
+  bazie ma `not null check (direction in ('I','E'))`, model może go nie rozpoznać) → zapis przez
+  `supabase.from('loads').insert(...)`. Ostrzeżenie w UI, gdy stawka jest w innej walucie niż PLN
+  (appka dziś zakłada PLN, nie ma kolumny na walutę). Guzik w pasku Zestawienia
+  (`ZestawienieTable.tsx`).
+- **Zablokowany pre-istniejący brak**: appka NIE MIAŁA żadnego logowania — RLS `"wymaga logowania"`
+  na `loads` blokowało kompletnie WSZYSTKO (i odczyt, i zapis) bez sesji, a nic w kodzie appki nie
+  logowało. Dopisane w tej sesji jako fundament pod ten guzik (bez tego nawet widok Zestawienie nie
+  działał): `src/hooks/useSession.ts`, `src/components/auth/LoginForm.tsx` (e-mail+hasło,
+  `signInWithPassword` — pasuje do `login_mode: "email_password"` już ustawionego dla Grabowskiego
+  na wspólnym projekcie), `src/components/auth/AuthGate.tsx` (owija `<Home>`, pokazuje formularz
+  logowania bez sesji, pasek z e-mailem/wyloguj z sesją). Istniejące konto `wiktor@fleetprofit.eu`
+  (Panel floty) powinno działać też tutaj — TEN SAM projekt Supabase, wspólny `auth.users`.
+- Zweryfikowane lokalnie (mock/błędne odpowiedzi, zrzuty ekranu Playwright): ekran logowania renderuje
+  się poprawnie bez sesji; modal importu — wybór pliku, przejście w stan "przeglądu" z pełnym
+  formularzem (wszystkie pola), poprawny komunikat błędu przy braku sesji ("Sesja wygasła..."),
+  przycisk Zapisz poprawnie zablokowany bez wybranego kierunku. **NIE zweryfikowane end-to-end na
+  żywym projekcie** (funkcja niewdrożona, tabela `loads` nie istnieje na projekcie Grabowskiego,
+  brak prawdziwego konta do zalogowania w tym środowisku).
+
+**Do zrobienia w kolejnej sesji (import PDF):**
+1. Właściciel: deploy funkcji + sekret `ANTHROPIC_API_KEY` (patrz wyżej), potwierdzić że
+   `wiktor@fleetprofit.eu` faktycznie loguje się do tej appki.
+2. Przetestować na żywo z prawdziwym PDF-em (ten sam `Zlecenie_spedycyjne_ZD_1797_6_2026.pdf` — dobry
+   pierwszy przypadek testowy, pola już ręcznie zweryfikowane w tej sesji).
+3. Gdy pojawi się więcej przykładowych zleceń od różnych klientów: rozważyć szablony/heurystyki per
+   klient (rozpoznawane po `forwarder`/układzie) z fallbackiem na tę funkcję dla nieznanych — właściciel
+   wprost o to poprosił ("z czasem będziemy rozbudowywać o kolejnych klientów").
+4. Formularz edycji istniejącego rekordu WCIĄŻ nie istnieje — dziś jedyna droga zapisu do `loads` przez
+   UI to ten import; poprawka błędnie zaimportowanego pola wymaga SQL-a wprost, dopóki nie powstanie
+   edycja.

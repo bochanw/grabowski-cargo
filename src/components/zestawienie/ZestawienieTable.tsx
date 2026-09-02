@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { Load, Direction } from "@/types/load";
 import { COLUMNS, BLOCK_LABELS, type ColumnBlock } from "./columns";
+import { ImportOrderDialog } from "./ImportOrderDialog";
 
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
   weekday: "short",
@@ -61,6 +62,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     fakturowanie: false,
     inne: false,
   });
+  const [isImportOpen, setIsImportOpen] = useState(false);
 
   const columns = useMemo(
     () => COLUMNS.filter((column) => visibleBlocks[column.block]),
@@ -80,6 +82,13 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
           Zestawienie
         </span>
+        <button
+          type="button"
+          onClick={() => setIsImportOpen(true)}
+          className="rounded-full border border-zinc-900 bg-zinc-900 px-3 py-1 text-xs font-medium text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+        >
+          + Importuj zlecenie (PDF)
+        </button>
         <div className="ml-auto flex gap-2">
           {(Object.keys(BLOCK_LABELS) as ColumnBlock[])
             .filter((block) => block !== "ladunek")
@@ -99,6 +108,8 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             ))}
         </div>
       </div>
+
+      {isImportOpen && <ImportOrderDialog onClose={() => setIsImportOpen(false)} />}
 
       <div className="flex-1 overflow-auto">
         <table className="w-full min-w-max border-collapse text-xs">
