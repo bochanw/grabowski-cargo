@@ -1,4 +1,4 @@
-import { COLUMNS, type ColumnBlock, type ColumnDef } from "@/components/zestawienie/columns";
+import { COLUMNS, type ColumnDef } from "@/components/zestawienie/columns";
 import type { Load } from "@/types/load";
 
 /**
@@ -17,14 +17,13 @@ export interface ViewSettings {
   frozen: number;
 }
 
-/** Blok widoczny domyślnie — reszta (rozliczenie/fakturowanie/inne) to opcje do włączenia. */
-const DEFAULT_VISIBLE_BLOCK: ColumnBlock = "ladunek";
-
 const ALL_KEYS = COLUMNS.map((column) => String(column.key));
 
+// Właściciel: "daj każdemu wszystko i najwyżej będziemy sobie ręcznie wyłączać" — domyślnie
+// KOMPLET kolumn, w kolejności z kodu. Ukrywanie to świadoma decyzja użytkownika, nie stan startowy.
 export const DEFAULT_VIEW_SETTINGS: ViewSettings = {
   order: ALL_KEYS,
-  hidden: COLUMNS.filter((column) => column.block !== DEFAULT_VISIBLE_BLOCK).map((column) => String(column.key)),
+  hidden: [],
   // Świadomie 0: zamrożenie kolumn zmienia układ tabeli, więc nie narzucamy go nikomu z góry —
   // każdy ustawia sobie N w oknie "Widok".
   frozen: 0,
@@ -70,8 +69,8 @@ export interface ResolvedView {
  * Konfiguracja użytkownika + aktualna lista kolumn w kodzie → co i w jakiej kolejności pokazać.
  *
  * Kolumna dodana w kodzie PO zapisaniu konfiguracji (brak jej w `order`) ląduje na końcu listy i
- * jest widoczna tylko, jeśli należy do bloku podstawowego. Bez tej reguły każde nowe pole samo
- * wskakiwałoby wszystkim do widoku — a widok jest tu świadomym wyborem dyspozytora.
+ * jest widoczna — zgodnie z zasadą "każdy dostaje wszystko, wyłącza sobie sam". Nowe pole ma się
+ * pokazać, a nie czekać, aż ktoś odkryje je w oknie "Widok".
  */
 export function resolveColumns(settings: ViewSettings | null): ResolvedView {
   const effective = settings ?? DEFAULT_VIEW_SETTINGS;
@@ -88,13 +87,7 @@ export function resolveColumns(settings: ViewSettings | null): ResolvedView {
     if (!knownAtSave.has(String(column.key))) ordered.push(column);
   }
 
-  const isHidden = (key: keyof Load) => {
-    const stringKey = String(key);
-    if (hidden.has(stringKey)) return true;
-    if (!knownAtSave.has(stringKey)) return byKey.get(stringKey)?.block !== DEFAULT_VISIBLE_BLOCK;
-    return false;
-  };
-
+  const isHidden = (key: keyof Load) => hidden.has(String(key));
   const visible = ordered.filter((column) => !isHidden(column.key));
   return { ordered, visible, frozen: Math.min(effective.frozen, visible.length), isHidden };
 }

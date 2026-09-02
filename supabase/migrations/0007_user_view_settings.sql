@@ -16,8 +16,8 @@
 --     "frozen": 2 }                                 -- ile pierwszych WIDOCZNYCH kolumn przyklejonych
 --                                                   -- do lewej krawędzi przy przewijaniu
 -- `order` pełni też rolę "kolumny znane w chwili zapisu": kolumna dodana później w kodzie
--- (nieobecna w `order`) trafia na koniec listy i jest widoczna tylko, gdy należy do bloku
--- podstawowego — inaczej nowe pole samo wskakiwałoby ludziom do widoku.
+-- (nieobecna w `order`) trafia na koniec listy i jest widoczna — zgodnie z zasadą właściciela
+-- "daj każdemu wszystko i najwyżej będziemy sobie ręcznie wyłączać".
 -- ============================================================
 
 create table if not exists public.user_view_settings (

@@ -505,11 +505,26 @@ zamrozić pierwsze N kolumn — one zawsze będą na maksa z lewej"):
   później w kodzie ląduje na końcu i jest widoczna tylko, gdy należy do bloku `ladunek` — inaczej
   nowe pole samo wskakiwałoby wszystkim do widoku.
 - `src/hooks/useViewSettings.ts` (odczyt + `upsert` z optymistycznym `setQueryData` — tabela
-  przestawia się w tej samej klatce, w której kliknięto), `ViewSettingsDialog.tsx` (guzik "Widok" w
-  pasku: checkbox per kolumna, strzałki ↑↓ na kolejność, "Zamroź pierwsze N", "Pokaż wszystkie",
-  "Przywróć domyślne"; każda zmiana zapisuje się od razu, okno nie ma guzika "Zapisz").
-  Przełączniki bloków (Ładunek/Rozliczenie/Fakturowanie/Inne) ZOSTAŁY, ale piszą teraz do tej samej
-  konfiguracji = "pokaż/ukryj wszystkie kolumny grupy"; blok `ladunek` przestał być wymuszony.
+  przestawia się w tej samej klatce, w której kliknięto), `ViewSettingsDialog.tsx` (guzik
+  "Widok (N/59 kolumn)" w pasku: checkbox per kolumna, strzałki ↑↓ na kolejność, "Zamroź pierwsze
+  N", "Pokaż wszystkie", "Przywróć domyślne"; każda zmiana zapisuje się od razu, okno nie ma
+  guzika "Zapisz"). Liczba zamrożonych kolumn BEZ sztywnego limitu — jedyna granica to liczba
+  widocznych kolumn (właściciel od razu zapytał, czemu maksimum to 6; było arbitralne).
+- **Po pierwszym teście właściciela ("te guziki ładunek/rozliczenie/fakturowanie/inne są
+  niepotrzebne — daj każdemu wszystko i najwyżej będziemy sobie ręcznie wyłączać"):** przełączniki
+  bloków USUNIĘTE z paska, domyślny widok to KOMPLET 59 kolumn, a kolumna dodana w kodzie później
+  jest widoczna od razu (wcześniej: tylko z bloku `ladunek`). `BLOCK_LABELS` dalej służy jako
+  podpis grupy przy każdej kolumnie w oknie "Widok".
+- `supabase/migrations/0008_view_settings_show_all_columns.sql` + `0009_..._fix.sql` (obie
+  ZAAPLIKOWANE przez MCP) zerują `hidden` w wierszach zapisanych PRZED tą zmianą — tam siedział
+  stary zestaw domyślny (28 kolumn spoza "Ładunku"), którego nikt świadomie nie wybrał. Świadomie
+  wąsko: tylko wiersze z DOKŁADNIE tym zestawem; czyjeś własne ukrycia zostają.
+  **Pułapka: 0008 przeszła "z sukcesem", nie ruszając ani jednego wiersza.** Porównywała
+  `array_agg(value order by value)` z ręcznie posortowaną tablicą, a `order by` na tekście używa
+  collation bazy (en_US.UTF-8), które przy porównywaniu POMIJA podkreślenia — kolejność wyszła
+  inna niż w sortowaniu ASCII. Wniosek: list kluczy nie porównywać przez sortowanie tekstu, tylko
+  przez zawieranie jsonb w obie strony (`@>` i `<@`) — tak robi 0009. Złapane wyłącznie dlatego,
+  że po `apply_migration` sprawdziłem stan wiersza zapytaniem, a nie poprzestałem na `success`.
 - **Zamrażanie kolumn**: `position: sticky` z `left` czytanym ze zmiennych CSS `--frozen-left-N`,
   które ustawia `applyFrozenOffsets()` po pomiarze szerokości komórek NAGŁÓWKA. Dlaczego tak:
   (1) `left` musi być konkretną wartością — sticky nie umie "przyklej za poprzednią", a szerokości
@@ -517,7 +532,10 @@ zamrozić pierwsze N kolumn — one zawsze będą na maksa z lewej"):
   (2) zmienne CSS zamiast stanu Reacta, bo `setState` w efekcie po każdym renderze kaskaduje
   rendery całej tabeli (eslint `react-hooks/set-state-in-effect` to zresztą wyłapał). Przeliczane
   też z `ResizeObserver` — tabela ma `w-full min-w-max`, więc przy wąskiej zawartości szerokości
-  zależą od szerokości okna.
+  zależą od szerokości okna. Szerokości mierzone przez `getBoundingClientRect().width`, NIE
+  `offsetWidth`: ten drugi zaokrągla do pełnych pikseli i przy kilkunastu zamrożonych kolumnach
+  ułamki sumowały się w widoczne (1-2 px) przesunięcie — złapane testem w przeglądarce przy
+  zamrożeniu 12 kolumn.
 - **Pułapka do zapamiętania: `border-collapse` + kolumny sticky = znikające obramowania** (ramki
   siedzą wtedy na wspólnej siatce tabeli, nie na przesuwanej komórce). Tabela przeszła na
   `border-separate border-spacing-0`, a ramki wierszy MUSIAŁY przenieść się z `<tr>` na `<td>` —

@@ -11,8 +11,6 @@ import {
 } from "@/lib/view/viewSettings";
 import { BLOCK_LABELS } from "./columns";
 
-const MAX_FROZEN = 6;
-
 /**
  * "Widok" — każdy użytkownik sam wybiera kolumny, ich kolejność i ile pierwszych z nich zostaje
  * przyklejonych do lewej przy przewijaniu w bok (jak zamrożone kolumny w Excelu). Konfiguracja
@@ -44,8 +42,10 @@ export function ViewSettingsDialog({ onClose }: { onClose: () => void }) {
     void apply(toStoredSettings(moveColumn(view.ordered, index, delta), hiddenKeys, view.frozen));
   }
 
+  // Bez sztywnego limitu — jedyna granica to liczba widocznych kolumn (zamrożenie wszystkiego
+  // znaczy tyle, że nie ma już czego przewijać, ale nic się nie psuje).
   function setFrozen(value: number) {
-    void apply(toStoredSettings(view.ordered, hiddenKeys, Math.max(0, Math.min(MAX_FROZEN, value))));
+    void apply(toStoredSettings(view.ordered, hiddenKeys, Math.max(0, Math.min(view.visible.length, value))));
   }
 
   function showAll() {
@@ -76,7 +76,7 @@ export function ViewSettingsDialog({ onClose }: { onClose: () => void }) {
             <input
               type="number"
               min={0}
-              max={MAX_FROZEN}
+              max={view.visible.length}
               value={view.frozen}
               onChange={(e) => setFrozen(Number(e.target.value))}
               className="w-16 rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"

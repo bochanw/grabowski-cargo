@@ -8,15 +8,15 @@ import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
-import { BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
+import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
 import { ContractorsDialog } from "./ContractorsDialog";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { useContractors } from "@/hooks/useContractors";
-import { useSaveViewSettings, useViewSettings } from "@/hooks/useViewSettings";
-import { resolveColumns, toStoredSettings } from "@/lib/view/viewSettings";
+import { useViewSettings } from "@/hooks/useViewSettings";
+import { resolveColumns } from "@/lib/view/viewSettings";
 import type { Contractor } from "@/types/contractor";
 
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
@@ -116,7 +116,6 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   // pierwszych zamrożonych. Dopóki ustawienia się wczytują, `resolveColumns(null)` daje widok
   // domyślny — tabela nie miga pustymi kolumnami.
   const { data: viewSettings = null } = useViewSettings();
-  const saveViewSettings = useSaveViewSettings();
   const view = useMemo(() => resolveColumns(viewSettings), [viewSettings]);
   const columns = view.visible;
   const frozenCount = view.frozen;
@@ -152,7 +151,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     let offset = 0;
     for (let index = 0; index <= frozenCount; index += 1) {
       table.style.setProperty(`--frozen-left-${index}`, `${offset}px`);
-      offset += headerRefs.current[index]?.offsetWidth ?? 0;
+      // getBoundingClientRect, nie offsetWidth: offsetWidth zaokrągla do pełnych pikseli, a przy
+      // kilkunastu zamrożonych kolumnach te ułamki sumują się w widoczne przesunięcie.
+      offset += headerRefs.current[index]?.getBoundingClientRect().width ?? 0;
     }
   }, [frozenCount]);
 
@@ -194,22 +195,6 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       else next.add(id);
       return next;
     });
-  }
-
-  // Przełącznik bloku = skrót do "pokaż/ukryj wszystkie kolumny tej grupy". Pojedyncze kolumny i
-  // kolejność ustawia się w oknie "Widok"; jedno i drugie ląduje w tej samej konfiguracji.
-  async function toggleBlock(block: ColumnBlock) {
-    const hiddenKeys = new Set(
-      view.ordered.filter((column) => view.isHidden(column.key)).map((column) => String(column.key))
-    );
-    const blockKeys = view.ordered.filter((column) => column.block === block).map((column) => String(column.key));
-    const anyVisible = blockKeys.some((key) => !hiddenKeys.has(key));
-    for (const key of blockKeys) {
-      if (anyVisible) hiddenKeys.add(key);
-      else hiddenKeys.delete(key);
-    }
-    const error = await saveViewSettings(toStoredSettings(view.ordered, hiddenKeys, view.frozen));
-    setSaveError(error ? `Nie udało się zapisać widoku: ${error}` : null);
   }
 
   async function commitCell(load: Load, column: ColumnDef, raw: string) {
@@ -304,32 +289,17 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           >
             Historia
           </button>
+          {/* Przełączniki bloków (Ładunek/Rozliczenie/Fakturowanie/Inne) świadomie USUNIĘTE —
+              właściciel: "daj każdemu wszystko i najwyżej będziemy sobie ręcznie wyłączać".
+              Wszystko, czym da się sterować widokiem, siedzi w jednym oknie. */}
           <button
             type="button"
             onClick={() => setDialog({ kind: "view" })}
             title="Wybierz kolumny, ich kolejność i ile pierwszych zamrozić"
             className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
           >
-            Widok
+            Widok ({columns.length}/{view.ordered.length} kolumn)
           </button>
-          {(Object.keys(BLOCK_LABELS) as ColumnBlock[]).map((block) => {
-            const isVisible = columns.some((column) => column.block === block);
-            return (
-              <button
-                key={block}
-                type="button"
-                onClick={() => void toggleBlock(block)}
-                title={`Pokaż/ukryj wszystkie kolumny: ${BLOCK_LABELS[block]}`}
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                  isVisible
-                    ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
-                    : "border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
-                }`}
-              >
-                {BLOCK_LABELS[block]}
-              </button>
-            );
-          })}
         </div>
       </div>
 
