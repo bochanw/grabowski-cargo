@@ -62,7 +62,7 @@ const EXTRACT_TOOL = {
     type: 'object',
     properties: {
       order_number: { type: 'string', description: 'Numer/oznaczenie zlecenia (np. "ZD/1797/6/2026"). Pusty string, jeśli nie występuje w dokumencie.' },
-      forwarder: { type: 'string', description: 'Nazwa firmy ZLECENIODAWCY (spedytor zlecający transport — NIE firma wykonująca transport, czyli NIE Grabowski Mariusz Sp. z o.o., nawet jeśli to ona jest adresatem dokumentu). Pusty string, jeśli nieznana.' },
+      forwarder: { type: 'string', description: 'Nazwa firmy ZLECENIODAWCY, czyli tej, na którą ma pójść faktura za transport. Jeśli dokument wskazuje wprost, na kogo wystawić fakturę ("fakturę proszę wystawić na..."), to JEST zleceniodawca — nawet gdy nagłówek dokumentu zawiera inną firmę. NIE jest zleceniodawcą: Grabowski Mariusz Sp. z o.o. (to przewoźnik), ani ZAŁADOWCA/nadawca/odbiorca towaru (to strony ładunku). Pusty string, jeśli nieznana.' },
       forwarder_nip: { type: 'string', description: 'NIP/VAT-ID ZLECENIODAWCY (same cyfry, ewentualnie z prefiksem kraju) — z nagłówka/stopki dokumentu. Pusty string, jeśli nie ma. NIE podawaj NIP-u firmy Grabowski.' },
       forwarder_address: { type: 'string', description: 'Ulica i numer w adresie ZLECENIODAWCY, bez kodu pocztowego i miasta. Pusty string, jeśli nie ma.' },
       forwarder_postal_code: { type: 'string', description: 'Kod pocztowy ZLECENIODAWCY (np. "81-537"). Pusty string, jeśli nie ma.' },
@@ -71,13 +71,13 @@ const EXTRACT_TOOL = {
       container_number: { type: 'string', description: 'Numer kontenera (format ISO 6346, np. "NYKU9911861"). Pusty string, jeśli nie ma.' },
       container_size: { type: 'string', description: 'Wielkość/typ kontenera (np. "20DV", "40HC") — bez nazwy armatora/linii. Pusty string, jeśli nieznana.' },
       shipping_line: { type: 'string', description: 'Linia żeglugowa/armator/gestia kontenera (np. "ONE", "MSC", "Maersk"), jeśli podana. Pusty string, jeśli nie ma.' },
-      company_name: { type: 'string', description: 'Nazwa firmy/miejsca załadunku lub rozładunku (np. nazwa magazynu/odbiorcy), jeśli podana osobno od samego adresu. Pusty string, jeśli nie ma.' },
-      address: { type: 'string', description: 'Pełny adres (ulica, numer, kod pocztowy, miasto) miejsca załadunku lub rozładunku. Pusty string, jeśli nieznany.' },
-      city: { type: 'string', description: 'Sama nazwa miejscowości załadunku/rozładunku, bez reszty adresu. Pusty string, jeśli nieznana.' },
+      company_name: { type: 'string', description: 'Nazwa firmy/miejsca, DO KTÓREGO jedzie samochód (magazyn, zakład, odbiorca), jeśli podana osobno od adresu. Pusty string, jeśli nie ma.' },
+      address: { type: 'string', description: 'Adres z rubryki MIEJSCE ZAŁADUNKU / ROZŁADUNKU — czyli tam, gdzie faktycznie jedzie samochód. To zwykle NIE jest adres rejestrowy firmy z nagłówka dokumentu (zakład/magazyn bywa w innym mieście niż siedziba) — nigdy nie podstawiaj adresu z nagłówka, gdy dokument podaje osobne miejsce załadunku/rozładunku. Pusty string, jeśli nieznany.' },
+      city: { type: 'string', description: 'Sama nazwa miejscowości z TEGO SAMEGO miejsca co pole address (załadunek/rozładunek), bez reszty adresu i bez siedziby firmy z nagłówka. Pusty string, jeśli nieznana.' },
       load_date: { type: 'string', description: 'Data ZAŁADUNKU/podjęcia w formacie RRRR-MM-DD, TYLKO jeśli dokument podaje ją osobno od daty rozładunku. Pusty string, jeśli nieznana — NIGDY nie zgaduj roku ani dnia.' },
-      delivery_date: { type: 'string', description: 'Data ROZŁADUNKU/dostawy w formacie RRRR-MM-DD. Pusty string, jeśli nieznana — NIGDY nie zgaduj.' },
-      delivery_time: { type: 'string', description: 'Godzina rozładunku/dostawy w formacie GG:MM (24-godzinnym). Pusty string, jeśli nieznana.' },
-      customs_location_or_status: { type: 'string', description: 'Miejsce odprawy celnej (nazwa i adres agencji celnej) ALBO status odprawy — cokolwiek dokument faktycznie podaje, dosłownie. Pusty string, jeśli nic nie podano.' },
+      delivery_date: { type: 'string', description: 'Data obsługi U KLIENTA w formacie RRRR-MM-DD: przy imporcie data ROZŁADUNKU, przy eksporcie data ZAŁADUNKU (kontener jedzie do portu). Pusty string, jeśli nieznana — NIGDY nie zgaduj.' },
+      delivery_time: { type: 'string', description: 'Godzina obsługi u klienta (rozładunku przy imporcie, załadunku przy eksporcie) w formacie GG:MM. Pusty string, jeśli nieznana.' },
+      customs_location_or_status: { type: 'string', description: 'Miejsce odprawy celnej (nazwa i adres agencji celnej) ALBO status odprawy — dosłownie to, co stoi w rubryce odprawy. Jeśli ta rubryka jest PUSTA, zwróć pusty string: nie wpisuj tu wartości z sąsiedniej rubryki. Pochodzenie kontenera ("POIMPORT", "z depotu") NIE jest odprawą — to należy do pickup_type.' },
       rate_amount: { type: ['number', 'null'], description: 'Kwota stawki/frachtu za zlecenie — sama liczba (kropka jako separator dziesiętny, bez waluty, bez separatorów tysięcy). Null, jeśli nieznana.' },
       rate_currency: { type: 'string', description: 'Waluta stawki, np. "PLN" albo "EUR" — tylko do weryfikacji przez dyspozytora, appka dziś zakłada PLN. Pusty string, jeśli nieznana.' },
       payment_terms_days: { type: ['number', 'null'], description: 'Liczba dni terminu płatności (np. z "60 dni od..." -> 60). Null, jeśli nieznana.' },
@@ -86,11 +86,11 @@ const EXTRACT_TOOL = {
       // Poniższe pola pochodzą zwykle z DRUGIEGO dokumentu tego samego zlecenia — listu
       // przewozowego dla kierowcy. Jeden wgrany plik wypełni tylko część z nich; appka skleja
       // dokumenty po stronie klienta (mergeParsedOrders), więc pusty string tu niczego nie psuje.
-      pickup_type: { type: 'string', description: 'Miejsce PODJĘCIA kontenera (terminal), dosłownie jak w dokumencie (np. "GCT Gdynia", "BCT", "Baltic Hub") — appka sama sprowadzi to do kodu terminala. Pusty string, jeśli nie podano.' },
-      pin_booking: { type: 'string', description: 'Numer PIN / numer wizyty / booking do awizacji na terminalu. Pusty string, jeśli nie ma.' },
+      pickup_type: { type: 'string', description: 'Miejsce PODJĘCIA kontenera przez kierowcę, dosłownie jak w dokumencie: terminal ("GCT Gdynia", "BCT", "Baltic Hub") albo informacja, że kontener nie jest brany z terminala ("POIMPORT" — z wcześniejszego importu, "z depotu"). To NIE jest miejsce ZDANIA kontenera (tam jedzie po obsłudze — patrz submitted_where). Pusty string, jeśli nie podano.' },
+      pin_booking: { type: 'string', description: 'Numer PIN / numer wizyty / numer bookingu (często podpisany "BKG") do awizacji na terminalu — sam numer, bez skrótu "BKG". To NIE jest numer rejestracyjny samochodu ani naczepy. Pusty string, jeśli nie ma.' },
       goods_name: { type: 'string', description: 'Nazwa przewożonego towaru. Pusty string, jeśli nie podano.' },
       net_weight_kg: { type: ['number', 'null'], description: 'Waga samego TOWARU w kilogramach (na listach przewozowych bywa podpisana "waga towaru brutto" — chodzi o towar BEZ tary kontenera; appka sama doliczy tarę). Sama liczba w kg. Null, jeśli nieznana.' },
-      submitted_where: { type: 'string', description: 'Miejsce złożenia/zdania pustego kontenera po rozładunku (depot/terminal). Pusty string, jeśli nie podano.' },
+      submitted_where: { type: 'string', description: 'Miejsce ZDANIA kontenera po obsłudze: przy imporcie pusty kontener wraca do depotu/terminala, przy eksporcie PEŁNY jedzie do portu/terminala. Pusty string, jeśli nie podano.' },
       driver_name: { type: 'string', description: 'Imię i nazwisko kierowcy. Pusty string, jeśli nie podano.' },
       driver_id_number: { type: 'string', description: 'Numer dowodu osobistego/paszportu kierowcy. Pusty string, jeśli nie podano.' },
       vehicle_plate: { type: 'string', description: 'Numer rejestracyjny CIĄGNIKA/pojazdu. Pusty string, jeśli nie podano.' },
@@ -114,8 +114,10 @@ Zasady, których nie wolno złamać:
    pole jest gorsze niż puste — dyspozytor i tak zweryfikuje wynik przed zapisem, ale puste pole
    rzuca się w oczy, a błędne bywa przeoczone.
 2. Pole "forwarder" (zleceniodawca) to firma, która ZLECA transport Grabowski Mariusz Sp. z o.o.
-   — czyli firma wystawiająca dokument, NIE sama firma Grabowski (ona jest zawsze zleceniobiorcą/
-   przewoźnikiem wykonującym transport w tych dokumentach, nigdy zleceniodawcą).
+   i która zapłaci za ten transport. Kolejność rozstrzygania: (a) firma wskazana wprost do
+   fakturowania ("fakturę proszę wystawić na..."), (b) firma wystawiająca dokument. NIGDY nie jest
+   nią sama firma Grabowski (zawsze przewoźnik) ani ZAŁADOWCA/nadawca/odbiorca towaru — to strony
+   ładunku, nie zleceniodawca transportu.
 3. Rozróżnij "Import"/"Export" WYŁĄCZNIE jeśli dokument to wprost nazywa (nagłówek, etykieta) —
    nie zgaduj kierunku z samej trasy geograficznej.
 4. Data w polach load_date/delivery_date MUSI być w formacie RRRR-MM-DD. Jeśli w dokumencie jest
@@ -127,7 +129,12 @@ Zasady, których nie wolno złamać:
    zawiera, zostaw puste. NIE przepisuj tu danych firmy przewozowej ani osoby kontaktowej
    spedytora, tylko faktycznego kierowcę i jego pojazd.
 8. net_weight_kg to waga TOWARU w kilogramach. Jeśli dokument podaje wagę w tonach, przelicz na
-   kilogramy. Nie dodawaj tary kontenera — appka dolicza ją sama.`;
+   kilogramy. Nie dodawaj tary kontenera — appka dolicza ją sama.
+9. Zlecenia bywają tabelami z nagłówkami rubryk w jednym wierszu i wartościami w następnym, przy
+   czym CZĘŚĆ RUBRYK BYWA PUSTA. Nie przesuwaj wtedy wartości: pustą rubrykę zostaw pustą, nawet
+   jeśli w tekście zaraz po jej nagłówku stoi wartość należąca do kolejnej rubryki.
+10. Przy EKSPORCIE kontener jedzie od klienta do portu: u klienta następuje ZAŁADUNEK, a kontener
+   zdawany jest PEŁNY. Przy IMPORCIE odwrotnie: u klienta rozładunek, pusty kontener wraca.`;
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });

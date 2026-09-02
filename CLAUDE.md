@@ -456,10 +456,43 @@ widoczny. 3. Musi byc manualne przejscie na reczne wpisywanie zlecenia."):**
   bo nie ma konta do zalogowania). **NIE zweryfikowany realny odczyt przez model** — wymaga wdrożonej
   funkcji i klucza API, czyli pierwszego testu u właściciela.
 
+**Pierwsze zlecenie EKSPORTOWE przez Claude — poprawki po uwagach właściciela (`Zlecenie_
+transportowe_spedycja_TIIU218.pdf`, spedytor Euro Logistics, PasCom, załadunek cukru w Kruszwicy):**
+- Odczyt przez Claude działa na produkcji (klucz `ANTHROPIC_API_KEY` wpisany przez właściciela).
+  Funkcja jest w wersji **v4** — v1 to pierwsze wdrożenie, v3/v4 to te poprawki promptu.
+- Uwagi właściciela i co z nimi zrobione:
+  1. **"Podjęcia nie ma — stąd POIMPORT (inna sytuacja: z depotu)."** `PICKUP_LOCATIONS` to teraz
+     **GCT / BCT / BHub / Poimport / Depot** (`pickupLocations.ts`, dopasowanie po wariantach
+     zapisu: "Baltic Hub"→BHub, "po imporcie"→Poimport, "z depotu"→Depot). Test:
+     `npx tsx scratch-pickup.test.mts` (14 przypadków, plik tymczasowy).
+  2. **"Przy eksporcie rozładunek zmieniamy na załadunek."** Etykiety FORMULARZA zależą od
+     kierunku (`isExport`): "Firma (załadunek)", "Data załadunku", "Godzina załadunku", "…dzień
+     roboczy przed załadunkiem". Kolumny TABELI zostają neutralne ("Data (2)", "Godz.",
+     "Złożenie gdzie") — jedna tabela miesza oba kierunki, więc nagłówek nie może być zależny od
+     wiersza.
+  3. **"Miejsce/status odprawy celnej powinno być puste."** Model wpisywał tam POIMPORT, bo
+     rubryka MIEJSCE ODPRAWY w tym zleceniu jest pusta i wartość z sąsiedniej kolumny "przesuwała
+     się" w tekście. Prompt ma teraz regułę wprost o tabelach z pustymi rubrykami + zakaz
+     traktowania pochodzenia kontenera jako odprawy.
+  4. **"Przy eksporcie nie zdajemy pustego, tylko pełny."** Etykieta zmienia się na **"Miejsce
+     zdania kontenera (pełny)"**; opis pola w schemacie funkcji też rozróżnia oba kierunki.
+- Przy okazji złapane w tym samym dokumencie (właściciel nie zgłaszał, ale ma znaczenie dla faktur):
+  - **`forwarder` szedł jako ZAŁADOWCA (Krajowa Grupa Spożywcza), a nie zleceniodawca.** Fakturę
+    wg dokumentu wystawia się na **Euro Logistics Sp. z o.o.** ("FAKTURĘ PROSZĘ WYSTAWIĆ NA…").
+    Prompt ma teraz kolejność rozstrzygania: firma wskazana do fakturowania → firma wystawiająca
+    dokument; nigdy Grabowski i nigdy załadowca/nadawca/odbiorca. To samo pole zakłada kontrahenta,
+    więc błąd szedłby wprost na fakturę.
+  - **Adres/miejscowość** brały siedzibę firmy z nagłówka (Toruń) zamiast miejsca załadunku
+    (Kruszwica); **PIN/booking** dostawał numer rejestracyjny ciągnika zamiast numeru BKG.
+- Zweryfikowane strzałem w produkcyjną funkcję TYM PDF-em (nie na uproszczonej reprodukcji):
+  wszystkie 22 sprawdzone pola poprawne — kierunek E, Euro Logistics + NIP, Kruszwica/Niepodległości
+  38/40, odprawa pusta, podjęcie POIMPORT, zdanie BCT, booking 9020956380, cukier 22288 kg, 1450 PLN,
+  30 dni, kierowca/dowód/ciągnik/naczepa z dokumentu.
+
 **Do zrobienia w kolejnej sesji:**
-0. Właściciel wpisuje sekret `ANTHROPIC_API_KEY`; potem sprawdzić odczyt nieznanego zlecenia przez
-   Claude na żywym PDF-ie i zobaczyć, czy Haiku 4.5 wystarcza, czy warto przełączyć `MODEL` na
-   `claude-sonnet-5`. (Migracje 0001–0005 i wdrożenie funkcji: ZROBIONE, patrz sekcja "Supabase".)
+0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
+   radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
+   żeby opłacał się deterministyczny szablon zamiast płatnego odczytu.
 2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
    (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
    `between()`, nigdy `$`).

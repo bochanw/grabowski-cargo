@@ -322,6 +322,17 @@ export function ImportOrderDialog({
         ? "Edytuj zlecenie"
         : "Nowe zlecenie (PDF albo ręcznie)";
 
+  // Przy EKSPORCIE u klienta ŁADUJEMY (kontener jedzie w drugą stronę), a kontener zdajemy do portu
+  // PEŁNY — te same kolumny bazy, ale etykiety "rozładunek"/"złożenie pustego" są wtedy mylące
+  // (zgłoszenie właściciela po pierwszym zleceniu eksportowym). Kierunek zmienia więc same podpisy,
+  // nie pola.
+  const isExport = form.direction === "E";
+  const stopLabel = isExport ? "załadunek" : "rozładunek";
+  const stopGenitive = isExport ? "załadunku" : "rozładunku";
+  const handoverLabel = isExport
+    ? "Miejsce zdania kontenera (pełny)"
+    : "Miejsce złożenia pustego";
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
@@ -483,7 +494,7 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.shipping_line} onChange={(e) => updateField("shipping_line", e.target.value)} placeholder="np. ONE" />
                 </Field>
 
-                <Field label="Firma (rozładunek)">
+                <Field label={`Firma (${stopLabel})`}>
                   <input className={inputClass} value={form.company_name} onChange={(e) => updateField("company_name", e.target.value)} />
                 </Field>
                 <Field label="Miejscowość">
@@ -494,14 +505,14 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.address} onChange={(e) => updateField("address", e.target.value)} />
                 </Field>
 
-                <Field label="Data (domyślnie dzień roboczy przed rozładunkiem)">
+                <Field label={`Data (domyślnie dzień roboczy przed ${isExport ? "załadunkiem" : "rozładunkiem"})`}>
                   <input type="date" className={inputClass} value={form.load_date} onChange={(e) => updateField("load_date", e.target.value)} />
                 </Field>
-                <Field label="Data rozładunku">
+                <Field label={`Data ${stopGenitive}`}>
                   <input type="date" className={inputClass} value={form.delivery_date} onChange={(e) => updateField("delivery_date", e.target.value)} />
                 </Field>
 
-                <Field label="Godzina rozładunku">
+                <Field label={`Godzina ${stopGenitive}`}>
                   <input className={inputClass} value={form.delivery_time} onChange={(e) => updateField("delivery_time", e.target.value)} placeholder="np. 07:00" />
                 </Field>
                 <Field label="Miejsce/status odprawy celnej">
@@ -524,7 +535,7 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.gross_weight} onChange={(e) => updateField("gross_weight", e.target.value)} placeholder="liczone z typu kontenera" />
                 </Field>
 
-                <Field label="Miejsce złożenia pustego" full>
+                <Field label={handoverLabel} full>
                   <input className={inputClass} value={form.submitted_where} onChange={(e) => updateField("submitted_where", e.target.value)} />
                 </Field>
 
