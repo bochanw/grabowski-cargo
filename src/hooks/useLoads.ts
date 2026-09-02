@@ -79,23 +79,36 @@ export function useLoads() {
 }
 
 /**
- * Zapis jednego pola wprost z tabeli (edycja inline, Enter zatwierdza). Optymistycznie od razu w
- * cache TanStack Query — Realtime i tak przyśle UPDATE, ale bez czekania na niego komórka nie
- * "mruga". Przy błędzie cofamy do poprzedniej wartości i zwracamy komunikat.
+ * Zapis pól wprost z tabeli (edycja inline, Enter zatwierdza). Zwykle jedno pole, ale wybór
+ * kierowcy z Panelu floty ustawia naraz imię + nr dowodu, stąd `patch` zamiast pojedynczego klucza.
+ * Optymistycznie od razu w cache TanStack Query — Realtime i tak przyśle UPDATE, ale bez czekania
+ * na niego komórka nie "mruga". Przy błędzie cofamy do poprzedniej wartości i zwracamy komunikat.
  */
-export function useUpdateLoadField() {
+export function useUpdateLoad() {
   const queryClient = useQueryClient();
 
-  return async function updateLoadField<K extends keyof Load>(
-    id: string,
-    key: K,
-    value: Load[K]
-  ): Promise<string | null> {
+  return async function updateLoad(id: string, patch: Partial<Load>): Promise<string | null> {
     const previous = queryClient.getQueryData<Load[]>(LOADS_QUERY_KEY);
     queryClient.setQueryData<Load[]>(LOADS_QUERY_KEY, (current) =>
-      current?.map((load) => (load.id === id ? { ...load, [key]: value } : load))
+      current?.map((load) => (load.id === id ? { ...load, ...patch } : load))
     );
-    const { error } = await supabase.from("loads").update({ [key]: value }).eq("id", id);
+    const { error } = await supabase.from("loads").update(patch).eq("id", id);
+    if (error) {
+      queryClient.setQueryData(LOADS_QUERY_KEY, previous);
+      return error.message;
+    }
+    return null;
+  };
+}
+
+/** Usunięcie zlecenia (np. wgranego tylko częściowo/omyłkowo). Optymistycznie, z cofnięciem przy błędzie. */
+export function useDeleteLoad() {
+  const queryClient = useQueryClient();
+
+  return async function deleteLoad(id: string): Promise<string | null> {
+    const previous = queryClient.getQueryData<Load[]>(LOADS_QUERY_KEY);
+    queryClient.setQueryData<Load[]>(LOADS_QUERY_KEY, (current) => current?.filter((load) => load.id !== id));
+    const { error } = await supabase.from("loads").delete().eq("id", id);
     if (error) {
       queryClient.setQueryData(LOADS_QUERY_KEY, previous);
       return error.message;

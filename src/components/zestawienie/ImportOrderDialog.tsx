@@ -6,6 +6,7 @@ import { extractPdfText } from "@/lib/pdf/extractPdfText";
 import { matchKnownTemplate } from "@/lib/orderTemplates";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { previousWorkingDay } from "@/lib/dates/workingDays";
+import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import type { Direction, Load } from "@/types/load";
 
@@ -13,8 +14,8 @@ type Stage = "pick" | "parsing" | "review" | "saving";
 
 const DEFAULT_CARRIER = "Grabowski Mariusz Sp. z o.o.";
 
-// Ten sam formularz służy do importu (insert) i do edycji istniejącego rekordu (update) —
-// edycja obejmuje na razie TE SAME pola co import, nie wszystkie ~60 kolumn tabeli.
+// Ten sam formularz służy do importu (insert), dopięcia dokumentu do istniejącego zlecenia
+// (update, wypełnia tylko puste pola) i — gdyby wrócił do UI — edycji "wszystkiego naraz".
 function loadToForm(load: Load): ParsedOrder {
   return {
     order_number: load.order_number ?? "",
@@ -84,15 +85,20 @@ function formToRow(form: ParsedOrder, carrierName: string) {
 export function ImportOrderDialog({
   onClose,
   existingLoad,
+  mode = existingLoad ? "edit" : "import",
+  recentLoads = [],
 }: {
   onClose: () => void;
   existingLoad?: Load;
+  /** "attach" = dopnij kolejny dokument do istniejącego zlecenia (wypełnia tylko puste pola). */
+  mode?: "import" | "edit" | "attach";
+  /** Istniejące zlecenia od najnowszego — fallback "z poprzedniego zlecenia" dla pól floty. */
+  recentLoads?: Load[];
 }) {
-  const isEdit = Boolean(existingLoad);
-  const [stage, setStage] = useState<Stage>(isEdit ? "review" : "pick");
-  const [form, setForm] = useState<ParsedOrder>(() =>
-    existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER
-  );
+  const { data: fleetData } = useFleet();
+  const fleet: Fleet = fleetData ?? EMPTY_FLEET;
+  const [stage, setStage] = useState<Stage>(mode === "edit" ? "review" : "pick");
+  const [form, setForm] = useState<ParsedOrder>(() => (existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER));
   const [carrierName, setCarrierName] = useState(existingLoad?.carrier_name ?? DEFAULT_CARRIER);
   const [recognized, setRecognized] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -100,8 +106,8 @@ export function ImportOrderDialog({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Jedno zlecenie to u klienta zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
-  // kierowcy) — można wgrać oba naraz albo dopiąć drugi później; każdy kolejny dokument wypełnia
-  // TYLKO puste pola, więc nie nadpisuje ręcznych poprawek dyspozytora.
+  // kierowcy) — można wgrać oba naraz albo dopiąć drugi później (także do już zapisanego zlecenia);
+  // każdy kolejny dokument wypełnia TYLKO puste pola, więc nie nadpisuje ręcznych poprawek.
   async function handleFiles(fileList: FileList | null) {
     const files = Array.from(fileList ?? []);
     if (files.length === 0) return;
@@ -137,14 +143,17 @@ export function ImportOrderDialog({
       newRecognized.push(match.name);
     }
 
-    // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu — dyspozytor
-    // może ją zmienić tutaj albo później przez "Edytuj".
+    // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu.
     if (!merged.load_date && merged.delivery_date) {
       merged = { ...merged, load_date: previousWorkingDay(merged.delivery_date) };
     }
 
+    // Kierowca/pojazdy: dopasowanie do Panelu floty, fallback z poprzedniego zlecenia.
+    const reconciled = reconcileWithFleet(merged, fleet, recentLoads);
+    newWarnings.push(...reconciled.warnings);
+
     const allRecognized = [...recognized, ...newRecognized];
-    setForm(merged);
+    setForm(reconciled.order);
     setRecognized(allRecognized);
     setNotice(
       allRecognized.length > 0
@@ -157,6 +166,24 @@ export function ImportOrderDialog({
 
   function updateField<K extends keyof ParsedOrder>(key: K, value: ParsedOrder[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function selectDriver(name: string) {
+    const driver = fleet.drivers.find((d) => d.name === name);
+    setForm((prev) => ({
+      ...prev,
+      driver_name: name,
+      driver_id_number: driver?.docNumber || prev.driver_id_number,
+    }));
+  }
+
+  function selectTractor(plate: string) {
+    const tractor = fleet.tractors.find((v) => v.plate === plate);
+    setForm((prev) => ({
+      ...prev,
+      vehicle_plate: plate,
+      trailer_plate: prev.trailer_plate || tractor?.assignedTrailerPlate || "",
+    }));
   }
 
   async function handleSave() {
@@ -177,20 +204,23 @@ export function ImportOrderDialog({
     onClose();
   }
 
-  // Wartość spoza listy (np. "poimport" z arkusza albo nierozpoznany tekst z dokumentu) pokazujemy
-  // jako dodatkową opcję zamiast ją gubić — kolumna w bazie nie ma CHECK.
-  const pickupOptions: string[] =
-    form.pickup_type && !(PICKUP_LOCATIONS as readonly string[]).includes(form.pickup_type)
-      ? [...PICKUP_LOCATIONS, form.pickup_type]
-      : [...PICKUP_LOCATIONS];
+  const pickupOptions = withCurrentOption([...PICKUP_LOCATIONS], form.pickup_type);
+  const driverOptions = withCurrentOption(fleet.drivers.map((d) => d.name), form.driver_name);
+  const tractorOptions = withCurrentOption(fleet.tractors.map((v) => v.plate), form.vehicle_plate);
+  const trailerOptions = withCurrentOption(fleet.trailers.map((v) => v.plate), form.trailer_plate);
+
+  const title =
+    mode === "attach"
+      ? `Dopnij dokument do zlecenia ${existingLoad?.order_number ?? ""}`
+      : mode === "edit"
+        ? "Edytuj zlecenie"
+        : "Importuj zlecenie (PDF)";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-            {isEdit ? "Edytuj zlecenie" : "Importuj zlecenie (PDF)"}
-          </h2>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{title}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -205,8 +235,9 @@ export function ImportOrderDialog({
           {stage === "pick" && (
             <div className="flex flex-col items-center justify-center gap-3 py-12">
               <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
-                Wybierz pliki PDF do zlecenia — zlecenie spedycyjne i/lub list przewozowy dla kierowcy
-                (można zaznaczyć oba naraz). Pola spróbujemy wyciągnąć automatycznie.
+                {mode === "attach"
+                  ? "Wybierz brakujący dokument (np. list przewozowy) — wypełni tylko puste pola tego zlecenia."
+                  : "Wybierz pliki PDF do zlecenia — zlecenie spedycyjne i/lub list przewozowy dla kierowcy (można zaznaczyć oba naraz). Pola spróbujemy wyciągnąć automatycznie."}
               </p>
               <input
                 type="file"
@@ -247,7 +278,7 @@ export function ImportOrderDialog({
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
                 <span>Sprawdź i popraw pola przed zapisem — appka niczego nie zapisuje bez Twojej zgody.</span>
                 <label className="flex items-center gap-2">
-                  <span>Dopnij kolejny dokument (np. list przewozowy):</span>
+                  <span>Dopnij kolejny dokument:</span>
                   <input
                     type="file"
                     accept="application/pdf"
@@ -267,28 +298,16 @@ export function ImportOrderDialog({
                 </Field>
 
                 <Field label="Kierunek *">
-                  <select
-                    className={inputClass}
-                    value={form.direction}
-                    onChange={(e) => updateField("direction", e.target.value as ParsedOrder["direction"])}
-                  >
+                  <select className={inputClass} value={form.direction} onChange={(e) => updateField("direction", e.target.value as ParsedOrder["direction"])}>
                     <option value="">— wybierz —</option>
                     <option value="I">Import</option>
                     <option value="E">Eksport</option>
                   </select>
                 </Field>
                 <Field label="Podjęcie (terminal)">
-                  <select
-                    className={inputClass}
-                    value={form.pickup_type}
-                    onChange={(e) => updateField("pickup_type", e.target.value)}
-                  >
+                  <select className={inputClass} value={form.pickup_type} onChange={(e) => updateField("pickup_type", e.target.value)}>
                     <option value="">— wybierz —</option>
-                    {pickupOptions.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
+                    {pickupOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </Field>
 
@@ -342,18 +361,27 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.submitted_where} onChange={(e) => updateField("submitted_where", e.target.value)} />
                 </Field>
 
-                <Field label="Kierowca">
-                  <input className={inputClass} value={form.driver_name} onChange={(e) => updateField("driver_name", e.target.value)} />
+                <Field label="Kierowca (z Panelu floty)">
+                  <select className={inputClass} value={form.driver_name} onChange={(e) => selectDriver(e.target.value)}>
+                    <option value="">—</option>
+                    {driverOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
                 </Field>
                 <Field label="Nr dowodu kierowcy">
                   <input className={inputClass} value={form.driver_id_number} onChange={(e) => updateField("driver_id_number", e.target.value)} />
                 </Field>
 
-                <Field label="Pojazd (ciągnik)">
-                  <input className={inputClass} value={form.vehicle_plate} onChange={(e) => updateField("vehicle_plate", e.target.value)} />
+                <Field label="Pojazd (ciągnik, z Panelu floty)">
+                  <select className={inputClass} value={form.vehicle_plate} onChange={(e) => selectTractor(e.target.value)}>
+                    <option value="">—</option>
+                    {tractorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
                 </Field>
-                <Field label="Naczepa">
-                  <input className={inputClass} value={form.trailer_plate} onChange={(e) => updateField("trailer_plate", e.target.value)} />
+                <Field label="Naczepa (z Panelu floty)">
+                  <select className={inputClass} value={form.trailer_plate} onChange={(e) => updateField("trailer_plate", e.target.value)}>
+                    <option value="">—</option>
+                    {trailerOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
                 </Field>
 
                 <Field label="Telefon kierowcy">
@@ -364,21 +392,10 @@ export function ImportOrderDialog({
                 </Field>
 
                 <Field label="Stawka (PLN)">
-                  <input
-                    type="number"
-                    step="0.01"
-                    className={inputClass}
-                    value={form.rate_amount ?? ""}
-                    onChange={(e) => updateField("rate_amount", e.target.value === "" ? null : Number(e.target.value))}
-                  />
+                  <input type="number" step="0.01" className={inputClass} value={form.rate_amount ?? ""} onChange={(e) => updateField("rate_amount", e.target.value === "" ? null : Number(e.target.value))} />
                 </Field>
                 <Field label="Termin płatności (dni)">
-                  <input
-                    type="number"
-                    className={inputClass}
-                    value={form.payment_terms_days ?? ""}
-                    onChange={(e) => updateField("payment_terms_days", e.target.value === "" ? null : Number(e.target.value))}
-                  />
+                  <input type="number" className={inputClass} value={form.payment_terms_days ?? ""} onChange={(e) => updateField("payment_terms_days", e.target.value === "" ? null : Number(e.target.value))} />
                 </Field>
 
                 <Field label="Warunek płatności" full>
@@ -395,11 +412,7 @@ export function ImportOrderDialog({
 
         {(stage === "review" || stage === "saving") && (
           <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300"
-            >
+            <button type="button" onClick={onClose} className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
               Anuluj
             </button>
             <button
@@ -408,7 +421,7 @@ export function ImportOrderDialog({
               onClick={handleSave}
               className="rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
             >
-              {stage === "saving" ? "Zapisywanie…" : isEdit ? "Zapisz zmiany" : "Zapisz zlecenie"}
+              {stage === "saving" ? "Zapisywanie…" : existingLoad ? "Zapisz zmiany" : "Zapisz zlecenie"}
             </button>
           </div>
         )}

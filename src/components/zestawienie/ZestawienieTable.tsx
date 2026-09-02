@@ -3,8 +3,9 @@
 import { useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { Load, Direction } from "@/types/load";
-import { useUpdateLoadField } from "@/hooks/useLoads";
+import { useDeleteLoad, useUpdateLoad } from "@/hooks/useLoads";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
+import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 
@@ -63,6 +64,8 @@ interface EditingCell {
   key: keyof Load;
 }
 
+type Dialog = { kind: "import" } | { kind: "attach"; load: Load };
+
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [visibleBlocks, setVisibleBlocks] = useState<Record<ColumnBlock, boolean>>({
     ladunek: true,
@@ -70,10 +73,13 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     fakturowanie: false,
     inne: false,
   });
-  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const updateLoadField = useUpdateLoadField();
+  const updateLoad = useUpdateLoad();
+  const deleteLoad = useDeleteLoad();
+  const { data: fleetData } = useFleet();
+  const fleet = fleetData ?? EMPTY_FLEET;
 
   const columns = useMemo(
     () => COLUMNS.filter((column) => visibleBlocks[column.block]),
@@ -81,6 +87,11 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   );
 
   const dayGroups = useMemo(() => groupByDay(loads), [loads]);
+  // Od najnowszego — fallback "z poprzedniego zlecenia" przy dopasowaniu do floty.
+  const recentLoads = useMemo(
+    () => [...loads].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "")),
+    [loads]
+  );
 
   function toggleBlock(block: ColumnBlock) {
     if (block === "ladunek") return;
@@ -90,10 +101,18 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   async function commitCell(load: Load, column: ColumnDef, raw: string) {
     setEditingCell(null);
     setSaveError(null);
-    const value = coerceCellValue(column, raw);
-    if (value === load[column.key]) return;
-    const error = await updateLoadField(load.id, column.key, value as Load[typeof column.key]);
+    const patch = buildPatch(column, raw, fleet);
+    if (patch[column.key] === load[column.key]) return;
+    const error = await updateLoad(load.id, patch);
     if (error) setSaveError(`Nie udało się zapisać pola "${column.label}": ${error}`);
+  }
+
+  async function handleDelete(load: Load) {
+    const label = load.order_number ? `zlecenie ${load.order_number}` : "to zlecenie";
+    if (!window.confirm(`Usunąć ${label}? Tej operacji nie da się cofnąć.`)) return;
+    setSaveError(null);
+    const error = await deleteLoad(load.id);
+    if (error) setSaveError(`Nie udało się usunąć: ${error}`);
   }
 
   return (
@@ -104,7 +123,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         </span>
         <button
           type="button"
-          onClick={() => setIsImportOpen(true)}
+          onClick={() => setDialog({ kind: "import" })}
           className="rounded-full border border-zinc-900 bg-zinc-900 px-3 py-1 text-xs font-medium text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
         >
           + Importuj zlecenie (PDF)
@@ -134,7 +153,17 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         </div>
       </div>
 
-      {isImportOpen && <ImportOrderDialog onClose={() => setIsImportOpen(false)} />}
+      {dialog?.kind === "import" && (
+        <ImportOrderDialog recentLoads={recentLoads} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === "attach" && (
+        <ImportOrderDialog
+          mode="attach"
+          existingLoad={dialog.load}
+          recentLoads={recentLoads.filter((l) => l.id !== dialog.load.id)}
+          onClose={() => setDialog(null)}
+        />
+      )}
 
       {/* min-h-0: bez tego element flex nie może być niższy niż jego zawartość, więc
           overflow-auto nigdy nie zadziała, a poziomy pasek przewijania ląduje TUŻ pod
@@ -153,12 +182,13 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                   {column.label}
                 </th>
               ))}
+              <th className="border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800" />
             </tr>
           </thead>
           <tbody>
             {dayGroups.length === 0 && (
               <tr>
-                <td colSpan={columns.length} className="px-2 py-6 text-center text-zinc-500">
+                <td colSpan={columns.length + 1} className="px-2 py-6 text-center text-zinc-500">
                   Brak ładunków.
                 </td>
               </tr>
@@ -168,10 +198,13 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 key={group.dateKey}
                 group={group}
                 columns={columns}
+                fleet={fleet}
                 editingCell={editingCell}
                 onStartEdit={setEditingCell}
                 onCancelEdit={() => setEditingCell(null)}
                 onCommit={commitCell}
+                onAttach={(load) => setDialog({ kind: "attach", load })}
+                onDelete={handleDelete}
               />
             ))}
           </tbody>
@@ -182,10 +215,13 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
 }
 
 interface RowHandlers {
+  fleet: Fleet;
   editingCell: EditingCell | null;
   onStartEdit: (cell: EditingCell) => void;
   onCancelEdit: () => void;
   onCommit: (load: Load, column: ColumnDef, raw: string) => void;
+  onAttach: (load: Load) => void;
+  onDelete: (load: Load) => void;
 }
 
 function DayGroupRows({
@@ -207,7 +243,7 @@ function DayGroupRows({
     <>
       <tr>
         <td
-          colSpan={columns.length}
+          colSpan={columns.length + 1}
           className="border-y border-zinc-300 bg-zinc-200 px-2 py-1 text-sm font-semibold text-zinc-800 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
         >
           {formatDayHeading(group.dateKey || null)}
@@ -232,10 +268,13 @@ function DirectionRows({
   loads,
   columns,
   isFirst,
+  fleet,
   editingCell,
   onStartEdit,
   onCancelEdit,
   onCommit,
+  onAttach,
+  onDelete,
 }: { direction: Direction; loads: Load[]; columns: ColumnDef[]; isFirst: boolean } & RowHandlers) {
   return (
     <>
@@ -243,7 +282,7 @@ function DirectionRows({
         {/* Gruba kreska oddziela eksporty od importów w obrębie dnia — nie
             tylko kolor tła, ale wyraźna, pogrubiona krawędź. */}
         <td
-          colSpan={columns.length}
+          colSpan={columns.length + 1}
           className={`bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:bg-zinc-950 dark:text-zinc-500 ${
             !isFirst ? "border-t-4 border-zinc-900 dark:border-zinc-100" : ""
           }`}
@@ -272,6 +311,7 @@ function DirectionRows({
                   <CellEditor
                     load={load}
                     column={column}
+                    fleet={fleet}
                     onCancel={onCancelEdit}
                     onCommit={(raw) => onCommit(load, column, raw)}
                   />
@@ -281,6 +321,24 @@ function DirectionRows({
               </td>
             );
           })}
+          <td className="whitespace-nowrap px-2 py-1">
+            <button
+              type="button"
+              onClick={() => onAttach(load)}
+              title="Dopnij brakujący dokument (np. list przewozowy) do tego zlecenia"
+              className="mr-1 rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:border-zinc-500 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Dopnij PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete(load)}
+              title="Usuń zlecenie"
+              className="rounded border border-red-200 px-2 py-0.5 text-[11px] text-red-600 hover:border-red-400 hover:bg-red-50 dark:border-red-900 dark:text-red-400"
+            >
+              Usuń
+            </button>
+          </td>
         </tr>
       ))}
     </>
@@ -289,15 +347,18 @@ function DirectionRows({
 
 // Edycja inline: Enter zapisuje, Esc anuluje, kliknięcie poza komórką anuluje (zapis TYLKO
 // świadomym Enterem — przypadkowy zapis jest gorszy niż utrata jednej poprawki). Listy rozwijane
-// (kierunek, podjęcie) zapisują od razu po wyborze — wybór z listy jest już świadomą decyzją.
+// (kierunek, podjęcie, kierowca/pojazd/naczepa z Panelu floty) zapisują od razu po wyborze — wybór
+// z listy jest już świadomą decyzją.
 function CellEditor({
   load,
   column,
+  fleet,
   onCancel,
   onCommit,
 }: {
   load: Load;
   column: ColumnDef;
+  fleet: Fleet;
   onCancel: () => void;
   onCommit: (raw: string) => void;
 }) {
@@ -317,7 +378,7 @@ function CellEditor({
   const editorClass =
     "w-full min-w-24 border border-zinc-900 bg-white px-2 py-1 text-xs text-zinc-900 outline-none dark:border-zinc-100 dark:bg-zinc-900 dark:text-zinc-50";
 
-  const selectOptions = selectOptionsFor(column, draft);
+  const selectOptions = selectOptionsFor(column, draft, fleet);
   if (selectOptions) {
     return (
       <select
@@ -352,20 +413,35 @@ function CellEditor({
   );
 }
 
-function selectOptionsFor(column: ColumnDef, current: string): { value: string; label: string }[] | null {
-  if (column.key === "direction") {
-    return [
-      { value: "I", label: "Import" },
-      { value: "E", label: "Eksport" },
-    ];
+function selectOptionsFor(column: ColumnDef, current: string, fleet: Fleet): { value: string; label: string }[] | null {
+  switch (column.key) {
+    case "direction":
+      return [
+        { value: "I", label: "Import" },
+        { value: "E", label: "Eksport" },
+      ];
+    case "pickup_type":
+      return withCurrentOption([...PICKUP_LOCATIONS], current);
+    case "driver_name":
+      return withCurrentOption(fleet.drivers.map((d) => d.name), current);
+    case "vehicle_plate":
+      return withCurrentOption(fleet.tractors.map((v) => v.plate), current);
+    case "trailer_plate":
+      return withCurrentOption(fleet.trailers.map((v) => v.plate), current);
+    default:
+      return null;
   }
-  if (column.key === "pickup_type") {
-    // Wartość spoza listy (np. "poimport" z arkusza) pokazujemy jako opcję zamiast ją gubić.
-    const options = [...PICKUP_LOCATIONS] as string[];
-    if (current && !options.includes(current)) options.push(current);
-    return options.map((value) => ({ value, label: value }));
+}
+
+// Wybór kierowcy z Panelu floty ustawia też nr dowodu (z `driver_documents`), jeśli Panel go zna.
+function buildPatch(column: ColumnDef, raw: string, fleet: Fleet): Partial<Load> {
+  const value = coerceCellValue(column, raw);
+  const patch: Partial<Load> = { [column.key]: value } as Partial<Load>;
+  if (column.key === "driver_name" && typeof value === "string") {
+    const driver = fleet.drivers.find((d) => d.name === value);
+    if (driver?.docNumber) patch.driver_id_number = driver.docNumber;
   }
-  return null;
+  return patch;
 }
 
 function coerceCellValue(column: ColumnDef, raw: string): string | number | null {
