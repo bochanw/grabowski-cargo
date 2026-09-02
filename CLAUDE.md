@@ -328,6 +328,14 @@ usuwanie), `ContractorsDialog.tsx` (przycisk "Kontrahenci" w pasku: lista + form
 → kontrahent po nazwie/aliasie; **domyślny termin płatności kontrahenta wchodzi TYLKO w puste pola**
 (dokument wygrywa, rozbieżność = ostrzeżenie); brak dopasowania = ostrzeżenie z podpowiedzią, żeby
 dodać alias. Wybór kontrahenta w tabeli też podstawia termin, jeśli zlecenie go nie ma.
+**Kontrahent zakłada się SAM przy pierwszym zleceniu od nowego spedytora** (właściciel po
+teście: "nawet po usunięciu i dodaniu na nowo zlecenia Q4Road nie wyświetla się w kontrahentach" —
+oczekiwanie: import ma tworzyć kontrahenta, nie tylko dopasowywać). `parseQ4RoadOrder` wyciąga z
+nagłówka zlecenia `forwarder_nip/_address/_postal_code/_city` (nowe pola `ParsedOrder`);
+`ImportOrderDialog.ensureContractor()` przy ZAPISIE (nie przy parsowaniu — anulowany import nie
+ma śmiecić) sprawdza raz jeszcze po nazwie i, gdy brak, wstawia kontrahenta (nazwa z dokumentu
+jako `name` I alias, NIP, adres, termin płatności z dokumentu) i podpina `contractor_id`. E-mail do
+faktur trzeba dopisać ręcznie w "Kontrahenci" — dokument go nie ma.
 **Wysyłka faktury do Fakturowni NIE jest jeszcze zbudowana** — dane są; sama funkcja to kopia
 `bochanw/DAB/supabase/functions/fakturownia-create-invoice` z sekretami FAKTUROWNIA_SUBDOMAIN/
 FAKTUROWNIA_API_TOKEN (osobna decyzja właściciela: konto Fakturowni Grabowskiego, stawka VAT).

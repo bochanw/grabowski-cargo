@@ -22,6 +22,11 @@ function loadToForm(load: Load): ParsedOrder {
   return {
     order_number: load.order_number ?? "",
     forwarder: load.forwarder ?? "",
+    // Dane spedytora nie są trzymane na zleceniu (żyją w contractors) — przy edycji/dopięciu puste.
+    forwarder_nip: "",
+    forwarder_address: "",
+    forwarder_postal_code: "",
+    forwarder_city: "",
     direction: load.direction,
     container_number: load.container_number ?? "",
     container_size: load.container_size ?? "",
@@ -159,14 +164,15 @@ export function ImportOrderDialog({
     let order = reconciled.order;
 
     // Kontrahent: spedytor z dokumentu → skonfigurowany kontrahent (po nazwie/aliasach). Jego
-    // domyślny termin płatności wchodzi TYLKO, gdy dokument go nie podał.
+    // domyślny termin płatności wchodzi TYLKO, gdy dokument go nie podał. Brak dopasowania to nie
+    // problem dyspozytora: kontrahent założy się sam przy zapisie (patrz handleSave).
     if (!contractorId && order.forwarder) {
       const contractor = findContractorByName(contractors, order.forwarder);
       if (contractor) {
         setContractorId(contractor.id);
         order = applyContractorDefaults(order, contractor, newWarnings);
-      } else if (contractors.length > 0) {
-        newWarnings.push(`Spedytor "${order.forwarder}" nie pasuje do żadnego kontrahenta — wybierz z listy albo dodaj go w "Kontrahenci" (z nazwą z dokumentu jako aliasem).`);
+      } else {
+        newWarnings.push(`Spedytor "${order.forwarder}" nie ma jeszcze kontrahenta — zostanie założony automatycznie przy zapisie (z NIP-em, adresem i terminem płatności z dokumentu). E-mail do faktur uzupełnij potem w "Kontrahenci".`);
       }
     }
 
@@ -210,12 +216,46 @@ export function ImportOrderDialog({
     }));
   }
 
+  // Pierwsze zlecenie od nowego spedytora zakłada kontrahenta z danych z dokumentu (nazwa, NIP,
+  // adres, termin płatności) i nazwą z dokumentu jako aliasem — kolejne zlecenia dopasują się same.
+  // Sprawdzamy jeszcze raz po nazwie (lista mogła się zmienić od parsowania), żeby nie dublować.
+  async function ensureContractor(): Promise<{ id: string; created: boolean } | { error: string }> {
+    if (contractorId) return { id: contractorId, created: false };
+    if (!form.forwarder) return { id: "", created: false };
+    const existing = findContractorByName(contractors, form.forwarder);
+    if (existing) return { id: existing.id, created: false };
+    const { data, error } = await supabase
+      .from("contractors")
+      .insert({
+        name: form.forwarder,
+        aliases: [form.forwarder],
+        nip: form.forwarder_nip || null,
+        address: form.forwarder_address || null,
+        postal_code: form.forwarder_postal_code || null,
+        city: form.forwarder_city || null,
+        payment_terms_days: form.payment_terms_days,
+        payment_terms_note: form.payment_terms_note || null,
+      })
+      .select("id")
+      .single();
+    if (error) return { error: error.message };
+    return { id: data.id as string, created: true };
+  }
+
   async function handleSave() {
     if (form.direction !== "I" && form.direction !== "E") return;
     setStage("saving");
     setSaveError(null);
 
-    const row = formToRow(form, carrierName, contractorId);
+    const ensured = await ensureContractor();
+    if ("error" in ensured) {
+      setSaveError(`nie udało się założyć kontrahenta: ${ensured.error}`);
+      setStage("review");
+      return;
+    }
+    if (ensured.id && ensured.id !== contractorId) setContractorId(ensured.id);
+
+    const row = formToRow(form, carrierName, ensured.id);
     const { error } = existingLoad
       ? await supabase.from("loads").update(row).eq("id", existingLoad.id)
       : await supabase.from("loads").insert(row);

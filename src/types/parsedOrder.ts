@@ -9,6 +9,12 @@
 export interface ParsedOrder {
   order_number: string;
   forwarder: string;
+  // Dane spedytora z nagłówka zlecenia — do automatycznego założenia kontrahenta przy pierwszym
+  // imporcie (właściciel: kontrahent ma się pojawić sam po wgraniu zlecenia, nie ręcznie).
+  forwarder_nip: string;
+  forwarder_address: string;
+  forwarder_postal_code: string;
+  forwarder_city: string;
   direction: "" | "I" | "E";
   container_number: string;
   container_size: string;
@@ -41,6 +47,10 @@ export interface ParsedOrder {
 export const EMPTY_PARSED_ORDER: ParsedOrder = {
   order_number: "",
   forwarder: "",
+  forwarder_nip: "",
+  forwarder_address: "",
+  forwarder_postal_code: "",
+  forwarder_city: "",
   direction: "",
   container_number: "",
   container_size: "",

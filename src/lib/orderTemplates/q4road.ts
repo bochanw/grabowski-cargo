@@ -72,9 +72,23 @@ export function parseQ4RoadOrder(text: string): ParsedOrder {
   parseHeader(text, result);
 
   // Blok Zleceniodawcy stoi między numerem zlecenia a etykietą "Zleceniodawca" (etykieta w tym
-  // layoucie idzie PO treści bloku). Sama nazwa firmy to wszystko przed adresem ("ul.").
+  // layoucie idzie PO treści bloku): "Q4Road Sp. z o.o ul. Sportowa 8, 81-300 Gdynia www.q4road.com
+  // NIP: 958 170 42 61". Nazwa = wszystko przed adresem ("ul."); reszta to dane do kontrahenta.
   const forwarderBlock = text.match(/\|\s*[A-Za-z0-9/._-]+\s+(.+?)\s+Zleceniodawca\b/i);
-  if (forwarderBlock) result.forwarder = forwarderBlock[1].split(/\s+ul\.\s/i)[0].trim();
+  if (forwarderBlock) {
+    const block = forwarderBlock[1];
+    const [name, rest = ""] = block.split(/\s+(?=ul\.\s)/i);
+    result.forwarder = name.trim();
+    const nip = block.match(/NIP:\s*([\d\s-]+)/i);
+    if (nip) result.forwarder_nip = nip[1].replace(/\D/g, "");
+    const street = rest.match(/^(ul\.\s[^,]+)/i);
+    if (street) result.forwarder_address = street[1].trim();
+    const postalCity = rest.match(/(\d{2}-\d{3})\s+(.+?)(?=\s+www\.|\s+NIP:|$)/i);
+    if (postalCity) {
+      result.forwarder_postal_code = postalCity[1];
+      result.forwarder_city = postalCity[2].trim();
+    }
+  }
 
   parseUnloadingRow(text, result);
 
