@@ -1,0 +1,22 @@
+-- ============================================================
+-- 0006 — odebranie prawa wywołania funkcji triggerowej dziennika zmian jako RPC
+-- ============================================================
+-- Zgłoszone przez linter Supabase (`get_advisors`, lint 0028/0029): każda funkcja w schemacie
+-- `public` jest automatycznie wystawiona przez PostgREST jako `/rest/v1/rpc/<nazwa>`, więc
+-- `log_loads_activity()` — funkcja triggerowa z migracji 0003, w dodatku SECURITY DEFINER — dawała
+-- się wywołać wprost przez `anon` i `authenticated`.
+--
+-- Realnego zagrożenia to nie tworzyło (Postgres odmawia wywołania funkcji triggerowej poza
+-- triggerem: "trigger functions can only be called as triggers"), ale nie ma powodu, żeby ta
+-- funkcja w ogóle była widoczna w API — zwłaszcza że jest SECURITY DEFINER, czyli wykonuje się z
+-- prawami właściciela.
+--
+-- ODEBRANIE EXECUTE NIE PSUJE TRIGGERA: Postgres sprawdza uprawnienia do funkcji triggerowej przy
+-- CREATE TRIGGER, a nie przy każdym INSERT/UPDATE/DELETE. Zweryfikowane na tym projekcie po
+-- zaaplikowaniu: `set local role authenticated` + insert/update/delete na `loads` dalej dopisuje
+-- wpisy do `activity_log` (test w transakcji wycofanej rollbackiem, patrz CLAUDE.md).
+--
+-- `public.rls_auto_enable()` z tego samego zgłoszenia NIE jest ruszana — należy do Panelu floty
+-- (repo bochanw/DAB), nie do tej appki; zmiana po tamtej stronie.
+
+revoke execute on function public.log_loads_activity() from anon, authenticated, public;
