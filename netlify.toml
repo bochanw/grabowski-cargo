@@ -1,0 +1,18 @@
+# Konfiguracja buildu na Netlify — dodana przy podpinaniu auto-deployu z GitHuba (2026-09-02).
+# Wcześniej appka szła na Netlify ręcznym zipem z katalogu `out/`; ten plik sprawia, że po
+# podłączeniu repozytorium Netlify sam ustawia właściwe polecenie i katalog, bez klikania w UI.
+#
+# `publish = "out"`, bo next.config.ts ma `output: "export"` — appka jest w pełni client-side
+# (Supabase JS SDK + klucz publishable), więc nie ma tu serwera Next.js do uruchamiania.
+#
+# WAŻNE: zmienne NEXT_PUBLIC_SUPABASE_URL i NEXT_PUBLIC_SUPABASE_ANON_KEY muszą być ustawione w
+# Netlify (Project configuration -> Environment variables) — `.env.local` NIE jest w repo, a bez
+# tych zmiennych build wychodzi bez adresu Supabase i appka nie łączy się z bazą. Są tam ustawione
+# (oba to wartości publiczne, te same co w .env.local.example — nigdy nie wpisuj tu service_role).
+
+[build]
+  command = "npm run build"
+  publish = "out"
+
+[build.environment]
+  NODE_VERSION = "22"
