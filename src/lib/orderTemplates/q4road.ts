@@ -1,5 +1,6 @@
 import { EMPTY_PARSED_ORDER, type ParsedOrder } from "../../types/parsedOrder";
 import { matchPickupLocation } from "./pickupLocations";
+import { computeGrossWeightKg, parseWeightKg } from "../containers/tare";
 
 // Szablony Q4Road — pierwszy znany klient appki. Jedno zlecenie = DWA dokumenty PDF:
 //  1. "ZLECENIE SPEDYCYJNE" — spedytor, stawka, warunek płatności, miejsce rozładunku, odprawa.
@@ -142,9 +143,11 @@ export function parseQ4RoadWaybill(text: string): ParsedOrder {
   parseUnloadingRow(text, result);
   result.customs_location_or_status = between(text, /Miejsce odprawy celnej:/i, /Nazwa towaru:/i);
   result.goods_name = between(text, /Nazwa towaru:/i, /Waga towaru brutto:/i);
-  // Puste pole drukuje się jako sama jednostka ("kg") — bez cyfry to brak wagi, nie waga "kg".
-  const weight = between(text, /Waga towaru brutto:/i, /Miejsce złożenia pustego:/i);
-  result.gross_weight = /\d/.test(weight) ? weight : "";
+  // "Waga towaru brutto" z listu = waga TOWARU (net_weight_kg zlecenia); brutto zlecenia liczymy jako
+  // towar + tara kontenera. Puste pole drukuje się jako sama jednostka ("kg") — bez cyfry to brak wagi.
+  result.net_weight_kg = parseWeightKg(between(text, /Waga towaru brutto:/i, /Miejsce złożenia pustego:/i));
+  const gross = computeGrossWeightKg(result.net_weight_kg, result.container_size);
+  result.gross_weight = gross === null ? "" : String(gross);
   result.submitted_where = between(text, /Miejsce złożenia pustego:/i, /\sRozładunek\b/i);
   return result;
 }

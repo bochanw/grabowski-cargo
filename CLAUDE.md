@@ -336,6 +336,16 @@ nagłówka zlecenia `forwarder_nip/_address/_postal_code/_city` (nowe pola `Pars
 ma śmiecić) sprawdza raz jeszcze po nazwie i, gdy brak, wstawia kontrahenta (nazwa z dokumentu
 jako `name` I alias, NIP, adres, termin płatności z dokumentu) i podpina `contractor_id`. E-mail do
 faktur trzeba dopisać ręcznie w "Kontrahenci" — dokument go nie ma.
+**Waga brutto = waga towaru + tara kontenera wg typu** (właściciel: "20DV 2200 kg, 40DV 3700 kg,
+40HC 3900 kg, 45 4800 kg"). `src/lib/containers/tare.ts`: `containerTareKg` (normalizacja typu do
+rodziny 20 / 40 / 40HC-HQ / 45; nieznany = null, nie zgadujemy), `computeGrossWeightKg`,
+`canOverwriteGrossWeight` (nadpisujemy tylko puste albo czysto liczbowe brutto — "według armatora"
+z arkusza zostaje), `parseWeightKg`. **Zmiana mapowania**: "Waga towaru brutto" z listu
+przewozowego = waga TOWARU → `net_weight_kg` (wcześniej szła do `gross_weight`); `gross_weight`
+jest teraz WYLICZANE (text, bo kolumna z arkusza bywa tekstem). Liczone: przy imporcie po scaleniu
+dokumentów (typ z jednego, waga z drugiego), przy edycji pól wagi netto/typu w formularzu i przy
+edycji inline tych kolumn w tabeli (`buildPatch` dokłada `gross_weight` do patcha). Test:
+`npx tsx scratch-tare.test.mts` (19 przypadków, plik tymczasowy).
 **Wysyłka faktury do Fakturowni NIE jest jeszcze zbudowana** — dane są; sama funkcja to kopia
 `bochanw/DAB/supabase/functions/fakturownia-create-invoice` z sekretami FAKTUROWNIA_SUBDOMAIN/
 FAKTUROWNIA_API_TOKEN (osobna decyzja właściciela: konto Fakturowni Grabowskiego, stawka VAT).

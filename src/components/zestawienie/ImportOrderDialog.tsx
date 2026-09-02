@@ -10,6 +10,7 @@ import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Flee
 import { useContractors } from "@/hooks/useContractors";
 import { findContractorByName, type Contractor } from "@/types/contractor";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
+import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import type { Direction, Load } from "@/types/load";
 
 type Stage = "pick" | "parsing" | "review" | "saving";
@@ -46,6 +47,7 @@ function loadToForm(load: Load): ParsedOrder {
     pickup_type: load.pickup_type ?? "",
     pin_booking: load.pin_booking ?? "",
     goods_name: load.goods_name ?? "",
+    net_weight_kg: load.net_weight_kg,
     gross_weight: load.gross_weight ?? "",
     submitted_where: load.submitted_where ?? "",
     driver_name: load.driver_name ?? "",
@@ -80,6 +82,7 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     pickup_type: form.pickup_type || null,
     pin_booking: form.pin_booking || null,
     goods_name: form.goods_name || null,
+    net_weight_kg: form.net_weight_kg,
     gross_weight: form.gross_weight || null,
     submitted_where: form.submitted_where || null,
     driver_name: form.driver_name || null,
@@ -157,6 +160,9 @@ export function ImportOrderDialog({
     if (!merged.load_date && merged.delivery_date) {
       merged = { ...merged, load_date: previousWorkingDay(merged.delivery_date) };
     }
+    // Brutto = towar + tara kontenera — po scaleniu dokumentów (typ kontenera może przyjść z jednego,
+    // waga towaru z drugiego).
+    merged = withRecomputedGross(merged, "net_weight_kg");
 
     // Kierowca/pojazdy: dopasowanie do Panelu floty, fallback z poprzedniego zlecenia.
     const reconciled = reconcileWithFleet(merged, fleet, recentLoads);
@@ -189,7 +195,7 @@ export function ImportOrderDialog({
   }
 
   function updateField<K extends keyof ParsedOrder>(key: K, value: ParsedOrder[K]) {
-    setForm((prev) => ({ ...prev, [key]: value }));
+    setForm((prev) => withRecomputedGross({ ...prev, [key]: value }, key));
   }
 
   function selectContractor(id: string) {
@@ -427,11 +433,20 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.customs_location_or_status} onChange={(e) => updateField("customs_location_or_status", e.target.value)} />
                 </Field>
 
-                <Field label="Nazwa towaru">
+                <Field label="Nazwa towaru" full>
                   <input className={inputClass} value={form.goods_name} onChange={(e) => updateField("goods_name", e.target.value)} />
                 </Field>
-                <Field label="Waga brutto">
-                  <input className={inputClass} value={form.gross_weight} onChange={(e) => updateField("gross_weight", e.target.value)} placeholder="np. 18450 kg / według armatora" />
+                <Field label="Waga netto — towar (kg)">
+                  <input
+                    type="number"
+                    step="any"
+                    className={inputClass}
+                    value={form.net_weight_kg ?? ""}
+                    onChange={(e) => updateField("net_weight_kg", e.target.value === "" ? null : Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Waga brutto (towar + tara kontenera)">
+                  <input className={inputClass} value={form.gross_weight} onChange={(e) => updateField("gross_weight", e.target.value)} placeholder="liczone z typu kontenera" />
                 </Field>
 
                 <Field label="Miejsce złożenia pustego" full>
@@ -505,6 +520,15 @@ export function ImportOrderDialog({
       </div>
     </div>
   );
+}
+
+// Zmiana wagi towaru albo typu kontenera przelicza brutto (towar + tara). Ręcznie wpisany tekst w
+// brutto (np. "według armatora") nie jest nadpisywany.
+function withRecomputedGross(order: ParsedOrder, changedKey: keyof ParsedOrder): ParsedOrder {
+  if (changedKey !== "net_weight_kg" && changedKey !== "container_size") return order;
+  const gross = computeGrossWeightKg(order.net_weight_kg, order.container_size);
+  if (gross === null || !canOverwriteGrossWeight(order.gross_weight)) return order;
+  return { ...order, gross_weight: String(gross) };
 }
 
 // Domyślny termin płatności kontrahenta wchodzi tylko w PUSTE pola — jeśli dokument (albo

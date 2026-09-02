@@ -6,6 +6,7 @@ import type { Load, Direction } from "@/types/load";
 import { useDeleteLoad, useUpdateLoad } from "@/hooks/useLoads";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
+import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { COLUMNS, BLOCK_LABELS, type ColumnBlock, type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
@@ -494,6 +495,14 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
       patch.payment_terms_days = contractor.payment_terms_days;
       patch.payment_terms_note = load.payment_terms_note ?? contractor.payment_terms_note;
     }
+  }
+  // Brutto = towar + tara kontenera — zmiana wagi netto albo typu kontenera przelicza brutto
+  // (ręczny tekst typu "według armatora" zostaje).
+  if (load && (column.key === "net_weight_kg" || column.key === "container_size")) {
+    const net = column.key === "net_weight_kg" ? (typeof value === "number" ? value : null) : load.net_weight_kg;
+    const size = column.key === "container_size" ? (typeof value === "string" ? value : null) : load.container_size;
+    const gross = computeGrossWeightKg(net, size);
+    if (gross !== null && canOverwriteGrossWeight(load.gross_weight)) patch.gross_weight = String(gross);
   }
   return patch;
 }

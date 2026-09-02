@@ -35,7 +35,8 @@ export interface ParsedOrder {
   pickup_type: string; // miejsce podjęcia kontenera — jedno z PICKUP_LOCATIONS (GCT/BCT/BHub)
   pin_booking: string; // numer wizyty / PIN albo booking
   goods_name: string;
-  gross_weight: string;
+  net_weight_kg: number | null; // waga towaru z dokumentu ("Waga towaru brutto" na liście przewozowym)
+  gross_weight: string; // wyliczane: net_weight_kg + tara kontenera (src/lib/containers/tare.ts); text, bo bywa "według armatora"
   submitted_where: string; // miejsce złożenia pustego
   driver_name: string;
   driver_id_number: string;
@@ -70,6 +71,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   pickup_type: "",
   pin_booking: "",
   goods_name: "",
+  net_weight_kg: null,
   gross_weight: "",
   submitted_where: "",
   driver_name: "",
