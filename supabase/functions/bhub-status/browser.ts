@@ -230,11 +230,6 @@ const POMOCNIKI = `
   }
 
   /**
-   * Właściciel opisał drogę wprost: "wchodzimy na stronę, dajemy pojedyncze zapytanie, wpisujemy
-   * kontenery po przecinku". Ten przełącznik trybu trzeba więc kliknąć PRZED wpisaniem — bez tego
-   * formularz na numery może być w ogóle nieaktywny.
-   */
-  /**
    * Tryb zapytania NIE JEST przez nas przestawiany — tylko opisywany.
    *
    * Powód z produkcji: radio 'seacontainer' ma dwie opcje i strona sama zaznacza właściwą.
