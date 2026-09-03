@@ -7,8 +7,9 @@ import { assertEquals } from "jsr:@std/assert@1";
 import { assessRelevance } from "./relevance.ts";
 
 const LOADS = new Map([
-  ["ZD179762026", { id: "load-1", order_number: "ZD/1797/6/2026" }],
-  ["TIIU218", { id: "load-2", order_number: "TIIU218" }],
+  ["ZD179762026", { id: "load-1", order_number: "ZD/1797/6/2026", container_number: "NYKU9911861" }],
+  ["TIIU218", { id: "load-2", order_number: "TIIU218", container_number: null }],
+  ["KPB87", { id: "load-3", order_number: "KPB/87", container_number: null }],
 ]);
 
 function mail(overrides: Partial<Parameters<typeof assessRelevance>[0]> = {}) {
@@ -28,6 +29,21 @@ Deno.test("numer zapisany inaczej niż w bazie nadal trafia", () => {
   for (const subject of ["ZD 1797-6 2026", "zd/1797/6/2026", "dot. zd1797 6 2026 pilne"]) {
     assertEquals(assessRelevance(mail({ subject }), LOADS, new Map()).matchedLoadId, "load-1", subject);
   }
+});
+
+Deno.test("człony numeru w innej kolejności — zgłoszenie właściciela", () => {
+  // "KPB / 87" w bazie, "87 / KPB" w mailu: u klienta to jedno zlecenie.
+  const result = assessRelevance(mail({ subject: "Zlecenie 87/KPB — dokumenty" }), LOADS, new Map());
+  assertEquals(result.matchedLoadId, "load-3");
+});
+
+Deno.test("numer kontenera bez numeru zlecenia wiąże maila ze zleceniem", () => {
+  const result = assessRelevance(
+    mail({ bodyText: "Kontener NYKU 9911861 stoi na terminalu, proszę o kontakt." }),
+    LOADS,
+    new Map(),
+  );
+  assertEquals(result.matchedLoadId, "load-1");
 });
 
 Deno.test("numer w TREŚCI, nie w temacie, też wystarcza", () => {

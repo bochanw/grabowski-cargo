@@ -799,6 +799,43 @@ potwierdzenie dostawy, program będzie dodawać także pole inne"):**
   **NIE zweryfikowane na żywym koncie**: samo wgranie pliku do Storage i podgląd podpisanym URL-em
   (środowisko sesji nie ma konta) — pierwszy import u właściciela to pokaże.
 
+**Numer zlecenia z członami w INNEJ KOLEJNOŚCI + kontener jako drugi sygnał** (zgłoszenie
+właściciela: „na jednym zleceniu było nr KPB / 87, na drugim dokumencie 87 / KPB i program nie
+połączył, a to to samo w sumie. Nr kontenera się pokrywa"):
+- Dopasowanie po samej formie znormalizowanej dawało „KPB87" ≠ „87KPB". `src/lib/loads/
+  orderNumber.ts` ma teraz `orderNumberLooseKey` — numer rozbijany na człony (po separatorach ORAZ
+  na granicy litera↔cyfra, żeby „zd1797" znaczyło to samo co „ZD/1797"), człony sortowane, kolejność
+  bez znaczenia.
+- **PUŁAPKA złapana testem, nie przy pisaniu: bez dodatkowego warunku „TIIU218" (numer pisany jednym
+  ciągiem) rozpadał się na TIIU + 218 i trafiał w wymyślone „218/TIIU".** Stąd reguła: przestawianie
+  członów działa TYLKO, gdy dokument sam je rozdzielił separatorem — czyli dokładnie w przypadku
+  zgłoszonym przez właściciela.
+- `matchExistingLoad(loads, {order_number, container_number})` zastąpiło `findLoadByOrderNumber`:
+  jeden punkt decyzji dla obu straży w `ImportOrderDialog` (po odczycie dokumentów i przy zapisie).
+  Zwraca `confidence` (`exact` / `reordered` / `container`) ORAZ `auto` — czy appka scala sama:
+  - `exact` → scala (jak dotąd); sprzeczny kontener nie blokuje, ale wchodzi do komunikatu,
+  - `reordered` → scala, chyba że kontenery są SPRZECZNE (oba znane i różne),
+  - `container` (numery różne, kontener ten sam) → **nigdy sam** — ten sam kontener wraca po
+    tygodniach na inne zlecenie. Niebieski baner „Możliwe, że to zlecenie…" z guzikami „Uzupełnij
+    zlecenie X" / „To inne zlecenie". Odrzucone skojarzenia trafiają do `dismissedMatches`, bo
+    inaczej ta sama podpowiedź wracałaby przy każdym kliknięciu „Zapisz" i nie dałoby się utworzyć
+    rekordu.
+- Prefiltr maili (`mail-poll/relevance.ts`) dostał tę samą regułę przez `orderNumberVariants`
+  (człony w każdej kolejności, sklejone — numery o >3 członach zostają przy jednej formie, bo 24
+  warianty to już proszenie się o trafienie przypadkowe) ORAZ dopasowanie po numerze kontenera w
+  treści maila (`index.ts` pobiera teraz `container_number`). Mail dalej trafia do Skrzynki jako
+  propozycja, więc słabszy sygnał niczego nie psuje. `scripts/build-edge-shared.mjs` przegenerowany.
+- **Zweryfikowane**: logika — 18 sprawdzeń (`scratch-match.test.mts`, plik tymczasowy: klucze,
+  próg długości, pierwszeństwo `exact` nad kontenerem, „TIIU218"). Deno — 10 testów
+  `relevance.test.ts` (doszły: przestawiony numer, kontener bez numeru zlecenia) + `deno check`.
+  Przeglądarka (Playwright, `next dev`, tymczasowa strona `/test-dopasowanie` z mockiem zleceń,
+  bo środowisko sesji nie ma konta): „87 / KPB" przy zapisie rozpoznaje zapisane „KPB / 87" i
+  podciąga jego spedycję; inny numer + ten sam kontener daje propozycję, której appka NIE scala
+  sama; „To inne zlecenie" nie blokuje kolejnego zapisu; nowe zlecenie bez wspólnych sygnałów
+  przechodzi bez podpowiedzi.
+- **UWAGA**: `mail-poll` na produkcji jest dalej w wersji sprzed tej zmiany (i sprzed BAF-u) — bez
+  sekretów Exchange'a i tak nie działa; przed uruchomieniem skrzynki wdrożyć ją ponownie.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

@@ -153,12 +153,17 @@ Deno.serve(async (req: Request) => {
     const fetched = await source.fetchSince(String(state?.cursor ?? ""), MAX_MESSAGES_PER_RUN);
 
     // Zbiory do dopasowania maila do istniejącego zlecenia — pobrane RAZ na przebieg, nie per mail.
-    const { data: loadRows } = await admin.from("loads").select("id, order_number").not("order_number", "is", null);
-    const loadsByNormalizedNumber = new Map<string, { id: string; order_number: string }>();
+    // Kontener obok numeru: mail bywa pisany "kontener NYKU9911861 stoi na terminalu", bez numeru
+    // zlecenia — prefiltr używa go jako słabszego sygnału (patrz assessRelevance).
+    const { data: loadRows } = await admin
+      .from("loads")
+      .select("id, order_number, container_number")
+      .not("order_number", "is", null);
+    const loadsByNormalizedNumber = new Map<string, { id: string; order_number: string; container_number: string | null }>();
     for (const row of loadRows ?? []) {
       const normalized = normalizeOrderNumber(String(row.order_number ?? ""));
       if (normalized.length >= MIN_ORDER_NUMBER_LENGTH) {
-        loadsByNormalizedNumber.set(normalized, row as { id: string; order_number: string });
+        loadsByNormalizedNumber.set(normalized, row as { id: string; order_number: string; container_number: string | null });
       }
     }
     // Wątek → zlecenie. Klucz to conversationId (Graph) albo Message-ID poprzedniej wiadomości

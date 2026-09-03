@@ -14,7 +14,7 @@ import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { describeBafSplit, splitBaf } from "@/lib/invoice/baf";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
-import { findLoadByOrderNumber } from "@/lib/loads/orderNumber";
+import { matchExistingLoad, type LoadMatch } from "@/lib/loads/orderNumber";
 import { useUploadLoadDocument } from "@/hooks/useLoadDocuments";
 import { DOCUMENT_KINDS, DOCUMENT_KIND_LABELS, guessDocumentKind, type DocumentKind } from "@/types/loadDocument";
 import type { Direction, Load } from "@/types/load";
@@ -172,6 +172,12 @@ export function ImportOrderDialog({
   // Zlecenie rozpoznane po numerze wśród już istniejących — wtedy zapis UZUPEŁNIA je zamiast
   // tworzyć drugi rekord. `forceNew` to świadome "nie, to jednak inne zlecenie" dyspozytora.
   const [matchedLoad, setMatchedLoad] = useState<Load | null>(null);
+  // Skojarzenie ZA SŁABE, żeby scalać samemu (ten sam kontener przy innym numerze, albo te same
+  // człony numeru przy sprzecznym kontenerze) — pokazujemy je i czekamy na decyzję dyspozytora.
+  const [suggested, setSuggested] = useState<LoadMatch<Load> | null>(null);
+  // Zlecenia, przy których dyspozytor powiedział już "to inne zlecenie" — inaczej ta sama
+  // podpowiedź wracałaby przy każdym kliknięciu "Zapisz" i nie dałoby się utworzyć rekordu.
+  const [dismissedMatches, setDismissedMatches] = useState<string[]>([]);
   const [forceNew, setForceNew] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const uploadDocument = useUploadLoadDocument();
@@ -270,16 +276,26 @@ export function ImportOrderDialog({
     // do tego samego zlecenia, to po prostu dociągną się brakujące dane"). Numer jest u klienta
     // unikalny, więc dokument z tym samym numerem NIE tworzy drugiego rekordu: wchodzimy w tryb
     // uzupełniania istniejącego, gdzie dane już zapisane WYGRYWAJĄ, a dokument wypełnia tylko puste.
-    if (!existingLoad && !forceNew) {
-      const found = matchedLoad ?? findLoadByOrderNumber(recentLoads, merged.order_number);
-      if (found && found.id !== matchedLoad?.id) {
+    //
+    // Numer bywa w dokumentach poskładany inaczej ("KPB / 87" i "87 / KPB" to u klienta jedno
+    // zlecenie), a gdy i to nie trafi, zostaje numer kontenera — ten jednak tylko PODPOWIADA, bo
+    // ten sam kontener wraca po tygodniach na inne zlecenie (patrz `auto` w matchExistingLoad).
+    if (!existingLoad && !forceNew && !matchedLoad) {
+      const match = matchExistingLoad(recentLoads, {
+        order_number: merged.order_number,
+        container_number: merged.container_number,
+      });
+      if (match?.auto) {
+        const found = match.load;
         setMatchedLoad(found);
         merged = mergeParsedOrders(loadToForm(found), merged);
         if (found.contractor_id) setContractorId(found.contractor_id);
         if (found.carrier_name) setCarrierName(found.carrier_name);
         newWarnings.push(
-          `Zlecenie ${found.order_number ?? ""} już jest w Zestawieniu — dokument uzupełni w nim brakujące pola zamiast tworzyć drugi rekord. Jeśli to jednak inne zlecenie, kliknij „Utwórz mimo to nowe zlecenie”.`
+          `Zlecenie ${found.order_number ?? ""} już jest w Zestawieniu (${match.reason}) — dokument uzupełni w nim brakujące pola zamiast tworzyć drugi rekord. Jeśli to jednak inne zlecenie, kliknij „Utwórz mimo to nowe zlecenie”.`
         );
+      } else if (match && !dismissedMatches.includes(match.load.id)) {
+        setSuggested(match);
       }
     }
 
@@ -320,6 +336,20 @@ export function ImportOrderDialog({
   function startManual() {
     setNotice("Ręczne wpisywanie zlecenia — wypełnij pola i zapisz. Dokument PDF możesz dopiąć później.");
     setStage("review");
+  }
+
+  // "Tak, to to samo zlecenie" — dyspozytor potwierdza słabsze skojarzenie (kontener albo numer o
+  // sprzecznych sygnałach). Od tej chwili zapis zachowuje się jak przy rozpoznaniu po numerze:
+  // uzupełnia istniejący rekord, a wartości już w nim zapisane wygrywają z dokumentem.
+  function adoptSuggestion(match: LoadMatch<Load>) {
+    const found = match.load;
+    setMatchedLoad(found);
+    setSuggested(null);
+    setForceNew(false);
+    setSaveError(null);
+    setForm((prev) => mergeParsedOrders(loadToForm(found), prev));
+    if (found.contractor_id) setContractorId(found.contractor_id);
+    if (found.carrier_name) setCarrierName(found.carrier_name);
   }
 
   function updateField<K extends keyof ParsedOrder>(key: K, value: ParsedOrder[K]) {
@@ -391,12 +421,26 @@ export function ImportOrderDialog({
     // rekordu — pokazujemy, do czego to pasuje, i zostawiamy decyzję dyspozytorowi.
     const target = existingLoad ?? matchedLoad;
     if (!target && !forceNew) {
-      const duplicate = findLoadByOrderNumber(recentLoads, form.order_number);
-      if (duplicate) {
-        setMatchedLoad(duplicate);
-        setForm((prev) => mergeParsedOrders(loadToForm(duplicate), prev));
+      const match = matchExistingLoad(recentLoads, {
+        order_number: form.order_number,
+        container_number: form.container_number,
+      });
+      if (match?.auto) {
+        setMatchedLoad(match.load);
+        setForm((prev) => mergeParsedOrders(loadToForm(match.load), prev));
         setSaveError(
-          `Zlecenie ${duplicate.order_number ?? ""} już istnieje. Zapis uzupełni je o brakujące pola — kliknij „Zapisz” jeszcze raz, albo „Utwórz mimo to nowe zlecenie”, jeśli to inne zlecenie.`
+          `Zlecenie ${match.load.order_number ?? ""} już istnieje (${match.reason}). Zapis uzupełni je o brakujące pola — kliknij „Zapisz” jeszcze raz, albo „Utwórz mimo to nowe zlecenie”, jeśli to inne zlecenie.`
+        );
+        setStage("review");
+        return;
+      }
+      // Słabsze skojarzenie nie blokuje zapisu — ten sam kontener na nowym zleceniu to normalna
+      // sytuacja. Zatrzymujemy się TYLKO raz, żeby dyspozytor je zobaczył, zanim powstanie rekord.
+      if (match && !dismissedMatches.includes(match.load.id)) {
+        setSuggested(match);
+        setDismissedMatches((prev) => [...prev, match.load.id]);
+        setSaveError(
+          `Zanim zapiszę: ${match.reason}. Jeśli to to samo zlecenie, kliknij „Uzupełnij zlecenie ${match.load.order_number ?? ""}” wyżej — jeśli nie, kliknij „Zapisz” jeszcze raz.`
         );
         setStage("review");
         return;
@@ -602,6 +646,34 @@ export function ImportOrderDialog({
                   >
                     Utwórz mimo to nowe zlecenie
                   </button>
+                </div>
+              )}
+              {suggested && !matchedLoad && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200">
+                  <span>
+                    Możliwe, że to zlecenie <strong>{suggested.load.order_number ?? "(bez numeru)"}</strong> —{" "}
+                    {suggested.reason}. Sam tego nie scalam: potwierdź, jeśli to ten sam ładunek.
+                  </span>
+                  <span className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => adoptSuggestion(suggested)}
+                      className="rounded border border-sky-400 px-2 py-1 font-medium hover:bg-sky-100 dark:border-sky-700 dark:hover:bg-sky-900"
+                    >
+                      Uzupełnij zlecenie {suggested.load.order_number ?? ""}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDismissedMatches((prev) => [...prev, suggested.load.id]);
+                        setSuggested(null);
+                        setSaveError(null);
+                      }}
+                      className="rounded border border-sky-400 px-2 py-1 font-medium hover:bg-sky-100 dark:border-sky-700 dark:hover:bg-sky-900"
+                    >
+                      To inne zlecenie
+                    </button>
+                  </span>
                 </div>
               )}
 
