@@ -159,59 +159,110 @@ function daneLogowania(): { user: string; pass: string } {
 }
 
 /**
- * Wspólny kawałek skryptów działających W PRZEGLĄDARCE: znalezienie pola na numery kontenerów.
+ * Wspólny kawałek skryptów działających W PRZEGLĄDARCE.
  *
- * Szukamy po kolei coraz luźniej — najpierw po nazwie/identyfikatorze/podpowiedzi, potem pola
- * wielolinijkowego, na końcu pierwszego widocznego pola tekstowego. Świadomie NIE wpisujemy tu
- * sztywnego selektora: układu tej strony nie widziałem, a sztywny selektor po cichu przestanie
- * działać przy pierwszej przebudowie serwisu.
+ * KOTWICA to formularz wysyłający na `/multi` — ten adres znamy z podglądu prawdziwego ruchu
+ * w przeglądarce właściciela, więc jest twardym faktem, a nie zgadywaniem. Dopiero gdy takiego
+ * formularza nie ma, szukamy luźniej. Pierwsza wersja szukała OD RAZU luźno i skończyło się tak,
+ * że kliknęła prawdopodobnie w pozycję menu "Sprawdź kontener online" — strona ani drgnęła.
+ *
+ * Guzik bierzemy WYŁĄCZNIE z tego samego formularza co pole (albo `type=submit`), nigdy z całej
+ * strony: w nawigacji Baltic Hubu stoi napis "Sprawdź kontener online", który łapał się na to
+ * samo dopasowanie co guzik formularza.
  */
-const ZNAJDZ_POLE = `
+// UWAGA na ukośniki: to szablon tekstowy, więc `\s` znaczy w nim samo "s". Każdy wzorzec musi
+// mieć PODWÓJNY ukośnik (`\\s`), inaczej `\\s*` wychodzi jako `s*`, a `replace(/\\s+/g,' ')`
+// zaczyna wycinać ze strony litery "s". Złapane testem, nie przy pisaniu.
+const POMOCNIKI = `
+  const widocznePola = () => [...document.querySelectorAll('input, textarea')]
+    .filter((el) => el.type !== 'hidden' && el.offsetParent !== null);
+  const opisPola = (el) => !el ? '(brak)' :
+    (el.tagName + '[' + (el.type || '') + '] name=' + (el.name || '-') + ' id=' + (el.id || '-') +
+     ' podpowiedz=' + (el.placeholder || '-') + ' formularz=' + ((el.form && el.form.getAttribute('action')) || '-'));
+  const opisGuzika = (b) => !b ? '(brak)' :
+    ((b.tagName || '') + '[' + (b.type || '') + '] „' + ((b.textContent || b.value || '').replace(/\\s+/g, ' ').trim().slice(0, 40) + '”'));
+
+  /** Formularz wysyłający na /multi — kotwica z prawdziwego ruchu. */
+  function formularzWynikow() {
+    return [...document.querySelectorAll('form')].find((f) => /multi/i.test(f.getAttribute('action') || '')) || null;
+  }
+
   function znajdzPole() {
-    const widoczne = [...document.querySelectorAll('input, textarea')]
-      .filter((el) => el.type !== 'hidden' && el.offsetParent !== null);
+    const form = formularzWynikow();
+    if (form) {
+      const wForm = [...form.querySelectorAll('input, textarea')]
+        .filter((el) => el.type !== 'hidden' && el.offsetParent !== null);
+      if (wForm.length) return wForm[0];
+    }
+    const widoczne = widocznePola();
     const opis = (el) => ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || ''));
     return widoczne.find((el) => /kontener|container|numer|\\bid\\b/i.test(opis(el)))
         || widoczne.find((el) => el.tagName === 'TEXTAREA')
         || widoczne.find((el) => (el.type || 'text') === 'text')
         || null;
   }
+
+  /** Guzik wysyłający — tylko z formularza pola, żeby nie trafić w nawigację. */
+  function znajdzGuzik(pole) {
+    const zakres = (pole && pole.form) || formularzWynikow();
+    if (!zakres) return null;
+    const guziki = [...zakres.querySelectorAll('button, input[type=submit]')]
+      .filter((b) => b.offsetParent !== null);
+    return guziki.find((b) => (b.type || '') === 'submit')
+        || guziki.find((b) => /sprawd|szukaj|wyszuk|poka/i.test((b.textContent || b.value || '')))
+        || guziki[0] || null;
+  }
+
+  /**
+   * Właściciel opisał drogę wprost: "wchodzimy na stronę, dajemy pojedyncze zapytanie, wpisujemy
+   * kontenery po przecinku". Ten przełącznik trybu trzeba więc kliknąć PRZED wpisaniem — bez tego
+   * formularz na numery może być w ogóle nieaktywny.
+   */
+  function wybierzTrybPojedynczy() {
+    const kandydaci = [...document.querySelectorAll('button, a, label, [role=tab], [role=button], li, span')];
+    const cel = kandydaci.find((el) => /pojedyncze\\s*zapytanie/i.test((el.textContent || '').replace(/\\s+/g, ' ')));
+    if (!cel) return '(nie znalazłem przełącznika „pojedyncze zapytanie”)';
+    cel.click();
+    return 'kliknięto „' + (cel.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40) + '”';
+  }
+
   function opiszStrone() {
     return {
       tytul: document.title || '',
       adres: location.href,
-      pola: [...document.querySelectorAll('input, textarea')].slice(0, 20)
-        .map((el) => el.tagName + '[' + (el.type || '') + '] name=' + (el.name || '-') +
-                     ' id=' + (el.id || '-') + ' podpowiedz=' + (el.placeholder || '-')).join(' | '),
-      guziki: [...document.querySelectorAll('button, input[type=submit]')].slice(0, 15)
+      formularze: [...document.querySelectorAll('form')].slice(0, 10)
+        .map((f) => (f.getAttribute('method') || 'GET') + ' ' + (f.getAttribute('action') || '-')).join(' | '),
+      pola: widocznePola().slice(0, 20).map(opisPola).join(' | '),
+      guziki: [...document.querySelectorAll('button, input[type=submit]')].slice(0, 20)
         .map((b) => (b.textContent || b.value || '').replace(/\\s+/g, ' ').trim()).filter(Boolean).join(' | '),
-      tekst: (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400),
+      tekst: (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300),
     };
   }
 `;
 
 /** Czy strona jest już gotowa do wypełnienia (przeszła przejściówkę Cloudflare i ma pole). */
 export function skryptStanuStrony(): string {
-  return `(() => {${ZNAJDZ_POLE}
+  return `(() => {${POMOCNIKI}
     const pole = znajdzPole();
     return JSON.stringify({ gotowa: Boolean(pole), ...opiszStrone() });
   })()`;
 }
 
 /**
- * Wypełnia pole numerami i URUCHAMIA WYSZUKIWANIE tak, jak zrobiłby to człowiek.
- *
- * DLACZEGO tak, a nie własnym zapytaniem: zapytanie składane ręcznie wracało z produkcji z kodem
- * 200 i ZEROWĄ treścią, mimo że przeglądarka właściciela dostawała pełną odpowiedź. Zamiast
- * zgadywać, czego w nim brakuje, oddajemy tę robotę stronie — ona wie, co wysłać.
+ * Wypełnia pole numerami i URUCHAMIA WYSZUKIWANIE tak, jak zrobiłby to człowiek: najpierw wybiera
+ * tryb "pojedyncze zapytanie", potem wpisuje numery, potem klika guzik FORMULARZA.
  *
  * Wartość ustawiamy przez ustawiacz z prototypu, bo strony pisane w Reakcie/Vue nie zauważają
  * zwykłego przypisania do `value` i przy wysyłce widzą pole puste.
+ *
+ * Do wyniku wpisujemy, CO dokładnie zostało kliknięte i wypełnione. Bez tego "kliknięto guzik,
+ * a strona nie drgnęła" nie mówi nic o tym, w co się kliknęło — kosztowało to jedną rundę.
  */
 export function skryptWyslania(containers: string[]): string {
-  return `(() => {${ZNAJDZ_POLE}
+  return `(() => {${POMOCNIKI}
+    const tryb = wybierzTrybPojedynczy();
     const pole = znajdzPole();
-    if (!pole) return JSON.stringify({ wyslane: false, powod: 'nie znalazłem pola na numery', ...opiszStrone() });
+    if (!pole) return JSON.stringify({ wyslane: false, powod: 'nie znalazłem pola na numery', tryb, ...opiszStrone() });
 
     const wartosc = ${JSON.stringify(containers.join(", "))};
     const ustawiacz = Object.getOwnPropertyDescriptor(pole.constructor.prototype, 'value')?.set;
@@ -219,26 +270,23 @@ export function skryptWyslania(containers: string[]): string {
     pole.dispatchEvent(new Event('input', { bubbles: true }));
     pole.dispatchEvent(new Event('change', { bubbles: true }));
 
-    const form = pole.form;
-    const guziki = [...(form || document).querySelectorAll('button, input[type=submit]')];
-    const guzik = guziki.find((b) => /sprawd|szukaj|wyszuk|poka|submit/i.test(
-      (b.textContent || '') + ' ' + (b.value || '') + ' ' + (b.type || '')));
+    const guzik = znajdzGuzik(pole);
+    const uzyte = { tryb, pole: opisPola(pole), guzik: opisGuzika(guzik), wpisano: pole.value };
 
-    if (guzik) { guzik.click(); return JSON.stringify({ wyslane: true, sposob: 'klik w guzik' }); }
-    if (form && form.requestSubmit) { form.requestSubmit(); return JSON.stringify({ wyslane: true, sposob: 'requestSubmit' }); }
-    if (form) { form.submit(); return JSON.stringify({ wyslane: true, sposob: 'form.submit' }); }
+    if (guzik) { guzik.click(); return JSON.stringify({ wyslane: true, sposob: 'klik w guzik formularza', ...uzyte }); }
+    const form = pole.form || formularzWynikow();
+    if (form && form.requestSubmit) { form.requestSubmit(); return JSON.stringify({ wyslane: true, sposob: 'requestSubmit', ...uzyte }); }
+    if (form) { form.submit(); return JSON.stringify({ wyslane: true, sposob: 'form.submit', ...uzyte }); }
     pole.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-    return JSON.stringify({ wyslane: true, sposob: 'Enter' });
+    return JSON.stringify({ wyslane: true, sposob: 'Enter', ...uzyte });
   })()`;
 }
 
 /** Widoczny tekst strony — z niego czytamy karty kontenerów (patrz parse.ts). */
 export function skryptTresci(): string {
-  return `JSON.stringify({
-    tekst: document.body?.innerText || '',
-    tytul: document.title || '',
-    adres: location.href,
-  })`;
+  return `(() => {${POMOCNIKI}
+    return JSON.stringify({ tekst: document.body?.innerText || '', ...opiszStrone() });
+  })()`;
 }
 
 /** Odpowiedź jest gotowa, gdy widać karty albo jawne "brak wyników". */
@@ -310,10 +358,10 @@ export async function fetchViaBrowser(
 
     // Pierwsze wejście trafia zwykle na przejściówkę Cloudflare — zdarzenie "strona wczytana"
     // pada wtedy dla NIEJ, nie dla właściwej strony. Czekamy więc na pole, nie na zdarzenie.
-    const gotowa = await poczekaj(cdp, sessionId, skryptStanuStrony(), (s) => Boolean(s.gotowa), 60_000);
+    const gotowa = await poczekaj(cdp, sessionId, skryptStanuStrony(), (s) => Boolean(s.gotowa), 25_000);
     if (!gotowa.ok) {
       throw new Error(
-        `Na stronie Baltic Hub nie pojawiło się pole na numery kontenerów w ciągu 60 s. ` +
+        `Na stronie Baltic Hub nie pojawiło się pole na numery kontenerów w ciągu 25 s. ` +
           `Tytuł: „${gotowa.stan.tytul ?? ""}”. Adres: ${gotowa.stan.adres ?? "?"}. ` +
           `Pola: ${gotowa.stan.pola || "(brak)"}. Guziki: ${gotowa.stan.guziki || "(brak)"}. ` +
           `Tekst: ${gotowa.stan.tekst ?? ""}`,
@@ -328,12 +376,14 @@ export async function fetchViaBrowser(
       );
     }
 
-    const wyniki = await poczekaj(cdp, sessionId, skryptTresci(), (s) => maWyniki(s.tekst ?? ""), 90_000);
+    const wyniki = await poczekaj(cdp, sessionId, skryptTresci(), (s) => maWyniki(s.tekst ?? ""), 40_000);
     if (!wyniki.ok) {
       throw new Error(
-        `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 90 s. ` +
-          `Adres: ${wyniki.stan.adres ?? "?"}. Tytuł: „${wyniki.stan.tytul ?? ""}”. ` +
-          `Tekst strony: ${(wyniki.stan.tekst ?? "").replace(/\s+/g, " ").slice(0, 400)}`,
+        `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 40 s. ` +
+          `Tryb: ${wyslane.tryb ?? "?"}. Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}. ` +
+          `Wpisano: „${wyslane.wpisano ?? ""}”. Adres: ${wyniki.stan.adres ?? "?"}. ` +
+          `Formularze: ${wyniki.stan.formularze || "(brak)"}. Guziki: ${wyniki.stan.guziki || "(brak)"}. ` +
+          `Tekst: ${(wyniki.stan.tekst ?? "").replace(/\s+/g, " ").slice(0, 250)}`,
       );
     }
 
