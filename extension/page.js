@@ -421,10 +421,19 @@
     stan: () => ({ gotowa: Boolean(znajdzPole()), zagadka: opiszZagadke(), ...opiszStrone() }),
     zamknij: () => zamknijOkienka(),
     wyslij,
-    /** Widoczny tekst strony — z niego funkcja brzegowa czyta Karty kontenera. */
+    /**
+     * Widoczny tekst strony — z niego funkcja brzegowa czyta Karty kontenera.
+     *
+     * KOLEJNOŚĆ POLA `tekst` MA ZNACZENIE i już raz kosztowała cały przebieg: `opiszStrone()`
+     * zwraca WŁASNE pole `tekst` — skrócony do 300 znaków podgląd do diagnozy. Gdy stało ono
+     * w rozwinięciu ZA pełnym tekstem, nadpisywało go i do serwera szło samo menu strony
+     * („Nie rozpoznałem odpowiedzi Baltic Hub (300 znaków)"), mimo że wyszukiwanie działało,
+     * a wyniki były na ekranie. Pełny tekst musi być OSTATNI; podgląd jedzie pod inną nazwą.
+     */
     wyniki: () => {
       const tekst = document.body?.innerText || "";
-      return { tekst, gotowe: maWyniki(tekst), zagadka: opiszZagadke(), ...opiszStrone() };
+      const opis = opiszStrone();
+      return { ...opis, podglad: opis.tekst, zagadka: opiszZagadke(), gotowe: maWyniki(tekst), tekst };
     },
     maWyniki,
   };
