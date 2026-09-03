@@ -158,144 +158,137 @@ function daneLogowania(): { user: string; pass: string } {
   return { user, pass };
 }
 
-interface Token {
-  csrf: string;
-  xsrf: string;
-}
-
-/** Wynik JEDNEJ próby wysłania zapytania — z opisem odpowiedzi, nie tylko treścią. */
-interface Proba {
-  jakoXhr: boolean;
-  status: number;
-  typ: string;
-  adres: string;
-  przekierowany: boolean;
-  tresc: string;
-}
-
 /**
- * Skrypt wykonywany W PRZEGLĄDARCE: wysyła zapytanie o kontenery z wnętrza strony, dzięki czemu
- * ciasteczko sesji dokłada się samo.
+ * Wspólny kawałek skryptów działających W PRZEGLĄDARCE: znalezienie pola na numery kontenerów.
  *
- * Nagłówki tokenu wysyłamy WSZYSTKIE, które udało się znaleźć. Laravel przyjmuje token na trzy
- * sposoby (pole `_token` w treści, `X-CSRF-TOKEN` z meta, `X-XSRF-TOKEN` z ciasteczka) i sprawdza
- * je po kolei; nadmiarowy nagłówek nic nie psuje, a brak tego jedynego właściwego kosztowałby
- * kolejną rundę.
+ * Szukamy po kolei coraz luźniej — najpierw po nazwie/identyfikatorze/podpowiedzi, potem pola
+ * wielolinijkowego, na końcu pierwszego widocznego pola tekstowego. Świadomie NIE wpisujemy tu
+ * sztywnego selektora: układu tej strony nie widziałem, a sztywny selektor po cichu przestanie
+ * działać przy pierwszej przebudowie serwisu.
  */
-export function skryptZapytania(token: Token, postUrl: string, containers: string[]): string {
-  return `(async () => {
-      const token = ${JSON.stringify(token.csrf)};
-      const xsrf = ${JSON.stringify(token.xsrf)};
-      const body = (() => {
-        let b = ${JSON.stringify("lang=pl")} + ${JSON.stringify(containers)}
-          .map((c) => '&id%5B%5D=' + encodeURIComponent(c)).join('');
-        if (token) b += '&_token=' + encodeURIComponent(token);
-        return b;
-      })();
+const ZNAJDZ_POLE = `
+  function znajdzPole() {
+    const widoczne = [...document.querySelectorAll('input, textarea')]
+      .filter((el) => el.type !== 'hidden' && el.offsetParent !== null);
+    const opis = (el) => ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || ''));
+    return widoczne.find((el) => /kontener|container|numer|\\bid\\b/i.test(opis(el)))
+        || widoczne.find((el) => el.tagName === 'TEXTAREA')
+        || widoczne.find((el) => (el.type || 'text') === 'text')
+        || null;
+  }
+  function opiszStrone() {
+    return {
+      tytul: document.title || '',
+      adres: location.href,
+      pola: [...document.querySelectorAll('input, textarea')].slice(0, 20)
+        .map((el) => el.tagName + '[' + (el.type || '') + '] name=' + (el.name || '-') +
+                     ' id=' + (el.id || '-') + ' podpowiedz=' + (el.placeholder || '-')).join(' | '),
+      guziki: [...document.querySelectorAll('button, input[type=submit]')].slice(0, 15)
+        .map((b) => (b.textContent || b.value || '').replace(/\\s+/g, ' ').trim()).filter(Boolean).join(' | '),
+      tekst: (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+`;
 
-      async function wyslij(jakoXhr) {
-        const naglowki = { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' };
-        if (jakoXhr) naglowki['X-Requested-With'] = 'XMLHttpRequest';
-        if (token) naglowki['X-CSRF-TOKEN'] = token;
-        if (xsrf) naglowki['X-XSRF-TOKEN'] = xsrf;
-        const res = await fetch(${JSON.stringify(postUrl)}, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: naglowki,
-          body,
-        });
-        const tresc = await res.text();
-        return {
-          jakoXhr,
-          status: res.status,
-          typ: res.headers.get('content-type') || '',
-          adres: res.url,
-          przekierowany: res.redirected === true,
-          tresc,
-        };
-      }
-
-      // Najpierw jak zwykły formularz. Nagłówek XMLHttpRequest przestawia Laravela na tryb AJAX
-      // i potrafi zmienić odpowiedź — pierwsza wersja wysyłała go ZAWSZE i dostała pustą treść.
-      // Druga próba wchodzi tylko wtedy, gdy pierwsza nic nie przyniosła; to ta sama sesja
-      // i ta sama strona, więc nic dodatkowego nie kosztuje.
-      const proby = [await wyslij(false)];
-      if (!proby[0].tresc) proby.push(await wyslij(true));
-      return JSON.stringify({ proby });
-    })()`;
+/** Czy strona jest już gotowa do wypełnienia (przeszła przejściówkę Cloudflare i ma pole). */
+export function skryptStanuStrony(): string {
+  return `(() => {${ZNAJDZ_POLE}
+    const pole = znajdzPole();
+    return JSON.stringify({ gotowa: Boolean(pole), ...opiszStrone() });
+  })()`;
 }
 
 /**
- * Skrypt wykonywany W PRZEGLĄDARCE: szuka tokenu CSRF we WSZYSTKICH trzech postaciach, w jakich
- * podaje go Laravel (`<meta name="csrf-token">`, ukryte pole `_token`, ciasteczko `XSRF-TOKEN`),
- * a przy okazji zbiera opis strony na wypadek, gdyby żadnej nie było.
+ * Wypełnia pole numerami i URUCHAMIA WYSZUKIWANIE tak, jak zrobiłby to człowiek.
+ *
+ * DLACZEGO tak, a nie własnym zapytaniem: zapytanie składane ręcznie wracało z produkcji z kodem
+ * 200 i ZEROWĄ treścią, mimo że przeglądarka właściciela dostawała pełną odpowiedź. Zamiast
+ * zgadywać, czego w nim brakuje, oddajemy tę robotę stronie — ona wie, co wysłać.
+ *
+ * Wartość ustawiamy przez ustawiacz z prototypu, bo strony pisane w Reakcie/Vue nie zauważają
+ * zwykłego przypisania do `value` i przy wysyłce widzą pole puste.
  */
-export function skryptTokenu(): string {
+export function skryptWyslania(containers: string[]): string {
+  return `(() => {${ZNAJDZ_POLE}
+    const pole = znajdzPole();
+    if (!pole) return JSON.stringify({ wyslane: false, powod: 'nie znalazłem pola na numery', ...opiszStrone() });
+
+    const wartosc = ${JSON.stringify(containers.join(", "))};
+    const ustawiacz = Object.getOwnPropertyDescriptor(pole.constructor.prototype, 'value')?.set;
+    if (ustawiacz) ustawiacz.call(pole, wartosc); else pole.value = wartosc;
+    pole.dispatchEvent(new Event('input', { bubbles: true }));
+    pole.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const form = pole.form;
+    const guziki = [...(form || document).querySelectorAll('button, input[type=submit]')];
+    const guzik = guziki.find((b) => /sprawd|szukaj|wyszuk|poka|submit/i.test(
+      (b.textContent || '') + ' ' + (b.value || '') + ' ' + (b.type || '')));
+
+    if (guzik) { guzik.click(); return JSON.stringify({ wyslane: true, sposob: 'klik w guzik' }); }
+    if (form && form.requestSubmit) { form.requestSubmit(); return JSON.stringify({ wyslane: true, sposob: 'requestSubmit' }); }
+    if (form) { form.submit(); return JSON.stringify({ wyslane: true, sposob: 'form.submit' }); }
+    pole.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+    return JSON.stringify({ wyslane: true, sposob: 'Enter' });
+  })()`;
+}
+
+/** Widoczny tekst strony — z niego czytamy karty kontenerów (patrz parse.ts). */
+export function skryptTresci(): string {
   return `JSON.stringify({
-    csrf: document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
-       || document.querySelector('input[name="_token"]')?.value || '',
-    xsrf: (() => {
-      const m = document.cookie.match(/(?:^|;\\s*)XSRF-TOKEN=([^;]*)/);
-      try { return m ? decodeURIComponent(m[1]) : ''; } catch { return m ? m[1] : ''; }
-    })(),
+    tekst: document.body?.innerText || '',
     tytul: document.title || '',
     adres: location.href,
-    ciasteczka: document.cookie.split(';').map((c) => c.split('=')[0].trim()).filter(Boolean).join(', '),
-    meta: [...document.querySelectorAll('meta[name]')].map((m) => m.getAttribute('name')).join(', '),
-    tekst: (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400),
   })`;
 }
 
-/**
- * Czeka, aż na stronie pojawi się token CSRF — w KTÓREJKOLWIEK z trzech postaci, w jakich Laravel
- * go podaje: `<meta name="csrf-token">`, ukryte pole `_token`, ciasteczko `XSRF-TOKEN`.
- *
- * Czekamy, bo pierwsze wejście trafia zwykle na przejściówkę Cloudflare: zdarzenie "strona
- * wczytana" pada wtedy dla PRZEJŚCIÓWKI, a nie dla właściwej strony, i tokenu jeszcze nie ma.
- * Zdalna przeglądarka przechodzi to sama, ale potrzebuje na to kilku sekund.
- *
- * Gdy po tym czasie tokenu dalej nie ma, NIE zgłaszamy suchego "nie ma tokenu" — do komunikatu
- * trafia tytuł strony, jej adres, nazwy ciasteczek i początek widocznego tekstu. Bez tego nie da
- * się odróżnić "nie zdążyła przejść Cloudflare" od "token jest gdzie indziej".
- */
-async function poczekajNaToken(cdp: CdpSession, sessionId: string): Promise<Token> {
-  const wyrazenie = skryptTokenu();
-  const koniec = Date.now() + 45_000;
-  let ostatni: Record<string, string> = {};
-  for (;;) {
-    const wynik = (await cdp.send(
-      "Runtime.evaluate",
-      { expression: wyrazenie, returnByValue: true },
-      sessionId,
-      30_000,
-    )) as { result?: { value?: string } };
-    ostatni = JSON.parse(wynik.result?.value ?? "{}") as Record<string, string>;
-    if (ostatni.csrf || ostatni.xsrf) return { csrf: ostatni.csrf ?? "", xsrf: ostatni.xsrf ?? "" };
-    if (Date.now() > koniec) break;
-    await new Promise((r) => setTimeout(r, 3000));
-  }
+/** Odpowiedź jest gotowa, gdy widać karty albo jawne "brak wyników". */
+export function maWyniki(tekst: string): boolean {
+  return /Karta kontenera|Brak wynik/i.test(tekst);
+}
 
-  throw new Error(
-    `Na stronie Baltic Hub nie pojawił się token CSRF w ciągu 45 s. ` +
-      `Tytuł: „${ostatni.tytul ?? ""}”. Adres: ${ostatni.adres ?? "?"}. ` +
-      `Ciasteczka: ${ostatni.ciasteczka || "(brak)"}. Znaczniki meta: ${ostatni.meta || "(brak)"}. ` +
-      `Tekst strony: ${ostatni.tekst ?? ""}`,
-  );
+async function odczytaj(cdp: CdpSession, sessionId: string, skrypt: string): Promise<Record<string, string>> {
+  const wynik = (await cdp.send(
+    "Runtime.evaluate",
+    { expression: skrypt, returnByValue: true },
+    sessionId,
+    30_000,
+  )) as { result?: { value?: string } };
+  return JSON.parse(wynik.result?.value ?? "{}") as Record<string, string>;
 }
 
 /**
- * Otwiera stronę Baltic Hub i Z JEJ WNĘTRZA wysyła zapytanie o kontenery. Kluczowe jest to "z
- * wnętrza": przeglądarka dokłada wtedy ciasteczko sesji sama, a token CSRF czytamy ze strony —
- * dokładnie tak, jak robi to dyspozytor klikając "Sprawdź".
+ * Czeka, aż coś na stronie będzie prawdą — używane dwa razy: na gotowość formularza i na wyniki.
+ * Zwraca ostatni odczyt także przy niepowodzeniu, żeby było CO wpisać w komunikat błędu.
+ */
+async function poczekaj(
+  cdp: CdpSession,
+  sessionId: string,
+  skrypt: string,
+  gotowe: (stan: Record<string, string>) => boolean,
+  msLimit: number,
+): Promise<{ ok: boolean; stan: Record<string, string> }> {
+  const koniec = Date.now() + msLimit;
+  let stan: Record<string, string> = {};
+  for (;;) {
+    stan = await odczytaj(cdp, sessionId, skrypt);
+    if (gotowe(stan)) return { ok: true, stan };
+    if (Date.now() > koniec) return { ok: false, stan };
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+/**
+ * Otwiera stronę Baltic Hub, wpisuje numery kontenerów i uruchamia wyszukiwanie — a potem czyta
+ * widoczny tekst wyników. Kluczowe jest to, że robi to PRZEGLĄDARKA: ma sesję, ciasteczka i token,
+ * i wysyła dokładnie takie zapytanie, jakie serwis rozumie.
  */
 export async function fetchViaBrowser(
   pageUrl: string,
-  postUrl: string,
+  _postUrl: string,
   containers: string[],
 ): Promise<string> {
-  // Powód niepowodzenia niesie już sam klient (kod odpowiedzi i treść od serwera), więc nie ma
-  // tu osobnej diagnozy — dwa mechanizmy mówiące o tym samym rozjechałyby się przy pierwszej
-  // poprawce.
+  // Powód niepowodzenia niesie już sam klient WebSocket (kod odpowiedzi i treść od serwera),
+  // więc nie ma tu osobnej diagnozy połączenia.
   const cdp = await CdpSession.connect(30_000);
 
   try {
@@ -315,42 +308,37 @@ export async function fetchViaBrowser(
     await cdp.send("Page.navigate", { url: pageUrl }, sessionId, 60_000);
     await zaladowana;
 
-    const token = await poczekajNaToken(cdp, sessionId);
-
-    const wyrazenie = skryptZapytania(token, postUrl, containers);
-
-    const wynik = (await cdp.send(
-      "Runtime.evaluate",
-      { expression: wyrazenie, awaitPromise: true, returnByValue: true },
-      sessionId,
-      90_000,
-    )) as { result?: { value?: string }; exceptionDetails?: { text?: string } };
-
-    if (wynik.exceptionDetails) {
-      throw new Error(`Strona zgłosiła błąd: ${wynik.exceptionDetails.text ?? "nieznany"}`);
-    }
-    const odpowiedz = JSON.parse(wynik.result?.value ?? "{}") as { proby?: Proba[] };
-    const proby = odpowiedz.proby ?? [];
-    const udana = proby.find((p) => p.status === 200 && p.tresc);
-
-    if (!udana) {
-      // Opis KAŻDEJ próby, nie tylko ostatniej: "200 i pusto" to zupełnie inny problem niż
-      // "403", a bez kodu, typu treści i adresu końcowego nie da się ich rozróżnić.
-      const opis = proby
-        .map(
-          (p) =>
-            `${p.jakoXhr ? "jako XHR" : "jak formularz"}: HTTP ${p.status}, ` +
-            `typ „${p.typ}”, ${p.tresc.length} znaków` +
-            `${p.przekierowany ? `, przekierowanie na ${p.adres}` : ""}`,
-        )
-        .join("; ");
+    // Pierwsze wejście trafia zwykle na przejściówkę Cloudflare — zdarzenie "strona wczytana"
+    // pada wtedy dla NIEJ, nie dla właściwej strony. Czekamy więc na pole, nie na zdarzenie.
+    const gotowa = await poczekaj(cdp, sessionId, skryptStanuStrony(), (s) => Boolean(s.gotowa), 60_000);
+    if (!gotowa.ok) {
       throw new Error(
-        `Baltic Hub nie zwrócił wyników. ${opis || "brak jakiejkolwiek odpowiedzi"}.`,
+        `Na stronie Baltic Hub nie pojawiło się pole na numery kontenerów w ciągu 60 s. ` +
+          `Tytuł: „${gotowa.stan.tytul ?? ""}”. Adres: ${gotowa.stan.adres ?? "?"}. ` +
+          `Pola: ${gotowa.stan.pola || "(brak)"}. Guziki: ${gotowa.stan.guziki || "(brak)"}. ` +
+          `Tekst: ${gotowa.stan.tekst ?? ""}`,
+      );
+    }
+
+    const wyslane = await odczytaj(cdp, sessionId, skryptWyslania(containers));
+    if (!wyslane.wyslane) {
+      throw new Error(
+        `Nie udało się uruchomić wyszukiwania: ${wyslane.powod ?? "nieznany powód"}. ` +
+          `Pola: ${wyslane.pola || "(brak)"}. Guziki: ${wyslane.guziki || "(brak)"}.`,
+      );
+    }
+
+    const wyniki = await poczekaj(cdp, sessionId, skryptTresci(), (s) => maWyniki(s.tekst ?? ""), 90_000);
+    if (!wyniki.ok) {
+      throw new Error(
+        `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 90 s. ` +
+          `Adres: ${wyniki.stan.adres ?? "?"}. Tytuł: „${wyniki.stan.tytul ?? ""}”. ` +
+          `Tekst strony: ${(wyniki.stan.tekst ?? "").replace(/\s+/g, " ").slice(0, 400)}`,
       );
     }
 
     await cdp.send("Target.closeTarget", { targetId }).catch(() => undefined);
-    return udana.tresc;
+    return wyniki.stan.tekst ?? "";
   } finally {
     cdp.close();
   }

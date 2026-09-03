@@ -313,46 +313,145 @@ function key(raw: string): string {
 }
 
 /**
- * Odczyt odpowiedzi terminala dla JEDNEGO kontenera. Odpowiedź może zawierać wiele kontenerów
- * (formularz przyjmuje do dziesięciu po przecinku), więc najpierw szukamy wiersza z naszym numerem.
+ * Etykiety KARTY KONTENERA — przepisane z PRAWDZIWEJ odpowiedzi `/multi` (właściciel wkleił jej
+ * treść z podglądu ruchu w swojej przeglądarce). To nie jest tabela z nagłówkiem, tylko lista
+ * "etykieta: wartość" powtórzona dla każdego kontenera — pierwsza wersja odczytu szukała tabeli
+ * i dlatego nie miała czego znaleźć.
+ *
+ * Lista jest zamknięta ŚWIADOMIE: dzięki niej wiadomo, gdzie kończy się wartość jednego pola,
+ * a zaczyna następne. Wartości bywają puste ("Time Out:" tuż przed kolejną etykietą) i bywają
+ * wielowyrazowe ("DSK Number: 26BOUG3RE 2026-09-02 06:00"), więc bez znajomości etykiet nie da
+ * się ich rozdzielić.
+ */
+const KARTA_LABELS = [
+  "Unit Nbr", "Category", "Line Operator", "ISO Type", "Frght Kind",
+  "Inbound Carrier", "Outbound Carrier", "Time In", "Time Out", "*Stops",
+  "DSK Number", "CEN Number", "Commodity Weight [KG]", "Cargo Weight [KG]", "Weight [KG]",
+  "Class", "POD", "Inbound Mode", "Carrier Seal", "Shipper Seal", "Customs Seal", "Vet Seal",
+  "T-State", "OH (cm)", "OL-B (cm)", "OL-F (cm)", "OW-L (cm)", "OW-R (cm)",
+];
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Wzorzec etykiet, NAJDŁUŻSZE NAJPIERW. To nie jest kosmetyka: "Cargo Weight [KG]" zawiera w sobie
+ * "Weight [KG]", więc przy odwrotnej kolejności waga TOWARU zostałaby odczytana jako waga brutto —
+ * a ta z terminala nadpisuje zlecenie, więc byłby to cichy błąd na dokumencie przewozowym.
+ */
+const ETYKIETA = new RegExp(
+  `(${[...KARTA_LABELS].sort((a, b) => b.length - a.length).map(escapeRegex).join("|")})\\s*:`,
+  "g",
+);
+
+/** Numer kontenera wg ISO 6346: cztery litery i sześć-siedem cyfr. */
+const NUMER_KONTENERA = /\b[A-Z]{4}\s*\d{6,7}\b/g;
+
+/**
+ * Wycina kartę JEDNEGO kontenera. Odpowiedź niesie karty wszystkich kontenerów z paczki naraz,
+ * więc bez tego cięcia każde zlecenie dostałoby wartości pierwszego z brzegu.
+ */
+export function wytnijKarte(tekst: string, numer: string): string | null {
+  const szukany = key(numer);
+  const poczatki: { pozycja: number; numer: string }[] = [];
+  for (const m of tekst.matchAll(/Unit Nbr\s*:\s*([A-Z]{4}\s*\d{6,7})/g)) {
+    poczatki.push({ pozycja: m.index ?? 0, numer: key(m[1]) });
+  }
+  const i = poczatki.findIndex((p) => p.numer === szukany);
+  if (i < 0) return null;
+
+  // Karta kończy się na PIERWSZYM z tego, co po niej następuje. Sama "Unit Nbr" następnej karty
+  // nie wystarczy: między kartami stoi jeszcze stopka strony ("* OOG Hold — …") i nagłówek
+  // "Karta kontenera <numer>", a bez tego cięcia wsiąkały one w wartość ostatniego pola.
+  const od = poczatki[i].pozycja;
+  const dalej = tekst.slice(od + 1);
+  const granice = [
+    i + 1 < poczatki.length ? poczatki[i + 1].pozycja - (od + 1) : -1,
+    dalej.search(/\*\s/),           // stopka strony; "*Stops:" nie pasuje, bo nie ma tam spacji
+    dalej.search(/Karta kontenera/i),
+    dalej.search(/Brak wynik/i),
+  ].filter((n) => n >= 0);
+
+  const koniec = granice.length ? od + 1 + Math.min(...granice) : tekst.length;
+  return tekst.slice(od, koniec);
+}
+
+/** Karta → pary etykieta/wartość. Pusta wartość ZOSTAJE pustym tekstem (patrz wyżej). */
+export function paryZKarty(karta: string): Record<string, string> {
+  const trafienia = [...karta.matchAll(ETYKIETA)];
+  const pary: Record<string, string> = {};
+  trafienia.forEach((m, i) => {
+    const od = (m.index ?? 0) + m[0].length;
+    const nastepna = i + 1 < trafienia.length ? trafienia[i + 1].index ?? karta.length : karta.length;
+    pary[m[1]] = karta.slice(od, nastepna).trim();
+  });
+  return pary;
+}
+
+/**
+ * Czy odpowiedź wprost mówi, że NIE ZNA tego kontenera ("Brak wyników dla: CAAU2300808").
+ * Sprawdzamy z numerem, bo w jednej odpowiedzi bywają i karty, i takie komunikaty — bez tego
+ * jeden nieznany kontener kasowałby wynik pozostałych z paczki.
+ */
+export function brakWynikowDla(tekst: string, numer: string): boolean {
+  const szukany = key(numer);
+  // Numer musi stać TUŻ ZA dwukropkiem. Pierwsza wersja przeszukiwała 40 znaków dalej i przez to
+  // "Brak wyników dla: CAAU2300808" zabierało numer z NASTĘPNEJ karty — sąsiedni kontener
+  // wychodził jako nieznany, choć jego karta stała obok. Złapane testem na prawdziwej odpowiedzi.
+  // `[^:]`, nie `\w`: `\w` to wyłącznie [A-Za-z0-9_], więc na "wyników" się wykładało.
+  for (const m of tekst.matchAll(/Brak wynik[^:]{0,20}:\s*([A-Z]{4}\s*\d{6,7})/gi)) {
+    if (key(m[1]) === szukany) return true;
+  }
+  return false;
+}
+
+/**
+ * Odczyt odpowiedzi terminala dla JEDNEGO kontenera. Odpowiedź niesie CAŁĄ PACZKĘ (pytamy
+ * o dziesięć naraz), więc najpierw wycinamy kartę z naszym numerem.
  */
 export function parseContainerPage(html: string, containerNumber: string): ParsedContainer {
+  const text = stripTags(html);
+
+  // 1. Terminal wprost mówi, że nie zna tego kontenera. To nie jest błąd odczytu.
+  if (brakWynikowDla(text, containerNumber)) {
+    return {
+      status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null,
+      notFound: true, recognised: true,
+      details: { _container: containerNumber, _uklad: "brak wyników" },
+    };
+  }
+
+  // 2. Karta kontenera — układ, który terminal faktycznie zwraca.
+  const karta = wytnijKarte(text, containerNumber);
+  if (karta) {
+    const pary = paryZKarty(karta);
+    if (Object.keys(pary).length >= 3) {
+      return { ...interpretRow(pary), details: { ...pary, _container: containerNumber, _uklad: "karta" } };
+    }
+  }
+
+  // 3. Tabela kolumnowa — układ eksportu XLSX, który właściciel pobiera ręcznie. Zostaje jako
+  //    druga droga, bo nic nie kosztuje, a ma sprawdzone dopasowanie kolumn.
   const wanted = key(containerNumber);
   const rows = extractTableRows(html);
-  const row =
-    rows.find((r) => Object.values(r).some((v) => key(v) === wanted)) ??
-    (rows.length === 1 ? rows[0] : undefined);
-
-  const text = stripTags(html);
+  const row = rows.find((r) => Object.values(r).some((v) => key(v) === wanted));
   if (row) {
-    return { ...interpretRow(row), details: { ...row, _container: containerNumber } };
+    return { ...interpretRow(row), details: { ...row, _container: containerNumber, _uklad: "tabela" } };
   }
 
-  // Brak tabeli — próbujemy układu "karty" (etykieta → wartość).
-  const pairs = extractPairs(html);
-  if (Object.keys(pairs).length >= 3) {
-    return { ...interpretRow(pairs), details: { ...pairs, _container: containerNumber } };
-  }
-
-  // Nic nie rozpoznaliśmy. Jeśli strona wprost mówi, że nie zna kontenera — to nie jest błąd.
-  const notFound = NOT_FOUND.test(text);
-  // Nazwany powód zamiast ogólnego "nie rozumiem": to zupełnie inny problem niż zły adres.
+  // 4. Nie rozpoznaliśmy. To NIE jest odpowiedź "nic nie znaleziono" — inaczej byłoby to milczące
+  //    skasowanie poprzedniego, dobrego wyniku.
   const reason = PAGE_EXPIRED.test(text)
-    ? "Baltic Hub odrzucił zapytanie — wygasł token sesji (strona \"Page Expired\"). " +
-      "Zapytanie doszło pod właściwy adres i we właściwej formie, ale serwis wymaga tokenu " +
-      "pobranego wcześniej ze strony."
+    ? 'Baltic Hub odrzucił zapytanie — wygasł token sesji (strona "Page Expired"). Zapytanie ' +
+      "doszło pod właściwy adres i we właściwej formie, ale serwis wymaga tokenu pobranego " +
+      "wcześniej ze strony."
     : undefined;
   return {
-    status: null,
-    statusRaw: null,
-    isoType: null,
-    shippingLine: null,
-    grossWeightKg: null,
-    notFound,
+    status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null,
+    notFound: false,
+    recognised: false,
     reason,
-    // Strona, której nie umieliśmy odczytać, NIE jest odpowiedzią "nic nie znaleziono" — chyba że
-    // sama tak mówi. Inaczej byłoby to milczące skasowanie poprzedniego, dobrego wyniku.
-    recognised: notFound,
     details: { ...describePage(html, text), _container: containerNumber },
   };
 }
