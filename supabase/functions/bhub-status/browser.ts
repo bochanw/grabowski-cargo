@@ -158,6 +158,101 @@ function daneLogowania(): { user: string; pass: string } {
   return { user, pass };
 }
 
+interface Token {
+  csrf: string;
+  xsrf: string;
+}
+
+/**
+ * Skrypt wykonywany W PRZEGLĄDARCE: wysyła zapytanie o kontenery z wnętrza strony, dzięki czemu
+ * ciasteczko sesji dokłada się samo.
+ *
+ * Nagłówki tokenu wysyłamy WSZYSTKIE, które udało się znaleźć. Laravel przyjmuje token na trzy
+ * sposoby (pole `_token` w treści, `X-CSRF-TOKEN` z meta, `X-XSRF-TOKEN` z ciasteczka) i sprawdza
+ * je po kolei; nadmiarowy nagłówek nic nie psuje, a brak tego jedynego właściwego kosztowałby
+ * kolejną rundę.
+ */
+export function skryptZapytania(token: Token, postUrl: string, containers: string[]): string {
+  return `(async () => {
+      const token = ${JSON.stringify(token.csrf)};
+      const xsrf = ${JSON.stringify(token.xsrf)};
+      const naglowki = {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+      };
+      if (token) naglowki['X-CSRF-TOKEN'] = token;
+      if (xsrf) naglowki['X-XSRF-TOKEN'] = xsrf;
+      let body = ${JSON.stringify("lang=pl")} + ${JSON.stringify(containers)}
+        .map((c) => '&id%5B%5D=' + encodeURIComponent(c)).join('');
+      if (token) body += '&_token=' + encodeURIComponent(token);
+      const res = await fetch(${JSON.stringify(postUrl)}, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: naglowki,
+        body,
+      });
+      return JSON.stringify({ status: res.status, tresc: await res.text() });
+    })()`;
+}
+
+/**
+ * Skrypt wykonywany W PRZEGLĄDARCE: szuka tokenu CSRF we WSZYSTKICH trzech postaciach, w jakich
+ * podaje go Laravel (`<meta name="csrf-token">`, ukryte pole `_token`, ciasteczko `XSRF-TOKEN`),
+ * a przy okazji zbiera opis strony na wypadek, gdyby żadnej nie było.
+ */
+export function skryptTokenu(): string {
+  return `JSON.stringify({
+    csrf: document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
+       || document.querySelector('input[name="_token"]')?.value || '',
+    xsrf: (() => {
+      const m = document.cookie.match(/(?:^|;\\s*)XSRF-TOKEN=([^;]*)/);
+      try { return m ? decodeURIComponent(m[1]) : ''; } catch { return m ? m[1] : ''; }
+    })(),
+    tytul: document.title || '',
+    adres: location.href,
+    ciasteczka: document.cookie.split(';').map((c) => c.split('=')[0].trim()).filter(Boolean).join(', '),
+    meta: [...document.querySelectorAll('meta[name]')].map((m) => m.getAttribute('name')).join(', '),
+    tekst: (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400),
+  })`;
+}
+
+/**
+ * Czeka, aż na stronie pojawi się token CSRF — w KTÓREJKOLWIEK z trzech postaci, w jakich Laravel
+ * go podaje: `<meta name="csrf-token">`, ukryte pole `_token`, ciasteczko `XSRF-TOKEN`.
+ *
+ * Czekamy, bo pierwsze wejście trafia zwykle na przejściówkę Cloudflare: zdarzenie "strona
+ * wczytana" pada wtedy dla PRZEJŚCIÓWKI, a nie dla właściwej strony, i tokenu jeszcze nie ma.
+ * Zdalna przeglądarka przechodzi to sama, ale potrzebuje na to kilku sekund.
+ *
+ * Gdy po tym czasie tokenu dalej nie ma, NIE zgłaszamy suchego "nie ma tokenu" — do komunikatu
+ * trafia tytuł strony, jej adres, nazwy ciasteczek i początek widocznego tekstu. Bez tego nie da
+ * się odróżnić "nie zdążyła przejść Cloudflare" od "token jest gdzie indziej".
+ */
+async function poczekajNaToken(cdp: CdpSession, sessionId: string): Promise<Token> {
+  const wyrazenie = skryptTokenu();
+  const koniec = Date.now() + 45_000;
+  let ostatni: Record<string, string> = {};
+  for (;;) {
+    const wynik = (await cdp.send(
+      "Runtime.evaluate",
+      { expression: wyrazenie, returnByValue: true },
+      sessionId,
+      30_000,
+    )) as { result?: { value?: string } };
+    ostatni = JSON.parse(wynik.result?.value ?? "{}") as Record<string, string>;
+    if (ostatni.csrf || ostatni.xsrf) return { csrf: ostatni.csrf ?? "", xsrf: ostatni.xsrf ?? "" };
+    if (Date.now() > koniec) break;
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+
+  throw new Error(
+    `Na stronie Baltic Hub nie pojawił się token CSRF w ciągu 45 s. ` +
+      `Tytuł: „${ostatni.tytul ?? ""}”. Adres: ${ostatni.adres ?? "?"}. ` +
+      `Ciasteczka: ${ostatni.ciasteczka || "(brak)"}. Znaczniki meta: ${ostatni.meta || "(brak)"}. ` +
+      `Tekst strony: ${ostatni.tekst ?? ""}`,
+  );
+}
+
 /**
  * Otwiera stronę Baltic Hub i Z JEJ WNĘTRZA wysyła zapytanie o kontenery. Kluczowe jest to "z
  * wnętrza": przeglądarka dokłada wtedy ciasteczko sesji sama, a token CSRF czytamy ze strony —
@@ -190,24 +285,9 @@ export async function fetchViaBrowser(
     await cdp.send("Page.navigate", { url: pageUrl }, sessionId, 60_000);
     await zaladowana;
 
-    // Zapytanie leci z wnętrza strony — stąd ciasteczka i token "same się" dokładają.
-    const wyrazenie = `(async () => {
-      const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-      if (!token) return JSON.stringify({ blad: 'Na stronie nie ma tokenu csrf-token.' });
-      const body = ${JSON.stringify("lang=pl")} + ${JSON.stringify(containers)}
-        .map((c) => '&id%5B%5D=' + encodeURIComponent(c)).join('');
-      const res = await fetch(${JSON.stringify(postUrl)}, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'X-CSRF-TOKEN': token,
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-        body,
-      });
-      return JSON.stringify({ status: res.status, tresc: await res.text() });
-    })()`;
+    const token = await poczekajNaToken(cdp, sessionId);
+
+    const wyrazenie = skryptZapytania(token, postUrl, containers);
 
     const wynik = (await cdp.send(
       "Runtime.evaluate",
@@ -219,12 +299,7 @@ export async function fetchViaBrowser(
     if (wynik.exceptionDetails) {
       throw new Error(`Strona zgłosiła błąd: ${wynik.exceptionDetails.text ?? "nieznany"}`);
     }
-    const odpowiedz = JSON.parse(wynik.result?.value ?? "{}") as {
-      blad?: string;
-      status?: number;
-      tresc?: string;
-    };
-    if (odpowiedz.blad) throw new Error(odpowiedz.blad);
+    const odpowiedz = JSON.parse(wynik.result?.value ?? "{}") as { status?: number; tresc?: string };
     if (odpowiedz.status !== 200) {
       throw new Error(`Baltic Hub odpowiedział HTTP ${odpowiedz.status} na zapytanie o kontenery.`);
     }
