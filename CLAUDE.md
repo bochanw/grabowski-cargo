@@ -758,6 +758,47 @@ zgłoszenia właściciela z tej samej sesji:**
   pliku to prosta droga do cichego błędu (patrz pułapka z kotwicą `$`). Do dopisania, gdy pojawi się
   zlecenie tego spedytora z tymi rubrykami.
 
+**Rozpoznanie zlecenia po numerze + załączniki przy zleceniu (właściciel: „każde zlecenie jest
+rozpoznawane do nr zlecenia — wtedy nie będzie potrzeby dodawać kolejnych dokumentów; jak wgramy
+drugi dokument do tego samego zlecenia, to po prostu dociągną się brakujące dane"; „po imporcie
+zleceń oryginalne PDF zostaną zachowane jako załączniki — analogicznie jak dogram POD/CMR/
+potwierdzenie dostawy, program będzie dodawać także pole inne"):**
+- **Numer zlecenia jako klucz.** `src/lib/loads/orderNumber.ts` — porównanie na formie
+  znormalizowanej (same znaki alfanumeryczne, wielkie litery), więc „zd 1797-6 2026" trafia w
+  „ZD/1797/6/2026". Ta sama reguła stała już w SQL (`public.normalized_order_number`, 0010) i w
+  `mail-poll/relevance.ts` — teraz jest JEDNO źródło w `src/`, a kopia dla Deno jedzie przez
+  `scripts/build-edge-shared.mjs` (relevance.ts re-eksportuje ją i próg `MIN_ORDER_NUMBER_LENGTH`).
+- **Import nie tworzy duplikatu**: po odczycie dokumentów `ImportOrderDialog` szuka zlecenia o tym
+  numerze wśród istniejących i wchodzi w tryb uzupełniania — zielony baner „Rozpoznane zlecenie
+  …", guzik zapisu zmienia się na „Uzupełnij zlecenie …", a wartości JUŻ ZAPISANE wygrywają
+  (dokument wypełnia tylko puste pola). Wyjście awaryjne: „Utwórz mimo to nowe zlecenie". Druga
+  straż stoi przy ZAPISIE (numer bywa wpisany ręcznie po odczycie) — wtedy zamiast cichego insertu
+  jest komunikat i ten sam wybór. Guzik „Dopnij PDF" przy wierszu ZOSTAJE, ale nie jest już
+  konieczny.
+- **Załączniki**: migracja **0015** (ZAAPLIKOWANA przez MCP) — tabela `load_documents` + prywatny
+  bucket `load-documents` (polityki select/insert/update/delete dla `authenticated`, bo tu pisze
+  przeglądarka, inaczej niż w `order-emails`, gdzie pisze tylko poller) + Realtime. Rodzaje:
+  `zlecenie` / `list_przewozowy` / `pod_cmr` / `inne` (CHECK; etykiety w `src/types/loadDocument.ts`).
+  KAŻDY wgrany przy imporcie plik jest zapisywany — także ten, którego nie udało się odczytać.
+  Rodzaj zgadywany z nazwy pliku (`guessDocumentKind`; separatory `_ - .` zamieniane na spacje,
+  bo bez tego „POD_podpisany.pdf" i „CMR_scan.pdf" nie łapały się w `\b`), do zmiany listą.
+- Kolumna `bucket` w `load_documents` jest po to, żeby załącznik z maila (leży już w `order-emails`)
+  dało się PODPIĄĆ zamiast kopiować — `SkrzynkaPanel` robi to po udanym zapisie (`onSaved` dostaje
+  teraz `loadId`). Kasowanie dokumentu z bucketa maili usuwa tylko podpięcie, nie oryginał maila.
+- Przy wierszu doszedł guzik **„Dokumenty (N)"** (`LoadDocumentsDialog`): lista z „Otwórz"
+  (podpisany URL, bucket jest prywatny), zmiana rodzaju, usunięcie i wgranie kolejnych plików
+  (POD/CMR/potwierdzenie/inne). Usunięcie ZLECENIA kasuje pliki z Storage PRZED usunięciem wiersza
+  (`removeStoredFilesForLoad`) — `on delete cascade` sprząta tylko wiersze, do Storage Postgres nie
+  sięga.
+- **Zweryfikowane**: logika — 20 sprawdzeń (`scratch-dokumenty.test.mts`, plik tymczasowy:
+  normalizacja numeru, dopasowanie, próg długości, zgadywanie rodzaju). Przeglądarka (Playwright,
+  tymczasowa strona `/test-dokumenty`): wpisanie numeru w INNYM zapisie („zd 1797-6 2026") przy
+  zapisie rozpoznaje istniejące zlecenie, podciąga jego spedycję i termin płatności, zostawia
+  kontener z dokumentu, a „Utwórz mimo to nowe zlecenie" wraca do zwykłego zapisu. Baza — REST
+  widzi `load_documents` (brak błędu cache schematu), insert bez sesji odbity przez RLS (42501).
+  **NIE zweryfikowane na żywym koncie**: samo wgranie pliku do Storage i podgląd podpisanym URL-em
+  (środowisko sesji nie ma konta) — pierwszy import u właściciela to pokaże.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

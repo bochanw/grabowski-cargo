@@ -12,20 +12,17 @@
 // ============================================================
 
 import type { RawMessage } from "./mailSource.ts";
+// Jedno źródło prawdy dla normalizacji numeru i progu długości: src/lib/loads/orderNumber.ts (kopia
+// dla Deno generowana przez scripts/build-edge-shared.mjs). Ta sama reguła stoi w SQL jako
+// `public.normalized_order_number` — obie strony porównania muszą powstawać tak samo.
+import { MIN_ORDER_NUMBER_LENGTH, normalizeOrderNumber } from "./shared/orderNumber.ts";
 
-// Krótsze numery zleceń pomijamy przy dopasowywaniu po treści — „12/26" trafiłoby przypadkiem
-// w dowolny numer faktury albo datę w stopce maila.
-export const MIN_ORDER_NUMBER_LENGTH = 5;
+export { MIN_ORDER_NUMBER_LENGTH, normalizeOrderNumber };
 
 export interface Relevance {
   relevant: boolean;
   matchedLoadId: string | null;
   reason: string;
-}
-
-/** Ta sama normalizacja co `public.normalized_order_number` w SQL — obie strony porównania powstają tak samo. */
-export function normalizeOrderNumber(value: string): string {
-  return value.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
 }
 
 export function assessRelevance(

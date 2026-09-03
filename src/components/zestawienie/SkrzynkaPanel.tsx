@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { supabase } from "@/lib/supabase/client";
 import { triggerMailPoll, useEmailInbox, useIngestState, useSetEmailStatus } from "@/hooks/useEmailInbox";
+import { useLinkExistingDocument } from "@/hooks/useLoadDocuments";
+import { guessDocumentKind } from "@/types/loadDocument";
+import type { EmailAttachment } from "@/types/emailMessage";
 import type { EmailMessage } from "@/types/emailMessage";
 import type { Load } from "@/types/load";
 import { ImportOrderDialog } from "./ImportOrderDialog";
@@ -40,6 +44,7 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
   const { data: messages, isLoading, isError, error } = useEmailInbox();
   const { data: ingestState } = useIngestState();
   const setStatus = useSetEmailStatus();
+  const linkDocument = useLinkExistingDocument();
   const [openMail, setOpenMail] = useState<EmailMessage | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -196,8 +201,29 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
           initialParsed={openMail.parsed ?? undefined}
           recentLoads={loads}
           onClose={() => setOpenMail(null)}
-          onSaved={async () => {
+          onSaved={async (loadId) => {
             await setStatus(openMail.id, "accepted");
+            // Załącznik maila JUŻ leży w Storage (bucket `order-emails`, zapisał go `mail-poll`) —
+            // podpinamy istniejący plik do zlecenia zamiast kopiować go drugi raz. Dzięki temu
+            // zlecenie z maila ma swoje oryginały tak samo jak zlecenie wgrane ręcznie.
+            const { data } = await supabase
+              .from("email_attachments")
+              .select("*")
+              .eq("email_message_id", openMail.id);
+            for (const attachment of (data ?? []) as EmailAttachment[]) {
+              if (!attachment.storage_path) continue;
+              const error = await linkDocument({
+                loadId,
+                bucket: "order-emails",
+                storagePath: attachment.storage_path,
+                fileName: attachment.filename,
+                mimeType: attachment.mime_type,
+                sizeBytes: attachment.size_bytes,
+                kind: guessDocumentKind(attachment.filename ?? "", attachment.parse_source),
+                parseSource: attachment.parse_source,
+              });
+              if (error) setNotice(`Zlecenie zapisane, ale nie udało się podpiąć załącznika ${attachment.filename ?? ""}: ${error}`);
+            }
             setOpenMail(null);
           }}
         />

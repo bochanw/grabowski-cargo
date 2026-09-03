@@ -16,6 +16,8 @@ import { ActivityLogPanel } from "./ActivityLogPanel";
 import { SkrzynkaPanel } from "./SkrzynkaPanel";
 import { useEmailInbox } from "@/hooks/useEmailInbox";
 import { ContractorsDialog } from "./ContractorsDialog";
+import { LoadDocumentsDialog } from "./LoadDocumentsDialog";
+import { removeStoredFilesForLoad, useLoadDocuments } from "@/hooks/useLoadDocuments";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { useContractors } from "@/hooks/useContractors";
@@ -134,7 +136,8 @@ type Dialog =
   | { kind: "attach"; load: Load }
   | { kind: "contractors" }
   | { kind: "view" }
-  | { kind: "invoice"; loadIds: string[] };
+  | { kind: "invoice"; loadIds: string[] }
+  | { kind: "documents"; load: Load };
 
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -154,6 +157,14 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const fleet = fleetData ?? EMPTY_FLEET;
   const { data: contractors = [] } = useContractors();
   const contractorNames = useMemo(() => new Map(contractors.map((c) => [c.id, c.name])), [contractors]);
+
+  // Załączniki (oryginalne PDF-y zlecenia, POD/CMR, inne) — licznik przy każdym wierszu.
+  const { data: loadDocuments = [] } = useLoadDocuments();
+  const documentCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const document of loadDocuments) counts.set(document.load_id, (counts.get(document.load_id) ?? 0) + 1);
+    return counts;
+  }, [loadDocuments]);
 
   // Widok jest PER UŻYTKOWNIK (Supabase, migracja 0007): które kolumny, w jakiej kolejności i ile
   // pierwszych zamrożonych. Dopóki ustawienia się wczytują, `resolveColumns(null)` daje widok
@@ -346,6 +357,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     const label = load.order_number ? `zlecenie ${load.order_number}` : "to zlecenie";
     if (!window.confirm(`Usunąć ${label}? Tej operacji nie da się cofnąć.`)) return;
     setSaveError(null);
+    // Wiersze dokumentów znikną same (`on delete cascade`), ale pliki w Storage nie — Postgres do
+    // niego nie sięga, więc kasujemy je zanim zniknie zlecenie (potem nie będzie po czym ich znaleźć).
+    await removeStoredFilesForLoad(load.id);
     const error = await deleteLoad(load.id);
     if (error) setSaveError(`Nie udało się usunąć: ${error}`);
   }
@@ -469,6 +483,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           }}
         />
       )}
+      {dialog?.kind === "documents" && (
+        <LoadDocumentsDialog load={dialog.load} onClose={() => setDialog(null)} />
+      )}
       {dialog?.kind === "attach" && (
         <ImportOrderDialog
           mode="attach"
@@ -555,6 +572,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 fleet={fleet}
                 contractors={contractors}
                 contractorNames={contractorNames}
+                documentCounts={documentCounts}
                 editingCell={editingCell}
                 onStartEdit={setEditingCell}
                 onCancelEdit={() => setEditingCell(null)}
@@ -563,6 +581,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 onToggleSelected={toggleSelected}
                 onAttach={(load) => setDialog({ kind: "attach", load })}
                 onInvoice={(load) => setDialog({ kind: "invoice", loadIds: [load.id] })}
+                onDocuments={(load) => setDialog({ kind: "documents", load })}
                 onDelete={handleDelete}
               />
             ))}
@@ -587,12 +606,15 @@ interface RowHandlers {
   onToggleSelected: (id: string) => void;
   contractors: Contractor[];
   contractorNames: Map<string, string>;
+  /** Ile dokumentów wisi przy zleceniu — licznik na guziku "Dokumenty". */
+  documentCounts: Map<string, number>;
   editingCell: EditingCell | null;
   onStartEdit: (cell: EditingCell) => void;
   onCancelEdit: () => void;
   onCommit: (load: Load, column: ColumnDef, raw: string) => void;
   onAttach: (load: Load) => void;
   onInvoice: (load: Load) => void;
+  onDocuments: (load: Load) => void;
   onDelete: (load: Load) => void;
 }
 
@@ -649,12 +671,14 @@ function DirectionRows({
   onToggleSelected,
   contractors,
   contractorNames,
+  documentCounts,
   editingCell,
   onStartEdit,
   onCancelEdit,
   onCommit,
   onAttach,
   onInvoice,
+  onDocuments,
   onDelete,
 }: { direction: Direction; loads: Load[]; columns: ColumnDef[]; isFirst: boolean } & RowHandlers) {
   return (
@@ -749,6 +773,14 @@ function DirectionRows({
               }`}
             >
               {load.fakturownia_invoice_id ? "Faktura ✓" : "Faktura"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onDocuments(load)}
+              title="Dokumenty zlecenia: oryginały PDF, POD/CMR, potwierdzenie dostawy, inne"
+              className="mr-1 rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:border-zinc-500 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Dokumenty{documentCounts.get(load.id) ? ` (${documentCounts.get(load.id)})` : ""}
             </button>
             <button
               type="button"

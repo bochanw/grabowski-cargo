@@ -30,6 +30,7 @@ const MODULES = {
   "src/lib/orderTemplates/q4road.ts": "q4road.ts",
   "src/lib/orderTemplates/index.ts": "orderTemplates.ts",
   "src/lib/dates/workingDays.ts": "workingDays.ts",
+  "src/lib/loads/orderNumber.ts": "orderNumber.ts",
 };
 
 // Specyfikator w src → specyfikator w bundlu.
