@@ -85,14 +85,9 @@
     );
   }
 
-  /**
-   * Guzik uruchamiający wyszukiwanie. Formularza na `/multi` nie ma, więc nie ma się czym
-   * ograniczyć — rozstrzyga KRÓTKI, dokładny napis. W nawigacji strony stoi „Sprawdź kontener
-   * online" (długie), a nagłówki tabeli wyników to „Unit Number", „ISO Type"; jedno i drugie
-   * łapało się na luźne dopasowanie i klik nie robił nic.
-   */
   /** Napisy, w które NIGDY nie wolno kliknąć jako w „guzik wyszukiwania". */
-  const ZAKAZANE = /dostosuj|odrzu|zapisz moje|poka\S* wi\S*|ustawienia|preferenc|customize|manage|reject|settings|online/i;
+  const ZAKAZANE =
+    /dostosuj|odrzu|zapisz moje|poka\S* wi\S*|ustawienia|preferenc|customize|manage|reject|settings|online|statk|kei|terminal na \S*ywo|komunikat|awizacj/i;
 
   /**
    * Guzik uruchamiający wyszukiwanie — szukany OD POLA, nie od strony.
@@ -109,8 +104,8 @@
   function znajdzGuzik(pole) {
     const dobry = (b) =>
       b.offsetParent !== null && !wOknieZgody(b) && napis(b).length <= 30 && !ZAKAZANE.test(napis(b));
-    const pasuje = (b) => /^(sprawd\S*|szukaj|wyszukaj|poka\S*|wy\S*lij|submit)$/i.test(napis(b)) ||
-      (/sprawd|wyszuk|szukaj/i.test(napis(b)) && napis(b).length <= 24);
+    const dokladne = (b) => /^(sprawd\S*|szukaj|wyszukaj|wy\S*lij|submit)$/i.test(napis(b));
+    const pasuje = (b) => dokladne(b) || (/sprawd|wyszuk|szukaj/i.test(napis(b)) && napis(b).length <= 24);
     const guziki = (zakres) =>
       [...zakres.querySelectorAll("button, input[type=submit], input[type=button], a")].filter(dobry);
 
@@ -121,10 +116,20 @@
       if (trafiony) return trafiony;
     }
 
-    // 2. Coraz szersze otoczenie pola — najbliższy guzik o właściwym napisie wygrywa.
-    for (let el = pole?.parentElement, krok = 0; el && krok < 6; el = el.parentElement, krok++) {
-      const trafiony = guziki(el).find(pasuje);
-      if (trafiony) return trafiony;
+    // 2. Coraz szersze otoczenie pola. DWA PRZEBIEGI: najpierw wyłącznie dokładny napis
+    //    („Sprawdź", „Szukaj"), dopiero potem luźniejsze dopasowanie.
+    //
+    //    Powód zmierzony u właściciela: na stronie pływa z boku przycisk „Sprawdź statki przy kei"
+    //    (otwiera okno z listą statków). Przy jednym przebiegu wygrywał go kolejnością w drzewie,
+    //    bo mieścił się w regule „krótki napis zawierający »sprawdź«" — i zamiast kontenera
+    //    sprawdzaliśmy statki. Napisy tego rodzaju są teraz też na liście ZAKAZANE, ale kolejność
+    //    „dokładne przed luźnym" chroni nas przed kolejnym takim przyciskiem, którego jeszcze
+    //    nie widzieliśmy.
+    for (const dopasowanie of [dokladne, pasuje]) {
+      for (let el = pole?.parentElement, krok = 0; el && krok < 6; el = el.parentElement, krok++) {
+        const trafiony = guziki(el).find(dopasowanie);
+        if (trafiony) return trafiony;
+      }
     }
 
     // 3. Ostatecznie cała strona, ale WYŁĄCZNIE po dokładnym napisie.

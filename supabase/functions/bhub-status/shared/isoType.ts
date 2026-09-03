@@ -1,3 +1,6 @@
+// PLIK GENEROWANY — nie edytuj tutaj. Źródło: src/lib/bhub/isoType.ts
+// Wygenerowane przez scripts/build-edge-shared.mjs (patrz komentarz w skrypcie).
+
 // Porównanie typu kontenera ze zlecenia z typem ISO podanym przez terminal.
 //
 // Właściciel: "Sprawdź ISOtype (długość) i porównaj czy się pokrywa z tą ze zlecenia, jak tak to

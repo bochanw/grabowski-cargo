@@ -38,6 +38,10 @@ const TARGETS = {
     "src/lib/dates/workingDays.ts": "workingDays.ts",
     "src/lib/bhub/status.ts": "status.ts",
     "src/lib/bhub/schedule.ts": "schedule.ts",
+    // Kod ISO terminala → zapis "Wielkości" ze zleceń ("22G1" → "20 DV"). Ta sama tabela służy
+    // w przeglądarce do alarmu przy niezgodności, a w funkcji do uzupełnienia pustego pola —
+    // dwie kopie rozjechałyby się przy pierwszej poprawce.
+    "src/lib/bhub/isoType.ts": "isoType.ts",
   },
 };
 

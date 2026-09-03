@@ -29,6 +29,7 @@
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.58.0";
 import { parseContainerPage } from "./parse.ts";
 import { isWithinPollingWindow, shouldTrackLoad } from "./shared/schedule.ts";
+import { isoToOrderSize } from "./shared/isoType.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -283,6 +284,10 @@ Deno.serve(async (req: Request) => {
         p_iso_type: parsed.isoType,
         p_shipping_line: parsed.shippingLine,
         p_gross_weight_kg: parsed.grossWeightKg,
+        // Kod ISO terminala w zapisie klienta ("22G1" → "20 DV"). RPC wpisze to WYŁĄCZNIE w puste
+        // pole „Wielkość" — przy rozbieżności appka i tak alarmuje w kolumnie statusu, a cicha
+        // podmiana tego, co wpisał dyspozytor albo dokument, byłaby gorsza niż widoczna sprzeczność.
+        p_container_size: isoToOrderSize(parsed.isoType),
         p_error: null,
         p_parsed: true,
         p_details: fullDetails,
