@@ -128,6 +128,16 @@ class BrightDataSource implements StatusSource {
     if (/^\s*\{"error"/.test(text)) {
       throw new Error(`Bright Data nie pobrała strony: ${text.slice(0, 300)}`);
     }
+    // PUSTA odpowiedź przy statusie 200 zdarzyła się na produkcji i przez chwilę wyglądała jak
+    // "strona bez danych": do bazy poszły puste pola, a przy zleceniach zostały śmieci z
+    // poprzedniego przebiegu. Pusta treść to BŁĄD ODCZYTU i ma być tak nazwana, z adresem,
+    // o który pytaliśmy — bez tego nie da się odróżnić złego adresu od złej strony.
+    if (text.trim().length < 200) {
+      throw new Error(
+        `Bright Data zwróciła pustą odpowiedź (${text.trim().length} znaków) dla adresu ` +
+          `${containerUrl(containerNumber)} — sprawdź BHUB_CONTAINER_URL.`
+      );
+    }
     return text;
   }
 }

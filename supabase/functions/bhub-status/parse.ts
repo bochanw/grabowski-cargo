@@ -31,6 +31,13 @@ export interface ParsedContainer {
   details: Record<string, string>;
   /** Terminal odpowiedział, ale kontenera nie zna. */
   notFound: boolean;
+  /**
+   * Czy odpowiedź w ogóle udało się odczytać. `false` znaczy "nie wiem", a NIE "nic tam nie ma" —
+   * i tylko przy `true` wolno nadpisać to, co już stoi przy zleceniu. Bez tego rozróżnienia
+   * nieudany odczyt kasowałby poprzedni, dobry wynik (albo — jak się okazało na produkcji —
+   * zostawiał na wierzchu śmieci z wcześniejszego przebiegu, których nie da się już wyczyścić).
+   */
+  recognised: boolean;
 }
 
 // Nazwy z eksportu Baltic Hub idą PIERWSZE, bo findByLabel próbuje najpierw trafienia dokładnego:
@@ -160,10 +167,26 @@ export function parseWeight(raw: string | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** Kod ISO 6346 (22G1, 45G1, 22U1) wyłuskany z wartości rubryki. */
+/**
+ * Kod ISO 6346 (22G1, 45G1, 22U1, 22UT).
+ *
+ * Wzorzec jest WĄSKI, bo szeroki narobił szkody: pierwsza wersja `[2-4L9][0-9A-Z][A-Z][0-9A-Z]`
+ * łapała zwykłe angielskie słowa ze strony — do bazy trafiły "LINK" i "LEFT" jako typ kontenera.
+ * Teraz każdy znak musi być z zestawu dopuszczalnego w tej pozycji normy:
+ *   1. długość  — TYLKO 2 (20 stóp), 4 (40) i L (45). Kody 1/3/9/M/N/P (10, 30, 48, 49, 53
+ *      stóp) są w obrocie morskim martwe, a wpuszczone tu kosztowały: przy "M" słowo "MENU"
+ *      przechodziło jako poprawny kod kontenera.
+ *   2. wysokość (cyfry oraz C-F dla kontenerów o zmiennej wysokości)
+ *   3. rodzina  (G general, U open top, R chłodnia, T cysterna, P platforma …)
+ * "LINK" odpada na drugim znaku, "LEFT" na trzecim.
+ */
+const ISO_CODE = /^[24L][0-9CDEF][ABGHKNPRSTUV][0-9A-Z]$/;
+
 export function parseIsoCode(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const match = raw.toUpperCase().match(/\b([2-4L9][0-9A-Z][A-Z][0-9A-Z])\b/);
+  const value = (raw ?? "").trim().toUpperCase();
+  if (!value) return null;
+  if (ISO_CODE.test(value)) return value;
+  const match = value.match(/\b([24L][0-9CDEF][ABGHKNPRSTUV][0-9A-Z])\b/);
   return match ? match[1] : null;
 }
 
@@ -176,7 +199,7 @@ const NOT_FOUND = /brak danych|brak wynik|nie znaleziono|not found|no results/i;
 export function interpretRow(row: Record<string, string>): Omit<ParsedContainer, "details"> {
   const containerCell = pick(row, LABELS.container) ?? "";
   if (NOT_FOUND.test(containerCell) || Object.values(row).every((v) => !v.trim())) {
-    return { status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null, notFound: true };
+    return { status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null, notFound: true, recognised: true };
   }
 
   const location = pick(row, LABELS.location);
@@ -210,6 +233,7 @@ export function interpretRow(row: Record<string, string>): Omit<ParsedContainer,
     shippingLine: (pick(row, LABELS.shippingLine) ?? "").trim() || null,
     grossWeightKg: parseWeight(pick(row, LABELS.grossWeight)),
     notFound: false,
+    recognised: true,
   };
 }
 
@@ -270,6 +294,9 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
     shippingLine: null,
     grossWeightKg: null,
     notFound,
+    // Strona, której nie umieliśmy odczytać, NIE jest odpowiedzią "nic nie znaleziono" — chyba że
+    // sama tak mówi. Inaczej byłoby to milczące skasowanie poprzedniego, dobrego wyniku.
+    recognised: notFound,
     details: { ...describePage(html, text), _container: containerNumber },
   };
 }

@@ -144,13 +144,32 @@ Deno.serve(async (req: Request) => {
     try {
       const html = await source.fetchContainerPage(container);
       const parsed = parseContainerPage(html, container);
+      // "O co pytaliśmy i co wróciło" zapisujemy ZAWSZE. Bez tego nieudany odczyt nie pozwalał
+      // odróżnić złego adresu od złej strony — trzeba było dopytywać właściciela o treść sekretu.
+      const details = {
+        ...parsed.details,
+        _adres: containerUrl(container),
+        _dlugosc_odpowiedzi: String(html.length),
+      };
 
       if (parsed.notFound) {
         await admin.rpc("apply_bhub_check", {
           p_load_id: load.id,
           p_error: `Baltic Hub nie zna kontenera ${container}.`,
-          p_details: parsed.details,
+          p_parsed: true,
+          p_details: details,
         });
+        return;
+      }
+
+      if (!parsed.recognised) {
+        // Odpowiedź przyszła, ale nie umiemy jej odczytać. To NIE jest "kontener bez danych" —
+        // zapisujemy powód i migawkę, a dotychczasowe wartości przy zleceniu zostają nietknięte.
+        const message =
+          `Nie rozpoznałem odpowiedzi Baltic Hub dla ${container} (${html.length} znaków). ` +
+          `Migawka zapisana do diagnozy.`;
+        problems.push(message);
+        await admin.rpc("apply_bhub_check", { p_load_id: load.id, p_error: message, p_details: details });
         return;
       }
 
@@ -162,7 +181,8 @@ Deno.serve(async (req: Request) => {
         p_shipping_line: parsed.shippingLine,
         p_gross_weight_kg: parsed.grossWeightKg,
         p_error: null,
-        p_details: parsed.details,
+        p_parsed: true,
+        p_details: details,
       });
       if (rpcError) problems.push(`${container}: zapis — ${rpcError.message}`);
       else updated += 1;
