@@ -7,13 +7,13 @@
 // dostały identyczne `403` z nagłówkiem `cf-mitigated: challenge` (403 wraca nawet na
 // /robots.txt, więc blokada jest na całą domenę, nie na sam formularz).
 //
-// Wniosek: tryb `direct` NIE ZADZIAŁA, dopóki blokada obowiązuje — jest tu, bo nic nie kosztuje,
-// bo blokada bywa zdejmowana i bo pozwala odróżnić "nie działa transport" od "nie działa parser".
-// Realnie odpytywanie wymaga usługi, która przechodzi przez Cloudflare (tryb `proxy`).
+// Stąd tryb `brightdata`: Bright Data Web Unlocker pobiera stronę za nas prawdziwą przeglądarką
+// z adresu, któremu Cloudflare ufa, i zwraca gotowy HTML. Tryb `direct` (zwykły fetch) zostaje,
+// bo nic nie kosztuje i pozwala odróżnić "nie działa transport" od "nie działa parser".
 //
-// Przełączenie źródła to zmiana JEDNEJ zmiennej środowiskowej — cała reszta potoku (wybór
-// zleceń, rozpoznanie statusu, zapis, dziennik) jest wspólna i nie wie, skąd przyszedł HTML.
-// Ten sam wzorzec co przy skrzynce (MAIL_SOURCE: graph vs imap).
+// Przełączenie źródła to zmiana JEDNEJ zmiennej środowiskowej — cała reszta potoku (wybór zleceń,
+// rozpoznanie statusu, zapis, dziennik) jest wspólna i nie wie, skąd przyszedł HTML. Ten sam
+// wzorzec co przy skrzynce (MAIL_SOURCE: graph vs imap).
 // ===============================================================
 
 export interface StatusSource {
@@ -28,8 +28,10 @@ const UA =
 /**
  * Adres strony z wynikiem. DO POTWIERDZENIA na żywej stronie — z tego środowiska nie dało się jej
  * otworzyć (Cloudflare), więc nie wiemy, czy formularz wysyła GET z numerem w adresie, czy POST.
- * Zamiast zgadywać w kodzie, kształt adresu jest zmienną środowiskową: `{container}` w szablonie
- * zostaje podmienione na numer kontenera.
+ * Zamiast zgadywać w kodzie, kształt adresu jest zmienną środowiskową `BHUB_CONTAINER_URL`:
+ * `{container}` w szablonie zostaje podmienione na numer kontenera. Pierwszy przebieg przez
+ * Bright Data pokaże, czy ten domyślny adres jest właściwy — parse.ts dokłada wtedy do
+ * `loads.bhub_details` pola `_tekst_strony` i `_html` z tym, co faktycznie przyszło.
  */
 const DEFAULT_URL_TEMPLATE = "https://ebrama.baltichub.com/vbs-check-container?container={container}";
 
@@ -52,12 +54,11 @@ class DirectSource implements StatusSource {
     });
     const text = await res.text();
     if (!res.ok) {
-      // Rozpoznajemy blokadę wprost, żeby w appce nie stało bezużyteczne "HTTP 403".
       const mitigated = res.headers.get("cf-mitigated");
       if (res.status === 403 && (mitigated || /Just a moment|cf-chl|Cierpliwo/i.test(text))) {
         throw new Error(
-          "Baltic Hub odrzucił zapytanie (Cloudflare). Odczyt z serwera wymaga usługi przechodzącej " +
-            "przez zabezpieczenie — ustaw BHUB_SOURCE=proxy i klucz usługi."
+          "Baltic Hub odrzucił zapytanie (Cloudflare). Odczyt wprost z serwera nie działa — " +
+            "ustaw BHUB_SOURCE=brightdata i sekrety Bright Data."
         );
       }
       throw new Error(`Baltic Hub odpowiedział HTTP ${res.status}.`);
@@ -67,58 +68,50 @@ class DirectSource implements StatusSource {
 }
 
 /**
- * Usługa pobierająca stronę za nas prawdziwą przeglądarką z adresu, któremu Cloudflare ufa.
- * Obsłużone są dwa kształty API, bo wszystkie popularne usługi mieszczą się w jednym z nich:
+ * Bright Data Web Unlocker — https://api.brightdata.com/request, jedno zapytanie POST, w odpowiedzi
+ * surowy HTML strony docelowej (`format: "raw"`). Bright Data bierze na siebie rotację adresów,
+ * odciski przeglądarki i CAPTCHA.
  *
- *   BHUB_PROXY_KIND=get   — klucz i adres w parametrach (ScrapingBee, ScraperAPI, ZenRows)
- *   BHUB_PROXY_KIND=post  — klucz w nagłówku, adres w ciele JSON (Bright Data Web Unlocker)
- *
- * Reszta w zmiennych, żeby zmiana dostawcy ani zmiana nazw parametrów nie wymagała wdrożenia:
- *   BHUB_PROXY_ENDPOINT  — adres API usługi
- *   BHUB_PROXY_KEY       — klucz
- *   BHUB_PROXY_PARAMS    — dodatkowe parametry/pola jako JSON, np. {"render_js":"true"}
+ * Konfiguracja to DWA sekrety (Project Settings → Edge Functions → Secrets):
+ *   BRIGHTDATA_API_TOKEN — token z panelu Bright Data
+ *   BRIGHTDATA_ZONE      — nazwa strefy typu Web Unlocker
+ * Adres API jest wpisany na stałe świadomie: to jeden endpoint dla całej usługi, a każdy kolejny
+ * sekret to kolejne miejsce, w którym da się zrobić literówkę.
  */
-class ProxySource implements StatusSource {
-  readonly name = "proxy";
+class BrightDataSource implements StatusSource {
+  readonly name = "brightdata";
 
   async fetchContainerPage(containerNumber: string): Promise<string> {
-    const endpoint = Deno.env.get("BHUB_PROXY_ENDPOINT");
-    const key = Deno.env.get("BHUB_PROXY_KEY");
-    if (!endpoint || !key) {
+    const token = Deno.env.get("BRIGHTDATA_API_TOKEN");
+    const zone = Deno.env.get("BRIGHTDATA_ZONE");
+    if (!token || !zone) {
       throw new Error(
-        "Brak konfiguracji usługi pobierającej stronę (BHUB_PROXY_ENDPOINT / BHUB_PROXY_KEY) — " +
-          "uzupełnij sekrety Edge Functions."
+        "Brak konfiguracji Bright Data — uzupełnij sekrety BRIGHTDATA_API_TOKEN i BRIGHTDATA_ZONE " +
+          "w Project Settings → Edge Functions → Secrets."
       );
     }
-    const extra = JSON.parse(Deno.env.get("BHUB_PROXY_PARAMS") ?? "{}") as Record<string, unknown>;
-    const target = containerUrl(containerNumber);
-    const kind = Deno.env.get("BHUB_PROXY_KIND") ?? "get";
 
-    const res =
-      kind === "post"
-        ? await fetch(endpoint, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-            body: JSON.stringify({ url: target, format: "raw", ...extra }),
-          })
-        : await (() => {
-            const url = new URL(endpoint);
-            url.searchParams.set(Deno.env.get("BHUB_PROXY_KEY_PARAM") ?? "api_key", key);
-            url.searchParams.set(Deno.env.get("BHUB_PROXY_URL_PARAM") ?? "url", target);
-            for (const [k, v] of Object.entries(extra)) url.searchParams.set(k, String(v));
-            return fetch(url);
-          })();
-
+    const res = await fetch("https://api.brightdata.com/request", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ zone, url: containerUrl(containerNumber), format: "raw" }),
+    });
     const text = await res.text();
+
     if (!res.ok) {
-      // Treść błędu usługi bywa jedyną informacją, czemu nie działa (wyczerpany limit, zły klucz) —
-      // przycinamy, ale nie gubimy: ten komunikat ląduje w appce przy zleceniu.
-      throw new Error(`Usługa pobierająca stronę zwróciła HTTP ${res.status}: ${text.slice(0, 300)}`);
+      // Treść błędu Bright Daty bywa jedyną informacją, czemu nie działa (zły token, wyczerpany
+      // limit, nieistniejąca strefa) — przycinamy, ale nie gubimy: ten komunikat ląduje w appce
+      // przy zleceniu i jest widoczny w dymku komórki statusu.
+      throw new Error(`Bright Data zwróciła HTTP ${res.status}: ${text.slice(0, 300)}`);
+    }
+    // Bright Data potrafi zwrócić 200 z własnym błędem w treści, gdy nie zdołała odblokować strony.
+    if (/^\s*\{"error"/.test(text)) {
+      throw new Error(`Bright Data nie pobrała strony: ${text.slice(0, 300)}`);
     }
     return text;
   }
 }
 
 export function createStatusSource(): StatusSource {
-  return (Deno.env.get("BHUB_SOURCE") ?? "direct") === "proxy" ? new ProxySource() : new DirectSource();
+  return (Deno.env.get("BHUB_SOURCE") ?? "direct") === "brightdata" ? new BrightDataSource() : new DirectSource();
 }

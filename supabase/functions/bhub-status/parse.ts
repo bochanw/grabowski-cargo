@@ -173,13 +173,23 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
     });
   }
 
+  // Samodiagnoza pierwszego przebiegu: jeśli ze strony nie dało się wyciągnąć praktycznie nic,
+  // dokładamy do migawki jej treść. Bez tego pierwsze uruchomienie na żywym Bright Data
+  // powiedziałoby tylko "nic nie znalazłem" i dalej trzeba by zgadywać, czy zły jest adres strony,
+  // czy słownik etykiet. Limit rozmiaru jest twardy, a gdy etykiety już się rozpoznają, ten
+  // dopisek znika sam.
+  const diagnostics: Record<string, string> =
+    Object.keys(details).length < 3
+      ? { _tekst_strony: text.slice(0, 2000), _html: html.slice(0, 4000) }
+      : {};
+
   return {
     status,
     statusRaw: statusRaw ?? holdsRaw ?? null,
     isoType: parseIsoCode(findByLabel(details, LABELS.isoType)) ?? parseIsoCode(text),
     shippingLine: findByLabel(details, LABELS.shippingLine),
     grossWeightKg: parseWeight(findByLabel(details, LABELS.grossWeight)),
-    details: { ...details, _container: containerNumber },
+    details: { ...details, ...diagnostics, _container: containerNumber },
     notFound,
   };
 }

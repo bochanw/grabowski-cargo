@@ -883,9 +883,20 @@ tylko kontenery bez statusu ZP"):
     dopisywałoby wpis i utopiło prawdziwą historię.
   - Migracja **0017** (cron co 15 min) — **ŚWIADOMIE NIEZAAPLIKOWANA**: bez działającego transportu
     cron dzwoniłby tylko po to, żeby wpisać przy każdym zleceniu ten sam błąd.
-  - `supabase/functions/bhub-status/` — `deno check` przechodzi, **NIE wdrożona**. Źródło strony jest
-    wymienne (`BHUB_SOURCE=direct|proxy`, wzorzec `mailSource.ts`), adres strony i parametry usługi
-    w zmiennych środowiskowych.
+  - `supabase/functions/bhub-status/` — **WDROŻONA (v2)**, `deno check` przechodzi. Źródło strony
+    jest wymienne (`BHUB_SOURCE=direct|brightdata`, wzorzec `mailSource.ts`), adres strony
+    w `BHUB_CONTAINER_URL`. Sprawdzona strzałem w produkcję: bez autoryzacji odmawia (401), zła
+    metoda daje 405 — czyli wystartowała i chodzi po naszym kodzie.
+  - **Transport: właściciel wybrał Bright Data Web Unlocker** (najtaniej dla ruchu z Cloudflare:
+    ok. 1,5-3 USD za 1000 zapytań wobec ~7 u ZenRows i 75 kredytów/zapytanie u ScrapingBee).
+    `BrightDataSource` woła `POST https://api.brightdata.com/request` z `{zone, url, format:"raw"}`
+    i Bearer tokenem — kontrakt sprawdzony w dokumentacji Bright Daty, nie z pamięci.
+    **BRAKUJĄ TRZY SEKRETY** (Project Settings → Edge Functions → Secrets): `BHUB_SOURCE=brightdata`,
+    `BRIGHTDATA_API_TOKEN`, `BRIGHTDATA_ZONE` (nazwa strefy typu Web Unlocker). Do tego czasu appka
+    pokazuje wprost, czego brakuje, zamiast po cichu nic nie robić.
+  - **Tryb podglądu bez zapisu**: `POST /functions/v1/bhub-status` z `{"probeContainer":"OMTU2301120"}`
+    (tokenem zalogowanego użytkownika) pobiera stronę i zwraca, co z niej wyszło, NIE dotykając
+    ani jednego zlecenia — do sprawdzenia, czy `BHUB_CONTAINER_URL` jest właściwy.
   - UI: kolumna „Status BHub" przy numerze kontenera, guzik „Statusy BHub (N)" w pasku, znaczek
     kręcący się przy numerze kontenera w trakcie sprawdzania, sprawdzenie odpalane automatycznie
     po zapisaniu zlecenia (`onSaved`). Edycja statusu listą pięciu kodów (w bazie jest CHECK).
@@ -914,9 +925,9 @@ tylko kontenery bez statusu ZP"):
   liczy 9 z 10 (ZP pominięty). **UWAGA na Tailwind 4: `getComputedStyle` zwraca kolory jako
   `lab(...)`, nie `rgb(...)` — asercje na napis „rgb(" cicho nie przechodzą.**
 - **Czego NIE zweryfikowano i czego brakuje:**
-  1. **Transportu** — patrz blokada wyżej. Decyzja właściciela: oficjalne API (wymaga kontaktu
-     z BHub i prawdopodobnie stałego IP), płatna usługa przechodząca przez Cloudflare, albo program
-     na komputerze w biurze.
+  1. **Pierwszego przebiegu przez Bright Datę** — sekrety wpisuje właściciel, więc nikt jeszcze nie
+     pobrał tą drogą ani jednej strony. Dopóki to nie przejdzie, nie wiadomo nawet, czy domyślny
+     `BHUB_CONTAINER_URL` jest właściwym adresem (formularz może wysyłać POST, nie GET).
   2. **Parsera strony** (`supabase/functions/bhub-status/parse.ts`) — układu strony NIE WIDZIAŁEM
      ani razu. Parser jest napisany tak, żeby pierwsze prawdziwe uruchomienie samo powiedziało, jak
      stronę czytać: wyciąga WSZYSTKIE pary etykieta→wartość, komplet zapisuje do

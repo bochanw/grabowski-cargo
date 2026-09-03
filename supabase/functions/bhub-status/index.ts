@@ -15,12 +15,13 @@
 // wyłącznie pól statusu oraz wagi brutto.
 //
 // TRANSPORT: patrz source.ts — dziś baltichub.com jest za Cloudflare i odrzuca zapytania
-// z serwerowni (sprawdzone), więc bez trybu `proxy` funkcja zapisze przy zleceniach czytelny błąd
-// zamiast statusu. To jest zamierzone: martwy odczyt ma być WIDAĆ, a nie po cichu nic nie robić.
+// z serwerowni (sprawdzone), więc bez `BHUB_SOURCE=brightdata` i sekretów Bright Data funkcja
+// zapisze przy zleceniach czytelny błąd zamiast statusu. To jest zamierzone: martwy odczyt ma być
+// WIDAĆ, a nie po cichu nic nie robić.
 // ============================================================
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.58.0";
-import { createStatusSource } from "./source.ts";
+import { containerUrl, createStatusSource } from "./source.ts";
 import { parseContainerPage } from "./parse.ts";
 import { isWithinPollingWindow, shouldTrackLoad } from "./shared/schedule.ts";
 
@@ -71,8 +72,23 @@ Deno.serve(async (req: Request) => {
   }
   if (!authorized) return json({ ok: false, reason: "unauthorized", error: "Brak uprawnień do sprawdzania statusów." }, 401);
 
-  const body = (await req.json().catch(() => ({}))) as { loadIds?: string[] };
+  const body = (await req.json().catch(() => ({}))) as { loadIds?: string[]; probeContainer?: string };
   const requestedIds = Array.isArray(body.loadIds) ? body.loadIds.filter((id) => typeof id === "string") : null;
+
+  // Podgląd bez zapisu: pobiera stronę dla podanego kontenera i zwraca, co z niej wyszło.
+  // Po to, żeby dało się zobaczyć układ strony i sprawdzić adres w BHUB_CONTAINER_URL, nie
+  // dotykając ani jednego zlecenia. Nic nie zapisuje do bazy.
+  if (typeof body.probeContainer === "string" && body.probeContainer.trim()) {
+    const container = body.probeContainer.trim().toUpperCase();
+    const probe = createStatusSource();
+    try {
+      const html = await probe.fetchContainerPage(container);
+      const parsed = parseContainerPage(html, container);
+      return json({ ok: true, source: probe.name, url: containerUrl(container), parsed, htmlLength: html.length });
+    } catch (e) {
+      return json({ ok: false, source: probe.name, url: containerUrl(container), error: e instanceof Error ? e.message : String(e) });
+    }
+  }
 
   // Okno godzinowe obowiązuje TYLKO odpytywanie cykliczne. Dyspozytor, który kliknie „Sprawdź
   // teraz" o 20:00 albo w sobotę, ma dostać odpowiedź — ograniczenie jest po to, żeby nie
