@@ -675,6 +675,55 @@ tego: `MAIL_SOURCE=imap` + `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD`.
 **Do posprzątania:** tymczasowa funkcja diagnostyczna `probe-imap-tcp` na projekcie (nic nie robi,
 nie ma sekretów) — MCP nie umie kasować funkcji, więc do usunięcia w Dashboard → Edge Functions.
 
+**Nazwy terminali + BAF rozbity na stawkę bazową i dodatek (zgłoszenie właściciela po imporcie przez
+Claude: „«Gdynia Container Terminal» to po prostu GCT — miejsce zdawania i pobierania kontenerów";
+„w jednym zleceniu było, że stawka już jest z BAF 13% — wtedy program powinien, znając stawkę,
+rozdzielić, ile wynosi stawka bazowa, ile BAF (przy wpisanym będziemy wypychać do faktur albo stawkę
+z BAF razem, albo BAF jako oddzielną pozycję na fakturze — do konfiguracji via klient)"):**
+- **Znaleziona przyczyna gubienia terminala: `matchPickupLocation` znało tylko skróty, a jej wynik
+  NADPISYWAŁ wartość z modelu** (`parsed.pickup_type = matchPickupLocation(...)`), więc pełna nazwa
+  z dokumentu nie tylko nie trafiała w listę, ale ZNIKAŁA bez śladu. Dwie poprawki naraz:
+  `pickupLocations.ts` zna pełne nazwy (Gdynia Container Terminal → GCT, Baltic/Bałtycki Terminal
+  Kontenerowy → BCT, Baltic Hub i DCT Gdańsk → BHub), a nierozpoznana wartość ZOSTAJE tekstem z
+  dokumentu (formularz pokazuje ją jako dodatkową opcję).
+- Normalizacja przeniesiona do `normalizeParsedOrder` (jedno miejsce dla przeglądarki i dla
+  `mail-poll`) — call-site'y w `parseOrderPdf.ts` i `mail-poll/index.ts` już jej nie powtarzają.
+  Doszedł `normalizeTerminalName` dla **miejsca zdania kontenera** (właściciel: GCT to też miejsce
+  ZDAWANIA): skraca tylko wtedy, gdy CAŁA wartość jest nazwą terminala — „Depot Gdańsk, ul.
+  Kontenerowa 7" zostaje w całości, bo `matchPickupLocation` (szuka fragmentu) skasowałaby adres.
+- **BAF**: `src/lib/invoice/baf.ts` (`splitBaf`) liczy w obie strony — stawka Z BAF-em („3000, w tym
+  BAF 13%" → baza 2654,87 + BAF 345,13) i BAF doliczany („2000 + 13%" → 2000 + 260). BAF liczony
+  jako RÓŻNICA, nie osobnym mnożeniem, żeby dwie pozycje faktury sumowały się co do grosza do kwoty
+  uzgodnionej ze spedytorem. `ParsedOrder` ma teraz `baf_percentage` i `rate_includes_baf`
+  (`null` = „dokument nie mówi", liczymy jak doliczany — `false` to informacja, nie brak, więc
+  `mergeParsedOrders`/`isEmpty` rozróżniają jedno od drugiego).
+- `supabase/migrations/0013_baf_split_and_invoice_mode.sql` (**ZAAPLIKOWANA przez MCP** + `notify
+  pgrst`): `loads.freight_base_amount` (arkusz miał %BAF, Kwotę BAF i SUMĘ — brakowało samej bazy) i
+  `contractors.baf_invoice_mode` (`combined` domyślnie / `separate`). Zapis zlecenia wypełnia
+  `freight_base_amount` + `baf_amount` + `total_amount` + `invoice_amount` (= kwota razem).
+- Edycja inline: stawka bazowa, %BAF i SUMA to jedna zależność — zmiana którejkolwiek przelicza
+  pozostałe (SUMA liczy w dół, baza w górę), a „Kwota" z bloku Fakturowanie idzie za nimi TYLKO
+  dopóki faktura nie została wystawiona (potem jest zapisem tego, co poszło do Fakturowni).
+- Okno faktury: przy `separate` jedno zlecenie daje DWIE pozycje (fracht + „Dodatek paliwowy BAF
+  13% — kontener …"), przy `combined` jedną na kwotę razem. Po wystawieniu `invoice_amount` zlecenia
+  to SUMA jego pozycji (wcześniej kod zakładał jedną pozycję na zlecenie).
+- Funkcja `parse-order-pdf` **wdrożona przez MCP (v6)**: schemat ma `baf_percentage`/
+  `rate_includes_baf`, prompt (zasada 5) każe przepisać kwotę TAK JAK STOI i nie liczyć BAF-u
+  samemu, a opis `pickup_type` wymienia pełne nazwy terminali.
+- **Zweryfikowane na produkcji, nie na reprodukcji**: dwa strzały curl-em w wdrożoną funkcję —
+  „stawka 3000 zawiera BAF 13%" → `rate_amount 3000, baf_percentage 13, rate_includes_baf true`,
+  `pickup_type` „GCT"; „2000 + BAF 13%" → `false`, terminal „Baltic Container Terminal" (appka sama
+  sprowadza do BCT). Logika: 38 sprawdzeń (`scratch-baf.test.mts`, plik tymczasowy — rozbicie w obie
+  strony, grosze, round-trip, terminale, scalanie `false`/`null`). Przeglądarka (Playwright, `next
+  dev`, tymczasowa strona `/test-baf` z mockami): faktura `separate` = 2654,87 + 345,13 przy sumie
+  3000, faktura `combined` = jedna pozycja 3000, formularz importu pokazuje rozbicie zdaniem pod
+  polami. **NIE zweryfikowane na żywym koncie** (środowisko sesji nie ma konta) — pierwsze zlecenie
+  z BAF-em u właściciela pokaże resztę.
+- **UWAGA przy uruchamianiu skrzynki: `mail-poll` na produkcji jest DALEJ w wersji sprzed tej
+  zmiany** (nie ma sekretów Exchange'a, więc i tak nie działa). Przed włączeniem odczytu maili
+  wdrożyć ją ponownie — `supabase/functions/mail-poll/shared/` zostało już przegenerowane
+  (`node scripts/build-edge-shared.mjs`), więc wystarczy samo wdrożenie.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

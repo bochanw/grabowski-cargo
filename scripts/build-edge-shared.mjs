@@ -37,6 +37,7 @@ const REWRITES = [
   [/from "@\/types\/parsedOrder"/g, 'from "./parsedOrder.ts"'],
   [/from "\.\.\/\.\.\/types\/parsedOrder"/g, 'from "./parsedOrder.ts"'],
   [/from "\.\.\/containers\/tare"/g, 'from "./tare.ts"'],
+  [/from "\.\.\/lib\/orderTemplates\/pickupLocations"/g, 'from "./pickupLocations.ts"'],
   [/from "\.\/pickupLocations"/g, 'from "./pickupLocations.ts"'],
   [/from "\.\/q4road"/g, 'from "./q4road.ts"'],
 ];

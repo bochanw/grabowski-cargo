@@ -51,6 +51,7 @@ export interface Load {
   rate_misc: string | null;
   adr_flag: string | null;
   gct_leasing_addons: number | null;
+  freight_base_amount: number | null; // migracja 0013 — stawka bazowa (fracht bez BAF-u)
   baf_percentage: number | null;
   baf_amount: number | null;
   total_amount: number | null;

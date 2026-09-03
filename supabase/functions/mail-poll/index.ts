@@ -31,7 +31,6 @@ import { type MailSource, MailSourceError } from "./mailSource.ts";
 import { assessRelevance, MIN_ORDER_NUMBER_LENGTH, normalizeOrderNumber } from "./relevance.ts";
 import { extractPdfText } from "./pdfText.ts";
 import { matchKnownTemplate } from "./shared/orderTemplates.ts";
-import { matchPickupLocation } from "./shared/pickupLocations.ts";
 import { previousWorkingDay } from "./shared/workingDays.ts";
 import {
   EMPTY_PARSED_ORDER,
@@ -73,8 +72,8 @@ async function parseViaClaude(
     const data = await res.json().catch(() => null);
     if (!data || typeof data !== "object") return { ok: false, error: `nieoczekiwana odpowiedź (HTTP ${res.status})` };
     if (!data.ok) return { ok: false, error: String(data.error ?? data.reason ?? "nieznany błąd") };
-    const parsed = normalizeParsedOrder(data.parsed);
-    return { ok: true, parsed: { ...parsed, pickup_type: matchPickupLocation(parsed.pickup_type) } };
+    // normalizeParsedOrder sprowadza też nazwy terminali do listy (GCT/BCT/BHub) — patrz shared/parsedOrder.ts.
+    return { ok: true, parsed: normalizeParsedOrder(data.parsed) };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

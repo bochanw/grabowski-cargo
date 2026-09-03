@@ -12,6 +12,7 @@ import { useContractors } from "@/hooks/useContractors";
 import { findContractorByName, type Contractor } from "@/types/contractor";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
+import { describeBafSplit, splitBaf } from "@/lib/invoice/baf";
 import type { Direction, Load } from "@/types/load";
 
 type Stage = "pick" | "parsing" | "review" | "saving";
@@ -40,8 +41,12 @@ function loadToForm(load: Load): ParsedOrder {
     delivery_date: load.secondary_date ?? "",
     delivery_time: load.time_of_day ?? "",
     customs_location_or_status: load.customs_status ?? "",
-    rate_amount: load.invoice_amount,
+    // Stawka w formularzu to kwota RAZEM (baza + BAF) — z rozbicia zapisanego przy zleceniu wraca
+    // dokładnie ta sama liczba, którą podał dokument, a formToRow rozbije ją z powrotem.
+    rate_amount: load.total_amount ?? load.invoice_amount,
     rate_currency: "",
+    baf_percentage: load.baf_percentage,
+    rate_includes_baf: load.baf_amount === null ? null : true,
     payment_terms_days: load.payment_terms_days,
     payment_terms_note: load.payment_terms_note ?? "",
     notes: load.notes ?? "",
@@ -60,6 +65,10 @@ function loadToForm(load: Load): ParsedOrder {
 }
 
 function formToRow(form: ParsedOrder, carrierName: string, contractorId: string) {
+  // BAF: dokument podaje albo stawkę Z dodatkiem ("3 000, w tym BAF 13%"), albo bazę + procent —
+  // do bazy idzie zawsze rozbicie, żeby faktura mogła pokazać BAF osobną pozycją, gdy kontrahent
+  // tak ma ustawione. `invoice_amount` (kwota do zafakturowania) zostaje kwotą RAZEM.
+  const split = splitBaf(form.rate_amount, form.baf_percentage, form.rate_includes_baf === true);
   return {
     contractor_id: contractorId || null,
     order_number: form.order_number || null,
@@ -75,7 +84,11 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     secondary_date: form.delivery_date || null,
     time_of_day: form.delivery_time || null,
     customs_status: form.customs_location_or_status || null,
-    invoice_amount: form.rate_amount,
+    invoice_amount: split.total,
+    freight_base_amount: split.base,
+    baf_percentage: form.baf_percentage,
+    baf_amount: split.baf,
+    total_amount: split.total,
     payment_terms_days: form.payment_terms_days,
     payment_terms_note: form.payment_terms_note || null,
     notes: form.notes || null,
@@ -344,6 +357,13 @@ export function ImportOrderDialog({
   // PEŁNY — te same kolumny bazy, ale etykiety "rozładunek"/"złożenie pustego" są wtedy mylące
   // (zgłoszenie właściciela po pierwszym zleceniu eksportowym). Kierunek zmienia więc same podpisy,
   // nie pola.
+  // Rozbicie stawki na bazę i BAF pokazujemy pod polami OD RAZU (nie dopiero na fakturze) —
+  // właściciel ma zobaczyć, ile z uzgodnionej kwoty to fracht, a ile dodatek paliwowy.
+  const bafDescription = describeBafSplit(
+    splitBaf(form.rate_amount, form.baf_percentage, form.rate_includes_baf === true),
+    form.baf_percentage
+  );
+
   const isExport = form.direction === "E";
   const stopLabel = isExport ? "załadunek" : "rozładunek";
   const stopGenitive = isExport ? "załadunku" : "rozładunku";
@@ -593,6 +613,34 @@ export function ImportOrderDialog({
                 <Field label="Termin płatności (dni)">
                   <input type="number" className={inputClass} value={form.payment_terms_days ?? ""} onChange={(e) => updateField("payment_terms_days", e.target.value === "" ? null : Number(e.target.value))} />
                 </Field>
+
+                <Field label="BAF (dodatek paliwowy) — %">
+                  <input
+                    type="number"
+                    step="0.01"
+                    className={inputClass}
+                    value={form.baf_percentage ?? ""}
+                    onChange={(e) => updateField("baf_percentage", e.target.value === "" ? null : Number(e.target.value))}
+                    placeholder="np. 13"
+                  />
+                </Field>
+                <Field label="Czy stawka wyżej zawiera już BAF?">
+                  <select
+                    className={inputClass}
+                    value={form.rate_includes_baf === true ? "included" : form.rate_includes_baf === false ? "added" : ""}
+                    onChange={(e) => updateField("rate_includes_baf", e.target.value === "" ? null : e.target.value === "included")}
+                  >
+                    <option value="">— dokument nie mówi (liczymy jako doliczany) —</option>
+                    <option value="included">Tak — stawka jest z BAF-em</option>
+                    <option value="added">Nie — BAF dolicza się do stawki</option>
+                  </select>
+                </Field>
+
+                {bafDescription && (
+                  <p className="col-span-2 -mt-1 rounded bg-zinc-100 px-3 py-1.5 text-xs text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                    {bafDescription}
+                  </p>
+                )}
 
                 <Field label="Warunek płatności" full>
                   <input className={inputClass} value={form.payment_terms_note} onChange={(e) => updateField("payment_terms_note", e.target.value)} placeholder="np. od wpływu faktury" />

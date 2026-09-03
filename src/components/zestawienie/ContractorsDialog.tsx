@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import { useContractors, useDeleteContractor, useSaveContractor } from "@/hooks/useContractors";
-import { EMPTY_CONTRACTOR, type Contractor, type ContractorInput } from "@/types/contractor";
+import {
+  BAF_INVOICE_MODE_LABELS,
+  bafInvoiceMode,
+  EMPTY_CONTRACTOR,
+  type BafInvoiceMode,
+  type Contractor,
+  type ContractorInput,
+} from "@/types/contractor";
 
 // Kontrahenci = spedytorzy/zleceniodawcy z danymi do faktury (Fakturownia) i domyślnym terminem
 // płatności. Import dopasowuje spedytora z PDF-a po nazwie/aliasach i podstawia termin, gdy
@@ -105,6 +112,7 @@ export function ContractorsDialog({ onClose }: { onClose: () => void }) {
                   <div className="text-zinc-500">
                     {c.nip ? `NIP ${c.nip}` : "brak NIP"}
                     {c.payment_terms_days !== null ? ` · ${c.payment_terms_days} dni` : ""}
+                    {bafInvoiceMode(c) === "separate" ? " · BAF osobną pozycją" : ""}
                   </div>
                 </button>
               ))}
@@ -151,6 +159,23 @@ export function ContractorsDialog({ onClose }: { onClose: () => void }) {
                 </Field>
                 <Field label="Warunek płatności">
                   <input className={inputClass} value={form.payment_terms_note ?? ""} onChange={(e) => update("payment_terms_note", text(e.target.value))} placeholder="np. od wpływu faktury i listu przewozowego" />
+                </Field>
+                {/* BAF na fakturze jest cechą kontrahenta, nie zlecenia — właściciel: "będziemy
+                    wypychać do faktur albo stawkę z BAF razem, albo BAF jako oddzielną pozycję
+                    — do konfiguracji via klient". Rozbicie stawki liczy się przy zleceniu zawsze;
+                    to ustawienie decyduje tylko, ile pozycji zobaczy kontrahent na fakturze. */}
+                <Field label="BAF (dodatek paliwowy) na fakturze" full>
+                  <select
+                    className={inputClass}
+                    value={bafInvoiceMode(form)}
+                    onChange={(e) => update("baf_invoice_mode", e.target.value as BafInvoiceMode)}
+                  >
+                    {(Object.keys(BAF_INVOICE_MODE_LABELS) as BafInvoiceMode[]).map((mode) => (
+                      <option key={mode} value={mode}>
+                        {BAF_INVOICE_MODE_LABELS[mode]}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
                 <Field label="Uwagi" full>
                   <textarea className={inputClass} rows={2} value={form.notes ?? ""} onChange={(e) => update("notes", text(e.target.value))} />

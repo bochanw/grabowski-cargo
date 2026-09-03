@@ -25,6 +25,20 @@ export function buildRoute(load: Pick<Load, "direction" | "city" | "pickup_type"
   return load.direction === "E" ? `${EXPORT_ORIGIN_LABEL[exportOrigin]} - ${city} - ${port}` : `${port} - ${city} - ${port}`;
 }
 
+/**
+ * Tytuł OSOBNEJ pozycji z dodatkiem paliwowym — tylko dla kontrahentów z `baf_invoice_mode =
+ * 'separate'` (patrz src/types/contractor.ts). Nazywa to samo zlecenie co pozycja frachtowa, żeby
+ * na fakturze zbiorczej dało się zestawić dodatek z konkretnym kontenerem.
+ */
+export function buildBafPositionTitle(
+  load: Pick<Load, "container_number" | "order_number" | "baf_percentage">
+): string {
+  const container = (load.container_number ?? "").trim() || "?";
+  const order = (load.order_number ?? "").trim() || "?";
+  const percent = load.baf_percentage !== null && load.baf_percentage !== undefined ? ` ${load.baf_percentage}%` : "";
+  return `Dodatek paliwowy BAF${percent} — kontener ${container}, nr zlecenia ${order}`;
+}
+
 export function buildInvoiceTitle(
   load: Pick<Load, "direction" | "city" | "pickup_type" | "container_number" | "order_number">,
   exportOrigin: ExportOrigin = "poimport"
