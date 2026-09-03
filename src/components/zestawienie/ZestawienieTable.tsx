@@ -8,6 +8,7 @@ import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { splitBaf } from "@/lib/invoice/baf";
+import { shippingLineForNotes } from "@/lib/loads/leasing";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
@@ -885,6 +886,13 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
       patch.payment_terms_note = load.payment_terms_note ?? contractor.payment_terms_note;
     }
   }
+  // "Jeżeli w uwagach będzie Leasing, to wtedy gestia przestaw na Leasing" — także przy dopisaniu
+  // uwagi wprost w tabeli, nie tylko przy odczycie dokumentu.
+  if (load && column.key === "notes") {
+    const line = shippingLineForNotes(typeof value === "string" ? value : null, load.shipping_line);
+    if (line !== load.shipping_line) patch.shipping_line = line;
+  }
+
   // BAF: stawka bazowa, procent i SUMA to jedna zależność (baza + BAF = suma), więc edycja
   // KTÓREJKOLWIEK z nich przelicza pozostałe — inaczej kolumny rozjechałyby się po pierwszej
   // ręcznej poprawce, a faktura poszłaby ze starym rozbiciem.

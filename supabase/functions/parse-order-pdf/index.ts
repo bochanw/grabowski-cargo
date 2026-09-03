@@ -86,22 +86,24 @@ const EXTRACT_TOOL = {
       rate_includes_baf: { type: ['boolean', 'null'], description: 'Czy kwota w rate_amount ZAWIERA już BAF. true dla "stawka 3000 zł zawiera BAF 13%" / "w tym BAF", false dla "2000 zł + BAF 13%" / "BAF doliczany". Null, jeśli dokument nie mówi tego wprost — appka policzy wtedy BAF jako doliczany. NIE zgaduj: to decyduje o kwocie na fakturze.' },
       payment_terms_days: { type: ['number', 'null'], description: 'Liczba dni terminu płatności (np. z "60 dni od..." -> 60). Null, jeśli nieznana.' },
       payment_terms_note: { type: 'string', description: 'Od jakiego zdarzenia liczony jest termin płatności (np. "od daty wpływu faktury i listu przewozowego"). Pusty string, jeśli nie podano albo nie ma osobnego terminu dni.' },
-      notes: { type: 'string', description: 'Inne istotne informacje z dokumentu, których nie da się przypisać do pól wyżej (np. nietypowe wymagania, ważenie, kary umowne warte uwagi). Pusty string, jeśli nic takiego nie ma.' },
+      notes: { type: 'string', description: 'Inne istotne informacje z dokumentu, których nie da się przypisać do pól wyżej (np. nietypowe wymagania, ważenie, kary umowne warte uwagi, informacja o kontenerze LEASINGOWYM). Pusty string, jeśli nic takiego nie ma.' },
       // Poniższe pola pochodzą zwykle z DRUGIEGO dokumentu tego samego zlecenia — listu
       // przewozowego dla kierowcy. Jeden wgrany plik wypełni tylko część z nich; appka skleja
       // dokumenty po stronie klienta (mergeParsedOrders), więc pusty string tu niczego nie psuje.
       pickup_type: { type: 'string', description: 'Miejsce PODJĘCIA kontenera przez kierowcę, dosłownie jak w dokumencie: terminal (skrótem "GCT"/"BCT"/"BHub" albo pełną nazwą — "Gdynia Container Terminal" to GCT, "Baltic Container Terminal" to BCT, "Baltic Hub"/"DCT Gdańsk" to BHub) albo informacja, że kontener nie jest brany z terminala ("POIMPORT" — z wcześniejszego importu, "z depotu"). To NIE jest miejsce ZDANIA kontenera (tam jedzie po obsłudze — patrz submitted_where). Pusty string, jeśli nie podano.' },
       pin_booking: { type: 'string', description: 'Numer PIN / numer wizyty / numer bookingu (często podpisany "BKG") do awizacji na terminalu — sam numer, bez skrótu "BKG". To NIE jest numer rejestracyjny samochodu ani naczepy. Pusty string, jeśli nie ma.' },
+      seal_number: { type: 'string', description: 'Numer PLOMBY założonej na kontener (w dokumentach "plomba", "nr plomby", "seal", "seal no"). Sam numer/oznaczenie. To NIE jest numer kontenera ani bookingu. Pusty string, jeśli nie podano.' },
       goods_name: { type: 'string', description: 'Nazwa przewożonego towaru. Pusty string, jeśli nie podano.' },
       net_weight_kg: { type: ['number', 'null'], description: 'Waga samego TOWARU w kilogramach (na listach przewozowych bywa podpisana "waga towaru brutto" — chodzi o towar BEZ tary kontenera; appka sama doliczy tarę). Sama liczba w kg. Null, jeśli nieznana.' },
-      submitted_where: { type: 'string', description: 'Miejsce ZDANIA kontenera po obsłudze: przy imporcie pusty kontener wraca do depotu/terminala, przy eksporcie PEŁNY jedzie do portu/terminala. Przepisz dosłownie z dokumentu (appka sama skróci nazwę terminala). Pusty string, jeśli nie podano.' },
+      submitted_when: { type: 'string', description: 'Kiedy kontener ma być złożony/zdany — w dokumentach zwykle "cut off" / "cutoff" / "termin złożenia". Datę zapisz jako RRRR-MM-DD (z godziną po spacji, jeśli dokument ją podaje: "2026-09-12 14:00"). Jeśli dokument zamiast daty stawia warunek ("cut off wg armatora"), przepisz ten warunek dosłownie. Pusty string, jeśli nie podano.' },
+      submitted_where: { type: 'string', description: 'Miejsce ZDANIA kontenera po obsłudze: przy imporcie pusty kontener wraca do depotu/terminala, przy eksporcie PEŁNY jedzie do portu/terminala. Przepisz dosłownie z dokumentu (appka sama skróci nazwę terminala). Bywa tu nie miejsce, tylko INSTRUKCJA ("zgodnie z instrukcjami armatora", "wg dyspozycji spedytora") — wtedy przepisz tę instrukcję, nie zostawiaj pustego pola. Pusty string tylko wtedy, gdy dokument w ogóle o tym nie mówi.' },
       driver_name: { type: 'string', description: 'Imię i nazwisko kierowcy. Pusty string, jeśli nie podano.' },
       driver_id_number: { type: 'string', description: 'Numer dowodu osobistego/paszportu kierowcy. Pusty string, jeśli nie podano.' },
       vehicle_plate: { type: 'string', description: 'Numer rejestracyjny CIĄGNIKA/pojazdu. Pusty string, jeśli nie podano.' },
       trailer_plate: { type: 'string', description: 'Numer rejestracyjny NACZEPY/przyczepy. Pusty string, jeśli nie podano.' },
       driver_phone: { type: 'string', description: 'Telefon kierowcy. Pusty string, jeśli nie podano.' },
     },
-    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'goods_name', 'net_weight_kg', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
+    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'seal_number', 'goods_name', 'net_weight_kg', 'submitted_when', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
   },
 };
 
@@ -145,7 +147,10 @@ Zasady, których nie wolno złamać:
    jeśli w tekście zaraz po jej nagłówku stoi wartość należąca do kolejnej rubryki.
 10. Przy EKSPORCIE kontener jedzie od klienta do portu: u klienta następuje ZAŁADUNEK, a kontener
    zdawany jest PEŁNY. Przy IMPORCIE odwrotnie: u klienta rozładunek, pusty kontener wraca.
-11. Gdy dostajesz TREŚĆ MAILA zamiast dokumentu, obowiązują te same zasady, a szczególnie zasada 1:
+11. "Cut off" (albo "cutoff", "termin złożenia") to pole submitted_when — data, do której kontener
+   ma być złożony. Nie myl go z datą rozładunku/załadunku u klienta (delivery_date) ani z terminem
+   płatności.
+12. Gdy dostajesz TREŚĆ MAILA zamiast dokumentu, obowiązują te same zasady, a szczególnie zasada 1:
    mail często niesie tylko JEDNĄ informację ("kontener przesunięty na piątek", "nowy numer
    bookingu"). Wypełnij wtedy WYŁĄCZNIE te pola, które mail faktycznie podaje, a całą resztę
    zostaw pustą — appka scala takie uzupełnienie z istniejącym zleceniem i nadpisanie czegokolwiek

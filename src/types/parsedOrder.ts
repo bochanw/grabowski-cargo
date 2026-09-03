@@ -42,10 +42,15 @@ export interface ParsedOrder {
   // Z listu przewozowego (dokument dla kierowcy):
   pickup_type: string; // miejsce podjęcia kontenera — jedno z PICKUP_LOCATIONS (GCT/BCT/BHub)
   pin_booking: string; // numer wizyty / PIN albo booking
+  seal_number: string; // numer plomby założonej na kontener
   goods_name: string;
   net_weight_kg: number | null; // waga towaru z dokumentu ("Waga towaru brutto" na liście przewozowym)
   gross_weight: string; // wyliczane: net_weight_kg + tara kontenera (src/lib/containers/tare.ts); text, bo bywa "według armatora"
-  submitted_where: string; // miejsce złożenia pustego
+  // Kiedy kontener ma być złożony — w dokumentach zwykle "cut off". Text, nie data: bywa podany z
+  // godziną albo jako warunek ("cut off wg armatora"), a obcięcie tego do samej daty gubiłoby
+  // informację, po której dyspozytor planuje dzień.
+  submitted_when: string;
+  submitted_where: string; // miejsce złożenia pustego (bywa instrukcją: "zgodnie z instrukcjami armatora")
   driver_name: string;
   driver_id_number: string;
   vehicle_plate: string;
@@ -80,9 +85,11 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   notes: "",
   pickup_type: "",
   pin_booking: "",
+  seal_number: "",
   goods_name: "",
   net_weight_kg: null,
   gross_weight: "",
+  submitted_when: "",
   submitted_where: "",
   driver_name: "",
   driver_id_number: "",
@@ -162,6 +169,7 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     notes: text("notes"),
     pickup_type: matchPickupLocation(text("pickup_type")) || text("pickup_type"),
     pin_booking: text("pin_booking"),
+    seal_number: text("seal_number"),
     goods_name: text("goods_name"),
     net_weight_kg: num("net_weight_kg"),
     gross_weight: text("gross_weight"),
@@ -170,6 +178,7 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     // nie pasuje, ZOSTAWIAMY tekst z dokumentu — wcześniej nierozpoznana wartość znikała bez śladu
     // (formularz i tak pokaże ją jako dodatkową opcję). Miejsce zdania kontenera bywa zwykłym
     // adresem, więc skracamy je tylko wtedy, gdy CAŁA wartość jest nazwą terminala.
+    submitted_when: text("submitted_when"),
     submitted_where: normalizeTerminalName(text("submitted_where")),
     driver_name: text("driver_name"),
     driver_id_number: text("driver_id_number"),
