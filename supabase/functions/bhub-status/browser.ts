@@ -187,30 +187,46 @@ const POMOCNIKI = `
     return [...document.querySelectorAll('form')].find((f) => /multi/i.test(f.getAttribute('action') || '')) || null;
   }
 
+  /**
+   * Pole na numery. Wykluczenia są tu WAŻNIEJSZE niż dopasowania — zmierzone na produkcji:
+   *  - typy nietekstowe: pierwsza wersja wpisała numery w PRZYCISK RADIOWY 'name=seacontainer';
+   *  - pola wyszukiwarki serwisu: jedyne formularze na tej stronie to dwa razy 'GET /search',
+   *    a formularza na /multi NIE MA W OGÓLE (numery wysyła JavaScript, nie formularz).
+   */
+  const TYPY_TEKSTOWE = ['text', 'search', 'tel', 'url', 'email', ''];
+  function polaTekstowe() {
+    return widocznePola().filter((el) =>
+      el.tagName === 'TEXTAREA' || TYPY_TEKSTOWE.includes((el.type || 'text').toLowerCase()));
+  }
   function znajdzPole() {
-    const form = formularzWynikow();
-    if (form) {
-      const wForm = [...form.querySelectorAll('input, textarea')]
-        .filter((el) => el.type !== 'hidden' && el.offsetParent !== null);
-      if (wForm.length) return wForm[0];
-    }
-    const widoczne = widocznePola();
     const opis = (el) => ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || ''));
-    return widoczne.find((el) => /kontener|container|numer|\\bid\\b/i.test(opis(el)))
-        || widoczne.find((el) => el.tagName === 'TEXTAREA')
-        || widoczne.find((el) => (el.type || 'text') === 'text')
+    const szukajkaSerwisu = (el) => /search|szukaj/i.test(((el.form && el.form.getAttribute('action')) || '') + ' ' + opis(el));
+
+    const kandydaci = polaTekstowe();
+    const poza = kandydaci.filter((el) => !szukajkaSerwisu(el));
+    return poza.find((el) => /kontener|container|unit|numer/i.test(opis(el)))
+        || poza.find((el) => el.tagName === 'TEXTAREA')
+        || poza[0]
+        || kandydaci.find((el) => /kontener|container|unit/i.test(opis(el)))
         || null;
   }
 
-  /** Guzik wysyłający — tylko z formularza pola, żeby nie trafić w nawigację. */
+  /**
+   * Guzik uruchamiający wyszukiwanie. Formularza na /multi nie ma, więc nie ma się czym ograniczyć
+   * — rozstrzyga KRÓTKI, dokładny napis. W nawigacji stoi "Sprawdź kontener online" (długie),
+   * a nagłówki tabeli wyników to "Unit Number", "ISO Type" itd.; jedno i drugie łapało się na
+   * luźne dopasowanie i klik nie robił nic.
+   */
   function znajdzGuzik(pole) {
-    const zakres = (pole && pole.form) || formularzWynikow();
-    if (!zakres) return null;
-    const guziki = [...zakres.querySelectorAll('button, input[type=submit]')]
+    const zakres = (pole && pole.form) || document;
+    const wszystkie = [...zakres.querySelectorAll('button, input[type=submit], input[type=button], a')]
       .filter((b) => b.offsetParent !== null);
-    return guziki.find((b) => (b.type || '') === 'submit')
-        || guziki.find((b) => /sprawd|szukaj|wyszuk|poka/i.test((b.textContent || b.value || '')))
-        || guziki[0] || null;
+    const napis = (b) => (b.textContent || b.value || '').replace(/\\s+/g, ' ').trim();
+
+    return wszystkie.find((b) => (b.type || '') === 'submit' && !/search|szukaj/i.test(((b.form && b.form.getAttribute('action')) || '')))
+        || wszystkie.find((b) => /^(sprawd\\S*|szukaj|wyszukaj|poka\\S*)$/i.test(napis(b)))
+        || wszystkie.find((b) => napis(b).length <= 24 && /sprawd|wyszuk/i.test(napis(b)) && !/online/i.test(napis(b)))
+        || null;
   }
 
   /**
@@ -219,11 +235,25 @@ const POMOCNIKI = `
    * formularz na numery może być w ogóle nieaktywny.
    */
   function wybierzTrybPojedynczy() {
+    const zrobione = [];
+
+    // Bywa przyciskiem radiowym, nie napisem — na tej stronie jest radio 'name=seacontainer'.
+    const radia = [...document.querySelectorAll('input[type=radio], input[type=checkbox]')];
+    for (const r of radia) {
+      const etykieta = ((r.name || '') + ' ' + (r.value || '') + ' ' + (r.id || '') + ' ' +
+        ((r.labels && r.labels[0] && r.labels[0].textContent) || '')).replace(/\\s+/g, ' ');
+      if (/pojedyncz|single|seacontainer|kontener/i.test(etykieta) && !r.checked) {
+        r.click();
+        zrobione.push('radio ' + (r.name || '?') + '=' + (r.value || '?'));
+      }
+    }
+
     const kandydaci = [...document.querySelectorAll('button, a, label, [role=tab], [role=button], li, span')];
-    const cel = kandydaci.find((el) => /pojedyncze\\s*zapytanie/i.test((el.textContent || '').replace(/\\s+/g, ' ')));
-    if (!cel) return '(nie znalazłem przełącznika „pojedyncze zapytanie”)';
-    cel.click();
-    return 'kliknięto „' + (cel.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40) + '”';
+    const cel = kandydaci.find((el) => /pojedyncze\\s*zapytanie|single\\s*(query|request)/i
+      .test((el.textContent || '').replace(/\\s+/g, ' ')));
+    if (cel) { cel.click(); zrobione.push('napis „' + (cel.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 30) + '”'); }
+
+    return zrobione.length ? zrobione.join(' + ') : '(nie znalazłem przełącznika trybu)';
   }
 
   function opiszStrone() {
@@ -232,7 +262,9 @@ const POMOCNIKI = `
       adres: location.href,
       formularze: [...document.querySelectorAll('form')].slice(0, 10)
         .map((f) => (f.getAttribute('method') || 'GET') + ' ' + (f.getAttribute('action') || '-')).join(' | '),
-      pola: widocznePola().slice(0, 20).map(opisPola).join(' | '),
+      pola: [...document.querySelectorAll('input, textarea, select')].slice(0, 30)
+        .map((el) => opisPola(el) + (el.type === 'radio' || el.type === 'checkbox' ? (el.checked ? ' [zaznaczone]' : ' [odznaczone]') : '')
+          + (el.offsetParent === null ? ' [niewidoczne]' : '')).join(' | '),
       guziki: [...document.querySelectorAll('button, input[type=submit]')].slice(0, 20)
         .map((b) => (b.textContent || b.value || '').replace(/\\s+/g, ' ').trim()).filter(Boolean).join(' | '),
       tekst: (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300),
@@ -285,7 +317,11 @@ export function skryptWyslania(containers: string[]): string {
 /** Widoczny tekst strony — z niego czytamy karty kontenerów (patrz parse.ts). */
 export function skryptTresci(): string {
   return `(() => {${POMOCNIKI}
-    return JSON.stringify({ tekst: document.body?.innerText || '', ...opiszStrone() });
+    return JSON.stringify({
+      tekst: document.body?.innerText || '',
+      html: (document.documentElement?.outerHTML || '').slice(0, 60000),
+      ...opiszStrone(),
+    });
   })()`;
 }
 
@@ -330,6 +366,17 @@ async function poczekaj(
  * widoczny tekst wyników. Kluczowe jest to, że robi to PRZEGLĄDARKA: ma sesję, ciasteczka i token,
  * i wysyła dokładnie takie zapytanie, jakie serwis rozumie.
  */
+/**
+ * Błąd z MIGAWKĄ strony. Komunikat musi zostać krótki, bo trafia do `bhub_error`, a każda jego
+ * zmiana ląduje w dzienniku zmian; kod strony jest za duży, więc idzie osobno do `bhub_details`,
+ * które trigger dziennika pomija.
+ */
+export function bladZeSzczegolami(komunikat: string, szczegoly: Record<string, string>): Error {
+  const e = new Error(komunikat) as Error & { szczegoly?: Record<string, string> };
+  e.szczegoly = szczegoly;
+  return e;
+}
+
 export async function fetchViaBrowser(
   pageUrl: string,
   _postUrl: string,
@@ -360,30 +407,31 @@ export async function fetchViaBrowser(
     // pada wtedy dla NIEJ, nie dla właściwej strony. Czekamy więc na pole, nie na zdarzenie.
     const gotowa = await poczekaj(cdp, sessionId, skryptStanuStrony(), (s) => Boolean(s.gotowa), 25_000);
     if (!gotowa.ok) {
-      throw new Error(
+      throw bladZeSzczegolami(
         `Na stronie Baltic Hub nie pojawiło się pole na numery kontenerów w ciągu 25 s. ` +
-          `Tytuł: „${gotowa.stan.tytul ?? ""}”. Adres: ${gotowa.stan.adres ?? "?"}. ` +
-          `Pola: ${gotowa.stan.pola || "(brak)"}. Guziki: ${gotowa.stan.guziki || "(brak)"}. ` +
-          `Tekst: ${gotowa.stan.tekst ?? ""}`,
+          `Tytuł: „${gotowa.stan.tytul ?? ""}”. Migawka strony zapisana do diagnozy.`,
+        { _etap: "brak pola na numery", ...gotowa.stan },
       );
     }
 
     const wyslane = await odczytaj(cdp, sessionId, skryptWyslania(containers));
     if (!wyslane.wyslane) {
-      throw new Error(
+      throw bladZeSzczegolami(
         `Nie udało się uruchomić wyszukiwania: ${wyslane.powod ?? "nieznany powód"}. ` +
-          `Pola: ${wyslane.pola || "(brak)"}. Guziki: ${wyslane.guziki || "(brak)"}.`,
+          `Tryb: ${wyslane.tryb ?? "?"}. Migawka strony zapisana do diagnozy.`,
+        { _etap: "nie udało się uruchomić wyszukiwania", ...wyslane },
       );
     }
 
     const wyniki = await poczekaj(cdp, sessionId, skryptTresci(), (s) => maWyniki(s.tekst ?? ""), 40_000);
     if (!wyniki.ok) {
-      throw new Error(
+      throw bladZeSzczegolami(
+        // Krótko, bo `bhub_error` trafia do dziennika zmian. Komplet (spis pól, guziki, kod
+        // strony) idzie do migawki obok, której dziennik nie zapisuje.
         `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 40 s. ` +
           `Tryb: ${wyslane.tryb ?? "?"}. Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}. ` +
-          `Wpisano: „${wyslane.wpisano ?? ""}”. Adres: ${wyniki.stan.adres ?? "?"}. ` +
-          `Formularze: ${wyniki.stan.formularze || "(brak)"}. Guziki: ${wyniki.stan.guziki || "(brak)"}. ` +
-          `Tekst: ${(wyniki.stan.tekst ?? "").replace(/\s+/g, " ").slice(0, 250)}`,
+          `Migawka strony zapisana do diagnozy.`,
+        { _etap: "brak wyników", ...wyslane, ...wyniki.stan },
       );
     }
 

@@ -174,10 +174,19 @@ Deno.serve(async (req: Request) => {
       // Błąd transportu dotyczy CAŁEJ paczki — zapisujemy go przy każdym jej zleceniu, żeby żadne
       // nie zostało po cichu bez sprawdzenia (tak właśnie znikały zlecenia przy urwanej funkcji).
       const message = e instanceof Error ? e.message : String(e);
+      // Migawka strony (gdy błąd ją niesie) idzie do `p_details`, nie do komunikatu: dziennik
+      // zmian pomija to pole, więc kod strony nie zaśmieci historii zlecenia, a da się go odczytać.
+      const szczegoly = (e as { szczegoly?: Record<string, string> })?.szczegoly;
       problems.push(`${containers.join(", ")}: ${message}`);
       for (const load of batch) {
         await admin
-          .rpc("apply_bhub_check", { p_load_id: load.id, p_error: message })
+          .rpc("apply_bhub_check", {
+            p_load_id: load.id,
+            p_error: message,
+            ...(szczegoly
+              ? { p_details: { ...szczegoly, _paczka: containers.join(", "), _zrodlo: source.name } }
+              : {}),
+          })
           .then(() => undefined, () => undefined);
       }
       return;
