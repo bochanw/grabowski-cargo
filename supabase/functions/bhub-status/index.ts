@@ -21,7 +21,7 @@
 // ============================================================
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.58.0";
-import { containerUrl, createStatusSource } from "./source.ts";
+import { containersUrl, createStatusSource } from "./source.ts";
 import { parseContainerPage } from "./parse.ts";
 import { isWithinPollingWindow, shouldTrackLoad } from "./shared/schedule.ts";
 
@@ -31,19 +31,28 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Ile kontenerów na jeden przebieg i ile naraz.
+// Ile kontenerów na jeden przebieg, po ile w paczce i ile paczek naraz.
 //
-// Zmierzone na produkcji, nie oszacowane: jedno pobranie strony przez Bright Datę trwa ~25 s
-// (odblokowanie Cloudflare to prawdziwa przeglądarka po ich stronie). Pierwsza wersja szła
-// kontener po kontenerze i funkcja brzegowa wyczerpała czas życia po TRZECIM z pięciu — dwa
-// zlecenia zostały bez sprawdzenia i bez śladu, bo urwanie funkcji nie zapisuje błędu.
+// Baltic Hub przyjmuje WIELE kontenerów w jednym zapytaniu (formularz: "wpisywane po przecinku",
+// wersja testowa do dziesięciu) — widać to wprost w podglądzie zapytania: `id[]` powtórzone dla
+// każdego numeru. To nie jest optymalizacja na zapas: jedno pobranie przez Bright Datę trwa ~25 s
+// i tyle samo kosztuje, więc pytanie o każdy kontener osobno byłoby dziesięć razy dłuższe
+// i dziesięć razy droższe za DOKŁADNIE tę samą odpowiedź.
 //
-// Stąd pobieranie równoległe z ograniczeniem: pięć naraz mieści pięć kontenerów w ~25 s zamiast
-// ~125 s. Limit na przebieg jest niski świadomie — cron wraca co 15 minut, a najdawniej sprawdzane
-// idą pierwsze (kolejność z indeksu `loads_bhub_pending_idx`), więc nic nie zostaje pominięte na
-// stałe, nawet gdy kontenerów będzie kiedyś więcej niż zdąży jeden przebieg.
-const MAX_CONTAINERS_PER_RUN = 10;
-const CONCURRENCY = 5;
+// Zmierzone na produkcji: przy pytaniu po jednym funkcja brzegowa wyczerpała czas życia po TRZECIM
+// z pięciu kontenerów — a urwana funkcja nie zapisuje błędu, więc dwa zlecenia zostały bez
+// sprawdzenia i bez śladu. Teraz 30 kontenerów mieści się w trzech paczkach, po dwie naraz.
+// Kolejność "najdawniej sprawdzane pierwsze" (indeks `loads_bhub_pending_idx`) sprawia, że nadmiar
+// dojdzie w kolejnym przebiegu, a nie zostanie pominięty na stałe.
+const BATCH_SIZE = 10;
+const MAX_CONTAINERS_PER_RUN = 30;
+const CONCURRENT_BATCHES = 2;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
 
 /** Przetwarza `items` równolegle, ale nie więcej niż `size` naraz. */
 async function runPool<T>(items: T[], size: number, worker: (item: T) => Promise<void>): Promise<void> {
@@ -102,11 +111,11 @@ Deno.serve(async (req: Request) => {
     const container = body.probeContainer.trim().toUpperCase();
     const probe = createStatusSource();
     try {
-      const html = await probe.fetchContainerPage(container);
+      const html = await probe.fetchContainersPage([container]);
       const parsed = parseContainerPage(html, container);
-      return json({ ok: true, source: probe.name, url: containerUrl(container), parsed, htmlLength: html.length });
+      return json({ ok: true, source: probe.name, url: containersUrl([container]), parsed, htmlLength: html.length });
     } catch (e) {
-      return json({ ok: false, source: probe.name, url: containerUrl(container), error: e instanceof Error ? e.message : String(e) });
+      return json({ ok: false, source: probe.name, url: containersUrl([container]), error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -139,17 +148,37 @@ Deno.serve(async (req: Request) => {
   let updated = 0;
   const problems: string[] = [];
 
-  await runPool(targets, CONCURRENCY, async (load) => {
-    const container = (load.container_number ?? "").trim().toUpperCase();
+  // Jedno pobranie na PACZKĘ, potem rozdzielenie wyniku między zlecenia z tej paczki.
+  await runPool(chunk(targets, BATCH_SIZE), CONCURRENT_BATCHES, async (batch) => {
+    const containers = batch.map((load) => (load.container_number ?? "").trim().toUpperCase());
+    const adres = containersUrl(containers);
+
+    let html: string;
     try {
-      const html = await source.fetchContainerPage(container);
+      html = await source.fetchContainersPage(containers);
+    } catch (e) {
+      // Błąd transportu dotyczy CAŁEJ paczki — zapisujemy go przy każdym jej zleceniu, żeby żadne
+      // nie zostało po cichu bez sprawdzenia (tak właśnie znikały zlecenia przy urwanej funkcji).
+      const message = e instanceof Error ? e.message : String(e);
+      problems.push(`${containers.join(", ")}: ${message}`);
+      for (const load of batch) {
+        await admin
+          .rpc("apply_bhub_check", { p_load_id: load.id, p_error: message })
+          .then(() => undefined, () => undefined);
+      }
+      return;
+    }
+
+    for (const load of batch) {
+      const container = (load.container_number ?? "").trim().toUpperCase();
       const parsed = parseContainerPage(html, container);
-      // "O co pytaliśmy i co wróciło" zapisujemy ZAWSZE. Bez tego nieudany odczyt nie pozwalał
-      // odróżnić złego adresu od złej strony — trzeba było dopytywać właściciela o treść sekretu.
+      // "O co pytaliśmy i co wróciło" zapisujemy ZAWSZE — bez tego nieudany odczyt nie pozwalał
+      // odróżnić złego adresu od złej strony.
       const details = {
         ...parsed.details,
-        _adres: containerUrl(container),
+        _adres: adres,
         _dlugosc_odpowiedzi: String(html.length),
+        _paczka: containers.join(", "),
       };
 
       if (parsed.notFound) {
@@ -159,7 +188,7 @@ Deno.serve(async (req: Request) => {
           p_parsed: true,
           p_details: details,
         });
-        return;
+        continue;
       }
 
       if (!parsed.recognised) {
@@ -170,7 +199,7 @@ Deno.serve(async (req: Request) => {
           `Migawka zapisana do diagnozy.`;
         problems.push(message);
         await admin.rpc("apply_bhub_check", { p_load_id: load.id, p_error: message, p_details: details });
-        return;
+        continue;
       }
 
       const { error: rpcError } = await admin.rpc("apply_bhub_check", {
@@ -186,14 +215,6 @@ Deno.serve(async (req: Request) => {
       });
       if (rpcError) problems.push(`${container}: zapis — ${rpcError.message}`);
       else updated += 1;
-    } catch (e) {
-      // Błąd JEDNEGO kontenera nie może przerwać przebiegu — reszta ma zostać sprawdzona.
-      // Treść ląduje przy zleceniu (kolumna bhub_error, widoczna w dymku komórki statusu).
-      const message = e instanceof Error ? e.message : String(e);
-      problems.push(`${container}: ${message}`);
-      await admin
-        .rpc("apply_bhub_check", { p_load_id: load.id, p_error: message })
-        .then(() => undefined, () => undefined);
     }
   });
 

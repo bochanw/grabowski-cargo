@@ -18,42 +18,63 @@
 
 export interface StatusSource {
   readonly name: string;
-  /** Zwraca HTML strony z wynikiem dla podanego numeru kontenera. Rzuca przy błędzie transportu. */
-  fetchContainerPage(containerNumber: string): Promise<string>;
+  /**
+   * Zwraca HTML z wynikiem dla PACZKI kontenerów. Baltic Hub przyjmuje ich wiele w jednym
+   * zapytaniu (formularz: "wpisywane po przecinku", do dziesięciu), a jedno pobranie przez
+   * Bright Datę trwa ~25 s i tyle samo kosztuje — pytanie o dziesięć kontenerów osobno byłoby
+   * dziesięć razy dłuższe i dziesięć razy droższe za dokładnie tę samą informację.
+   */
+  fetchContainersPage(containerNumbers: string[]): Promise<string>;
 }
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
 /**
- * Adres strony z wynikiem oraz sposób wysłania zapytania. Formularz Baltic Hub okazał się
- * ZWYKŁĄ STRONĄ z polem i guzikiem „Sprawdź" (Vehicle Booking System, aplikacja jQuery), a nie
- * adresem z numerem w parametrze — pierwszy przebieg przez Bright Datę zwrócił pusty formularz.
- * Dlatego sposób wysyłki jest w całości konfigurowalny, bez zmiany kodu:
+ * Jak poprosić Baltic Hub o wyniki. Ustalone Z PODGLĄDU PRAWDZIWEGO ZAPYTANIA (właściciel pokazał
+ * zakładkę Sieć w przeglądarce), a nie zgadnięte: strona wysyła
  *
- *   BHUB_CONTAINER_URL          adres; `{container}` zostaje podmienione na numer kontenera
- *   BHUB_CONTAINER_METHOD       GET (domyślnie) albo POST
- *   BHUB_CONTAINER_BODY         treść POST-a, też z `{container}`; ustawienie jej wymusza POST
- *   BHUB_RENDER                 "true" = Bright Data uruchamia stronę w przeglądarce (drożej,
- *                               ale konieczne, gdy wynik dorysowuje JavaScript)
- *   BHUB_COUNTRY                kraj adresu wyjściowego, np. "pl"
+ *     POST https://baltichub.com/multi
+ *     lang=pl&id[]=OMTU2301120&id[]=MBUU1000292&…
+ *
+ * Sam adres strony `/dla-klienta/sprawdz-kontener` zwraca tylko formularz — pole na kontenery
+ * buduje JavaScript, więc w kodzie strony go nie ma i żaden adres z numerem w parametrze nie
+ * zadziała. To był brakujący element przez dwie rundy.
+ *
+ * Wszystko zostaje konfigurowalne, żeby zmiana po stronie terminala nie wymagała wdrożenia:
+ *   BHUB_CONTAINER_URL     adres (domyślnie jak wyżej)
+ *   BHUB_CONTAINER_BODY    treść zapytania; `{containers}` rozwija się w `id[]=…&id[]=…`
+ *   BHUB_CONTAINER_METHOD  domyślnie POST, gdy jest treść
+ *   BHUB_RENDER            "true" = Bright Data uruchamia stronę w przeglądarce
+ *   BHUB_COUNTRY           kraj adresu wyjściowego, np. "pl"
  */
-const DEFAULT_URL_TEMPLATE = "https://ebrama.baltichub.com/vbs-check-container";
+const DEFAULT_URL_TEMPLATE = "https://baltichub.com/multi";
+const DEFAULT_BODY_TEMPLATE = "lang=pl&{containers}";
+const DEFAULT_PARAM = "id[]";
 
-function fill(template: string, containerNumber: string, encode: boolean): string {
-  return template.replace("{container}", encode ? encodeURIComponent(containerNumber) : containerNumber);
+/**
+ * `{containers}` → `id%5B%5D=A&id%5B%5D=B`, `{container}` → pierwszy numer z paczki.
+ * Nawiasy kodujemy tak, jak robi to przeglądarka przy wysyłaniu formularza.
+ */
+export function fill(template: string, containers: string[]): string {
+  const list = containers
+    .map((c) => `${encodeURIComponent(DEFAULT_PARAM)}=${encodeURIComponent(c)}`)
+    .join("&");
+  return template
+    .replaceAll("{containers}", list)
+    .replaceAll("{container}", encodeURIComponent(containers[0] ?? ""));
 }
 
-export function containerUrl(containerNumber: string): string {
-  return fill(Deno.env.get("BHUB_CONTAINER_URL") ?? DEFAULT_URL_TEMPLATE, containerNumber, true);
+export function containersUrl(containers: string[]): string {
+  return fill(Deno.env.get("BHUB_CONTAINER_URL") ?? DEFAULT_URL_TEMPLATE, containers);
 }
 
 /** Zwykły fetch — patrz nagłówek pliku: dziś odbija się o Cloudflare. */
 class DirectSource implements StatusSource {
   readonly name = "direct";
 
-  async fetchContainerPage(containerNumber: string): Promise<string> {
-    const res = await fetch(containerUrl(containerNumber), {
+  async fetchContainersPage(containers: string[]): Promise<string> {
+    const res = await fetch(containersUrl(containers), {
       headers: {
         "user-agent": UA,
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -89,7 +110,7 @@ class DirectSource implements StatusSource {
 class BrightDataSource implements StatusSource {
   readonly name = "brightdata";
 
-  async fetchContainerPage(containerNumber: string): Promise<string> {
+  async fetchContainersPage(containers: string[]): Promise<string> {
     const token = Deno.env.get("BRIGHTDATA_API_TOKEN");
     const zone = Deno.env.get("BRIGHTDATA_ZONE");
     if (!token || !zone) {
@@ -102,11 +123,11 @@ class BrightDataSource implements StatusSource {
     // Pola wg dokumentacji Bright Daty (zone/url/format wymagane; method/body/render/country
     // opcjonalne). Wysyłamy tylko te, które faktycznie ustawiono — pusty `body` przy GET potrafi
     // zmienić zachowanie po stronie usługi.
-    const payload: Record<string, string> = { zone, url: containerUrl(containerNumber), format: "raw" };
-    const bodyTemplate = Deno.env.get("BHUB_CONTAINER_BODY");
+    const payload: Record<string, string> = { zone, url: containersUrl(containers), format: "raw" };
+    const bodyTemplate = Deno.env.get("BHUB_CONTAINER_BODY") ?? DEFAULT_BODY_TEMPLATE;
     const method = (Deno.env.get("BHUB_CONTAINER_METHOD") ?? (bodyTemplate ? "POST" : "GET")).toUpperCase();
     if (method !== "GET") payload.method = method;
-    if (bodyTemplate) payload.body = fill(bodyTemplate, containerNumber, true);
+    if (bodyTemplate) payload.body = fill(bodyTemplate, containers);
     if (Deno.env.get("BHUB_RENDER") === "true") payload.render = "true";
     const country = Deno.env.get("BHUB_COUNTRY");
     if (country) payload.country = country;
@@ -135,7 +156,7 @@ class BrightDataSource implements StatusSource {
     if (text.trim().length < 200) {
       throw new Error(
         `Bright Data zwróciła pustą odpowiedź (${text.trim().length} znaków) dla adresu ` +
-          `${containerUrl(containerNumber)} — sprawdź BHUB_CONTAINER_URL.`
+          `${containersUrl(containers)} — sprawdź BHUB_CONTAINER_URL.`
       );
     }
     return text;
