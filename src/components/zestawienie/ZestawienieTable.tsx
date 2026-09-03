@@ -11,6 +11,8 @@ import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
+import { SkrzynkaPanel } from "./SkrzynkaPanel";
+import { useEmailInbox } from "@/hooks/useEmailInbox";
 import { ContractorsDialog } from "./ContractorsDialog";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
@@ -100,6 +102,10 @@ type Dialog =
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isInboxOpen, setIsInboxOpen] = useState(false);
+  // Licznik przy guziku „Skrzynka" — zlecenie z maila ma się rzucać w oczy samo, bez
+  // zaglądania do panelu. Hook jest tu, a nie w panelu, bo licznik musi żyć także zamknięty.
+  const { data: inboxMessages } = useEmailInbox();
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -280,6 +286,18 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           </button>
           <button
             type="button"
+            onClick={() => setIsInboxOpen((open) => !open)}
+            title="Zlecenia odczytane ze skrzynki firmowej, czekające na zatwierdzenie"
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              isInboxOpen
+                ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                : "border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
+            }`}
+          >
+            Skrzynka{inboxMessages && inboxMessages.length > 0 ? ` (${inboxMessages.length})` : ""}
+          </button>
+          <button
+            type="button"
             onClick={() => setIsHistoryOpen((open) => !open)}
             className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
               isHistoryOpen
@@ -395,6 +413,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           </tbody>
         </table>
       </div>
+      {isInboxOpen && <SkrzynkaPanel onClose={() => setIsInboxOpen(false)} loads={loads} />}
       {isHistoryOpen && <ActivityLogPanel onClose={() => setIsHistoryOpen(false)} />}
       </div>
     </div>
