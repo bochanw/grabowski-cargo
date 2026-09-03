@@ -92,9 +92,14 @@ class DirectSource implements StatusSource {
     if (!res.ok) {
       const mitigated = res.headers.get("cf-mitigated");
       if (res.status === 403 && (mitigated || /Just a moment|cf-chl|Cierpliwo/i.test(text))) {
+        // Ten komunikat NIE znaczy "Cloudflare się zaostrzył", tylko "funkcja w ogóle nie użyła
+        // Bright Daty". Mówimy to wprost, bo inaczej wygląda jak awaria terminala — a kosztowało
+        // to już jedną rundę szukania nie tam, gdzie trzeba.
         throw new Error(
-          "Baltic Hub odrzucił zapytanie (Cloudflare). Odczyt wprost z serwera nie działa — " +
-            "ustaw BHUB_SOURCE=brightdata i sekrety Bright Data."
+          "Baltic Hub odrzucił zapytanie (Cloudflare). Funkcja poszła trybem `direct` (wprost " +
+            "z serwera), który z założenia nie ma szans przejść — czyli albo wpisano " +
+            "BHUB_SOURCE=direct, albo brakuje sekretów BRIGHTDATA_BROWSER_USER " +
+            "i BRIGHTDATA_BROWSER_PASSWORD."
         );
       }
       throw new Error(`Baltic Hub odpowiedział HTTP ${res.status}.`);
@@ -185,13 +190,27 @@ class BrowserSource implements StatusSource {
   }
 }
 
+/**
+ * Wybór źródła. `BHUB_SOURCE` jest NADRZĘDNY, ale gdy go brakuje, NIE wracamy do `direct` —
+ * bierzemy najmocniejszy transport, dla którego są sekrety.
+ *
+ * Powód z produkcji, nie z ostrożności: sekret `BHUB_SOURCE` raz nie doszedł i appka po cichu
+ * zeszła na `direct`, czyli na drogę, o której z góry wiadomo, że odbije się o Cloudflare.
+ * Wyglądało to jak awaria terminala, a było brakiem jednej zmiennej. Skoro dane zdalnej
+ * przeglądarki są wpisane, to znaczy, że ktoś chciał jej używać — i tak właśnie traktujemy brak
+ * wskazania. `direct` zostaje wyłącznie jako świadomy wybór wpisany wprost.
+ */
 export function createStatusSource(): StatusSource {
-  switch (Deno.env.get("BHUB_SOURCE") ?? "direct") {
-    case "browser":
-      return new BrowserSource();
-    case "brightdata":
-      return new BrightDataSource();
-    default:
-      return new DirectSource();
+  const wskazane = (Deno.env.get("BHUB_SOURCE") ?? "").trim().toLowerCase();
+  if (wskazane === "browser") return new BrowserSource();
+  if (wskazane === "brightdata") return new BrightDataSource();
+  if (wskazane === "direct") return new DirectSource();
+
+  if (Deno.env.get("BRIGHTDATA_BROWSER_USER") && Deno.env.get("BRIGHTDATA_BROWSER_PASSWORD")) {
+    return new BrowserSource();
   }
+  if (Deno.env.get("BRIGHTDATA_API_TOKEN") && Deno.env.get("BRIGHTDATA_ZONE")) {
+    return new BrightDataSource();
+  }
+  return new DirectSource();
 }

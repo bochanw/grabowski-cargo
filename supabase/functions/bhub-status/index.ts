@@ -99,7 +99,21 @@ Deno.serve(async (req: Request) => {
       authorized = Boolean(data?.user);
     }
   }
-  if (!authorized) return json({ ok: false, reason: "unauthorized", error: "Brak uprawnień do sprawdzania statusów." }, 401);
+  // `source` także tutaj, przy odmowie: to JEDYNY sposób, żeby z zewnątrz (bez konta) sprawdzić,
+  // które źródło funkcja faktycznie widzi. Kosztowało to jedną rundę zgadywania, gdy sekret
+  // BHUB_SOURCE nie doszedł, a po błędzie przy zleceniu nie dało się tego odróżnić od awarii
+  // transportu. Nazwa trybu nie jest tajemnicą — żadnych danych logowania tu nie ma.
+  if (!authorized) {
+    return json(
+      {
+        ok: false,
+        reason: "unauthorized",
+        error: "Brak uprawnień do sprawdzania statusów.",
+        source: createStatusSource().name,
+      },
+      401,
+    );
+  }
 
   const body = (await req.json().catch(() => ({}))) as { loadIds?: string[]; probeContainer?: string };
   const requestedIds = Array.isArray(body.loadIds) ? body.loadIds.filter((id) => typeof id === "string") : null;
