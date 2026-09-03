@@ -62,11 +62,12 @@ async function startFakeServer(scenario: Scenario = {}) {
               } else {
                 await write(`${tag} OK LOGIN completed${CRLF}`);
               }
-            } else if (/^SELECT/i.test(command)) {
+            } else if (/^(EXAMINE|SELECT)/i.test(command)) {
               await write(`* 231 EXISTS${CRLF}`);
               await write(`* OK [UIDVALIDITY 42] UIDs valid${CRLF}`);
               await write(`* OK [UIDNEXT 1010] Predicted next UID${CRLF}`);
-              await write(`${tag} OK [READ-WRITE] SELECT completed${CRLF}`);
+              // Prawdziwy serwer odpowiada na EXAMINE właśnie READ-ONLY.
+              await write(`${tag} OK [READ-ONLY] EXAMINE completed${CRLF}`);
             } else if (/^UID SEARCH/i.test(command)) {
               await write(scenario.searchReply ?? `* SEARCH 1005 1006 1007${CRLF}`);
               await write(`${tag} OK SEARCH completed${CRLF}`);
@@ -185,6 +186,58 @@ Deno.test("wiele UID-ów pod rząd — każdy FETCH dostaje pełną treść", as
       const raw = await client.fetchRaw(uid);
       assert(raw, `brak treści dla UID ${uid}`);
       assertStringIncludes(raw, "Tresc druga linia");
+    }
+  } finally {
+    client.close();
+    server.close();
+  }
+});
+
+/**
+ * STRAŻ na wprost postawiony warunek właściciela: "nie dodaje flag, nie oznacza wiadomości jako
+ * odczytane — to ważne".
+ *
+ * Test patrzy na to, co klient FAKTYCZNIE WYSYŁA do serwera, a nie na to, co deklaruje kod.
+ * Dwie rzeczy naraz: skrzynka otwierana tylko do odczytu (EXAMINE, nie SELECT) i treść pobierana
+ * przez BODY.PEEK[] — zwykłe BODY[] ustawiłoby \Seen, czyli oznaczyłoby maila jako przeczytany.
+ */
+Deno.test("odczyt skrzynki NICZEGO w niej nie zmienia (bez flag, bez oznaczania jako przeczytane)", async () => {
+  const server = await startFakeServer();
+  const client = new ImapClient({ timeoutMs: 5_000 });
+  try {
+    await client.adopt(await Deno.connect({ hostname: "127.0.0.1", port: server.port }));
+    await client.login("konto@example.com", "haslo");
+    await client.selectInbox();
+    for (const uid of await client.searchAfter(1004)) await client.fetchRaw(uid);
+    await client.logout();
+
+    const wyslane = server.seenCommands.join(" | ");
+
+    assertEquals(
+      server.seenCommands.some((c) => /^EXAMINE/i.test(c)),
+      true,
+      `skrzynka musi byc otwarta TYLKO DO ODCZYTU (EXAMINE); wyslano: ${wyslane}`,
+    );
+    assertEquals(
+      server.seenCommands.some((c) => /^SELECT/i.test(c)),
+      false,
+      `SELECT otwiera skrzynke do zapisu - nie wolno go uzyc; wyslano: ${wyslane}`,
+    );
+
+    // Polecenia, ktore w IMAP-ie zmieniaja stan skrzynki. Zadne nie ma prawa pa/sc.
+    for (const zakazane of [/\bSTORE\b/i, /\bCOPY\b/i, /\bMOVE\b/i, /\bEXPUNGE\b/i, /\bAPPEND\b/i]) {
+      assertEquals(
+        server.seenCommands.some((c) => zakazane.test(c)),
+        false,
+        `polecenie ${zakazane} zmienia skrzynke; wyslano: ${wyslane}`,
+      );
+    }
+
+    // Tresc TYLKO przez PEEK: zwykle BODY[] ustawia \Seen po stronie serwera.
+    const pobrania = server.seenCommands.filter((c) => /^UID FETCH/i.test(c));
+    assert(pobrania.length > 0, "test nic nie pobral, wiec niczego nie sprawdza");
+    for (const p of pobrania) {
+      assertEquals(/BODY\.PEEK\[/i.test(p), true, `pobranie bez PEEK oznaczyloby maila: ${p}`);
     }
   } finally {
     client.close();

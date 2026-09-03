@@ -245,6 +245,56 @@ const POMOCNIKI = `
       .join(', ');
   }
 
+  /**
+   * Opis okien modalnych i klas <body>. 'modal-open' na <body> to ślad, który rozwiązał sprawę:
+   * Bootstrap ustawia tę klasę, gdy nad stroną stoi okno, a jego przezroczysta warstwa przechwytuje
+   * KAŻDE kliknięcie. Formularz jest wtedy widoczny, ale nieklikalny.
+   */
+  function opisOkienek() {
+    const modale = [...document.querySelectorAll('.modal, [role=dialog], [id*=cookie], [class*=cookie], [id*=Cookie], [class*=Cookie]')]
+      .filter((m) => m.offsetParent !== null);
+    const opis = modale.slice(0, 4).map((m) =>
+      ((m.id || m.className || '?') + '').slice(0, 50) + ' :: ' +
+      [...m.querySelectorAll('button, a, [role=button]')].slice(0, 8)
+        .map((b) => (b.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 28)).filter(Boolean).join(' / '));
+    return 'body.class=' + (document.body?.className || '-') + (opis.length ? ' || ' + opis.join(' | ') : '');
+  }
+
+  /**
+   * Zamyka to, co przykrywa stronę — przede wszystkim zgodę na ciasteczka.
+   *
+   * Bez tego klik w guzik formularza trafia w warstwę okna i nie robi NIC, a strona wygląda, jakby
+   * zignorowała wyszukiwanie. Dokładnie tak kończyły się przebiegi, w których już i pole, i guzik,
+   * i reCAPTCHA były w porządku.
+   *
+   * Napis musi być KRÓTKI i pasować do zgody — inaczej łatwo kliknąć \"Odrzuć wszystkie\" albo
+   * przypadkowy odnośnik w treści.
+   */
+  function zamknijOkienka() {
+    const zrobione = [];
+    const napis = (b) => (b.textContent || b.value || '').replace(/\\s+/g, ' ').trim();
+    const zgoda = /^(akceptuj|zaakceptuj|zgadzam|zezw\\S*|rozumiem|accept|allow|got it|ok)\\b/i;
+    const odmowa = /odrzu|nie zgadzam|reject|decline|ustawienia|settings/i;
+
+    for (const b of [...document.querySelectorAll('button, a, [role=button]')].filter((x) => x.offsetParent !== null)) {
+      const t = napis(b);
+      if (t.length <= 40 && zgoda.test(t) && !odmowa.test(t)) {
+        b.click();
+        zrobione.push('zgoda: „' + t.slice(0, 30) + '”');
+        break;
+      }
+    }
+
+    for (const b of [...document.querySelectorAll('[data-bs-dismiss=modal], [data-dismiss=modal], .modal .btn-close, .modal .close')]
+      .filter((x) => x.offsetParent !== null).slice(0, 3)) {
+      b.click();
+      zrobione.push('zamknięcie okna');
+    }
+
+    return (zrobione.length ? zrobione.join(' + ') : '(nic do zamknięcia)') +
+      '; po zamknięciu: ' + (document.body?.className || '-');
+  }
+
   function opiszStrone() {
     return {
       tytul: document.title || '',
@@ -256,10 +306,20 @@ const POMOCNIKI = `
           + (el.offsetParent === null ? ' [niewidoczne]' : '')).join(' | '),
       guziki: [...document.querySelectorAll('button, input[type=submit]')].slice(0, 20)
         .map((b) => (b.textContent || b.value || '').replace(/\\s+/g, ' ').trim()).filter(Boolean).join(' | '),
+      okienka: opisOkienek(),
       tekst: (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300),
     };
   }
 `;
+
+/** Zamyka zgodę na ciasteczka i inne okna przykrywające stronę. */
+export function skryptZamkniecia(): string {
+  return `(() => {${POMOCNIKI}
+    const przed = opisOkienek();
+    const zrobione = zamknijOkienka();
+    return JSON.stringify({ przed, zrobione });
+  })()`;
+}
 
 /** Czy strona jest już gotowa do wypełnienia (przeszła przejściówkę Cloudflare i ma pole). */
 export function skryptStanuStrony(): string {
@@ -436,6 +496,11 @@ export async function fetchViaBrowser(
       );
     }
 
+    // Najpierw sprzątamy to, co przykrywa stronę. Klik w guzik pod otwartym oknem trafia
+    // w jego warstwę i nie robi nic — formularz wygląda na działający, a wyszukiwanie nie rusza.
+    const okienka = await odczytaj(cdp, sessionId, skryptZamkniecia());
+    await new Promise((r) => setTimeout(r, 1500));
+
     // Zagadkę rozwiązujemy PRZED wpisaniem numerów: jej rozwiązanie wpisuje się w ukryte pole
     // formularza, a niektóre serwisy zerują je przy przeładowaniu widoku.
     const zagadka = await rozwiazZagadke(cdp, sessionId);
@@ -456,8 +521,9 @@ export async function fetchViaBrowser(
         // strony) idzie do migawki obok, której dziennik nie zapisuje.
         `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 35 s. ` +
           `Tryb: ${wyslane.tryb ?? "?"}. Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}. ` +
-          `Zagadka: ${zagadka}. Migawka strony zapisana do diagnozy.`,
-        { _etap: "brak wyników", _zagadka: zagadka, ...wyslane, ...wyniki.stan },
+          `Zagadka: ${zagadka}. Okienka: ${okienka.zrobione ?? "?"}. ` +
+          `Migawka strony zapisana do diagnozy.`,
+        { _etap: "brak wyników", _zagadka: zagadka, _okienka: JSON.stringify(okienka), ...wyslane, ...wyniki.stan },
       );
     }
 
