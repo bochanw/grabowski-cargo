@@ -195,8 +195,9 @@ Deno.serve(async (req: Request) => {
         // Odpowiedź przyszła, ale nie umiemy jej odczytać. To NIE jest "kontener bez danych" —
         // zapisujemy powód i migawkę, a dotychczasowe wartości przy zleceniu zostają nietknięte.
         const message =
+          parsed.reason ??
           `Nie rozpoznałem odpowiedzi Baltic Hub dla ${container} (${html.length} znaków). ` +
-          `Migawka zapisana do diagnozy.`;
+            `Migawka zapisana do diagnozy.`;
         problems.push(message);
         await admin.rpc("apply_bhub_check", { p_load_id: load.id, p_error: message, p_details: details });
         continue;

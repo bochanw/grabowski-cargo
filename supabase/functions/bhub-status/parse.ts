@@ -7,7 +7,8 @@
 //   ISO Type        22G1 itd. → porównanie z "Wielkością" zlecenia
 //   Line Operator   TRZYLITEROWY kod armatora (CMA, OOL, MSC) → porównanie z "Gestią"
 //   Weight [KG]     waga brutto (sprawdzone: Cargo Weight + tara kontenera)
-//   T-State         gdzie stoi kontener: "Yard" = plac, "Vessel" = statek
+//   T-State         gdzie stoi kontener — OSIEM wartości opisanych przez terminal (Inbound, Yard,
+//                   EC/In, EC/Out, Departed, Loaded, Advised, Retired); patrz słownik T_STATE
 //   *Stops          stopki; PUSTE = brak blokad
 //
 // Reguła właściciela wprost: "Jeżeli *Stops jest puste, T-State Yard - dajemy ZP".
@@ -38,6 +39,8 @@ export interface ParsedContainer {
    * zostawiał na wierzchu śmieci z wcześniejszego przebiegu, których nie da się już wyczyścić).
    */
   recognised: boolean;
+  /** Nazwany powód, gdy odpowiedzi nie da się odczytać (np. wygasły token sesji). */
+  reason?: string;
 }
 
 // Nazwy z eksportu Baltic Hub idą PIERWSZE, bo findByLabel próbuje najpierw trafienia dokładnego:
@@ -193,6 +196,57 @@ export function parseIsoCode(raw: string | undefined): string | null {
 const NOT_FOUND = /brak danych|brak wynik|nie znaleziono|not found|no results/i;
 
 /**
+ * Laravel odrzuca POST bez ważnego tokenu sesji stroną "Page Expired" (HTTP 419). Nazywamy to po
+ * imieniu, bo inaczej wygląda to jak "nie rozumiem odpowiedzi", a to zupełnie inny problem:
+ * zapytanie doszło pod właściwy adres i we właściwej formie, tylko bez tokenu.
+ */
+export const PAGE_EXPIRED = /page expired|419|token.*wygas|sesja wygas/i;
+
+/**
+ * Słownik wartości `T-State` przepisany WPROST z opisu Baltic Hub ("Opis elementów karty
+ * kontenera" na stronie sprawdzania kontenera) — nie z domysłu:
+ *
+ *   Inbound   kontener w drodze na terminal      (dla importu morskiego: jeszcze na statku)
+ *   Yard      kontener na terminalu
+ *   EC/In     dostarczony, ale nie na wyznaczonej pozycji na placu  → wciąż na terminalu
+ *   EC/Out    przewoźnik przyjechał po kontener
+ *   Departed  kontener opuścił terminal
+ *   Loaded    załadowany na kolejny środek transportu
+ *   Advised   niepełna awizacja
+ *   Retired   status po rozformowaniu
+ *
+ * WAŻNE: nie ma wartości "Vessel" — pierwsza wersja kodu jej szukała i przez to kontener w drodze
+ * nie dostawał żadnego statusu.
+ *
+ * Pięć kodów właściciela (SS/ZS/SO/SP/ZP) opisuje wyłącznie oś "statek ↔ plac", więc stany
+ * oznaczające "kontenera już tu nie ma" (Departed/Loaded/Retired/EC/Out) i "Advised" celowo NIE
+ * dostają kodu: wracają jako surowy tekst bez koloru, do wyjaśnienia z właścicielem.
+ */
+const T_STATE: Record<string, "plac" | "statek" | "poza"> = {
+  inbound: "statek",
+  yard: "plac",
+  ecin: "plac",
+  ecout: "poza",
+  departed: "poza",
+  loaded: "poza",
+  retired: "poza",
+  advised: "poza",
+};
+
+/** Gdzie stoi kontener wg `T-State`: true = na statku, false = na placu, null = nie wiemy. */
+export function locationFromTState(raw: string): boolean | null {
+  const key = raw.toLowerCase().replace(/[^a-z]/g, "");
+  const known = T_STATE[key];
+  if (known === "plac") return false;
+  if (known === "statek") return true;
+  if (known === "poza") return null;
+  // Zapis spoza słownika — próbujemy jeszcze po słowach, ale nic nie zgadujemy na siłę.
+  if (/statk|statek|vessel|burt|ship/.test(raw.toLowerCase())) return true;
+  if (/plac|sklad|skład|terminal|ground/.test(raw.toLowerCase())) return false;
+  return null;
+}
+
+/**
  * Jeden wiersz danych terminala → to, co appka zapisuje przy zleceniu. Wspólne dla KAŻDEGO źródła
  * (tabela na stronie, eksport, w przyszłości API) — różni się tylko to, jak powstaje `row`.
  */
@@ -209,12 +263,7 @@ export function interpretRow(row: Record<string, string>): Omit<ParsedContainer,
   // Kolejność: gotowy status z osobnej rubryki, potem złożenie z miejsca i stopek.
   let status = matchBhubStatus(statusCell);
   if (!status && location !== undefined && holds !== undefined) {
-    const place = location.toLowerCase();
-    const onVessel = /statk|statek|vessel|burt|ship/.test(place)
-      ? true
-      : /yard|plac|sklad|skład|terminal|ground/.test(place)
-        ? false
-        : null;
+    const onVessel = locationFromTState(location);
     const holdsText = holds.trim().toLowerCase();
     status = deriveBhubStatus({
       onVessel,
@@ -287,6 +336,12 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
 
   // Nic nie rozpoznaliśmy. Jeśli strona wprost mówi, że nie zna kontenera — to nie jest błąd.
   const notFound = NOT_FOUND.test(text);
+  // Nazwany powód zamiast ogólnego "nie rozumiem": to zupełnie inny problem niż zły adres.
+  const reason = PAGE_EXPIRED.test(text)
+    ? "Baltic Hub odrzucił zapytanie — wygasł token sesji (strona \"Page Expired\"). " +
+      "Zapytanie doszło pod właściwy adres i we właściwej formie, ale serwis wymaga tokenu " +
+      "pobranego wcześniej ze strony."
+    : undefined;
   return {
     status: null,
     statusRaw: null,
@@ -294,6 +349,7 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
     shippingLine: null,
     grossWeightKg: null,
     notFound,
+    reason,
     // Strona, której nie umieliśmy odczytać, NIE jest odpowiedzią "nic nie znaleziono" — chyba że
     // sama tak mówi. Inaczej byłoby to milczące skasowanie poprzedniego, dobrego wyniku.
     recognised: notFound,
