@@ -159,10 +159,13 @@ async function zapytajTerminal(kartaId, adres, numery) {
 
   const wyslane = await naStronie(kartaId, "wyslij", [numery]);
   if (!wyslane.wyslane) {
-    throw bladZeSzczegolami(
+    const blad = bladZeSzczegolami(
       `Nie udało się uruchomić wyszukiwania: ${wyslane.powod ?? "nieznany powód"}. Tryb: ${wyslane.tryb ?? "?"}.`,
       { _etap: "nie udało się uruchomić wyszukiwania", _okienka: JSON.stringify(okienka), ...wyslane },
     );
+    // Nie udało się przestawić strony na „wiele kontenerów" — przebieg leci dalej, ale po jednym.
+    blad.trybNieustawiony = Boolean(wyslane.trybNieustawiony);
+    throw blad;
   }
 
   // Pierwsze podejście: to, co zrobił `wyslij` (klik w guzik albo wysłanie formularza).
@@ -229,13 +232,29 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
     for (const paczka of paczki(items, cfg.rozmiarPaczki)) {
       const numery = paczka.map((i) => i.container);
       try {
-        const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
+        let wyniki;
+        try {
+          const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
+          wyniki = paczka.map((i) => ({ ...i, text: tekst, batchSize: numery.length }));
+        } catch (e) {
+          // Strona nie dała się przestawić na „wiele kontenerów" — pytamy po jednym. Wolniej
+          // i drożej w czasie, ale przebieg kończy się wynikiem zamiast błędem przy pięciu
+          // zleceniach naraz.
+          if (!e.trybNieustawiony || numery.length === 1) throw e;
+          wyniki = [];
+          for (const i of paczka) {
+            const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, [i.container]);
+            wyniki.push({ ...i, text: tekst, batchSize: 1 });
+          }
+        }
+
         await wywolaj("report", {
-          results: paczka.map((i) => ({
+          results: wyniki.map((i) => ({
             loadId: i.loadId,
             container: i.container,
-            text: tekst,
-            details: { _paczka: numery.join(", ") },
+            text: i.text,
+            batchSize: i.batchSize,
+            details: { _paczka: numery.join(", "), _pytane_pojedynczo: String(i.batchSize === 1 && numery.length > 1) },
           })),
         });
         sprawdzone += paczka.length;

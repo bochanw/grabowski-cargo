@@ -144,6 +144,48 @@
     return radia.map((r) => `${r.name || "?"}=${r.value || "?"}${r.checked ? " [zaznaczone]" : ""}`).join(", ");
   }
 
+  /** Napis etykiety przycisku radiowego — po nim rozpoznajemy tryb, gdy `value` nic nie mówi. */
+  function etykietaPola(el) {
+    const zId = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+    const wLabel = el.closest("label");
+    return napis(zId || wLabel || el.parentElement || el);
+  }
+
+  /**
+   * Przestawia tryb wyszukiwania na ten, którego wymaga liczba numerów.
+   *
+   * TO JEST STEROWANIE, KTÓREGO WCZEŚNIEJ ŚWIADOMIE NIE BYŁO — i dlatego nic nie działało.
+   * Strona ma dwie opcje: „Wyszukaj kontener" (`once`, JEDEN numer) i „* Wyszukaj więcej
+   * kontenerów" (`multi`, do dziesięciu po przecinku). Domyślnie zaznaczona jest ta pierwsza,
+   * więc wklejenie pięciu numerów po przecinku kończyło się odpowiedzią „Brak wyników" —
+   * terminal szukał kontenera o nazwie „NR1, NR2, NR3, NR4, NR5".
+   *
+   * Poprzednia wersja klikała każdą odznaczoną opcję z pasującą nazwą grupy i psuła wybór; stąd
+   * blokada „nie ruszamy trybu", która była o jeden krok za daleko. Teraz wybieramy KONKRETNĄ
+   * opcję i sprawdzamy, czy faktycznie się zaznaczyła.
+   */
+  function ustawTryb(ile) {
+    const radia = [...document.querySelectorAll("input[type=radio]")].filter((r) => !wOknieZgody(r));
+    if (!radia.length) return { ustawiony: null, opis: "(brak przełącznika trybu)" };
+
+    const sygnatura = (r) => `${r.value || ""} ${r.name || ""} ${etykietaPola(r)}`;
+    const wiele = radia.find((r) => /multi|wiele|wi\S*cej|more|kilka/i.test(sygnatura(r)));
+    const jeden = radia.find((r) => r !== wiele && /once|single|jeden|kontener/i.test(sygnatura(r)));
+    const chciany = ile > 1 ? wiele : jeden || (ile > 1 ? null : radia[0]);
+
+    if (!chciany) {
+      return { ustawiony: false, opis: `nie znalazłem opcji „${ile > 1 ? "wiele kontenerów" : "jeden kontener"}”` };
+    }
+    if (!chciany.checked) {
+      chciany.click();
+      chciany.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return {
+      ustawiony: chciany.checked === true,
+      opis: `${ile > 1 ? "wiele" : "jeden"} → ${chciany.value || "?"} „${etykietaPola(chciany).slice(0, 40)}”${chciany.checked ? "" : " [NIE zaznaczyło się]"}`,
+    };
+  }
+
   /**
    * Okna przykrywające stronę. `modal-open` na `<body>` to ślad, który rozwiązał jedną z rund:
    * Bootstrap ustawia tę klasę, gdy nad stroną stoi okno, a jego przezroczysta warstwa
@@ -312,7 +354,23 @@
   }
 
   function wyslij(numery, opcje) {
-    const tryb = opiszTryb();
+    const ile = (numery || []).length;
+
+    // NAJPIERW tryb, potem pole: przestawienie przełącznika potrafi przebudować formularz
+    // (strona jest skryptowana), więc pole trzeba znaleźć na nowo PO zmianie trybu.
+    const ustawienie = opcje && opcje.enter ? { ustawiony: null, opis: "(drugie podejście)" } : ustawTryb(ile);
+    const tryb = `${ustawienie.opis} :: ${opiszTryb()}`;
+
+    if (ile > 1 && ustawienie.ustawiony === false) {
+      return {
+        wyslane: false,
+        powod: `nie udało się przełączyć na wyszukiwanie wielu kontenerów (${ustawienie.opis})`,
+        trybNieustawiony: true,
+        tryb,
+        ...opiszStrone(),
+      };
+    }
+
     const pole = znajdzPole();
     if (!pole) return { wyslane: false, powod: "nie znalazłem pola na numery", tryb, ...opiszStrone() };
 

@@ -72,6 +72,8 @@ interface ReportItem {
   text?: unknown;
   error?: unknown;
   details?: unknown;
+  /** O ilu kontenerów pytano w tym samym zapytaniu — rozstrzyga znaczenie zdania „Brak wyników". */
+  batchSize?: unknown;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -237,6 +239,20 @@ Deno.serve(async (req: Request) => {
       const fullDetails = { ...parsed.details, ...details, _dlugosc_odpowiedzi: String(pageText.length) };
 
       if (parsed.notFound) {
+        await admin.rpc("apply_bhub_check", {
+          p_load_id: loadId,
+          p_error: `Baltic Hub nie zna kontenera ${container}.`,
+          p_parsed: true,
+          p_details: fullDetails,
+        });
+        continue;
+      }
+
+      // Terminal odpowiada „Brak wyników" BEZ powtórzenia numeru, gdy pytano o jeden kontener
+      // (zmierzone na produkcji — patrz zrzut strony od właściciela). Przy paczce takiego zdania
+      // nie wolno tak potraktować: nie wiadomo, którego numeru dotyczy.
+      const pytanoOJeden = typeof item.batchSize === "number" ? item.batchSize === 1 : false;
+      if (!parsed.recognised && pytanoOJeden && /brak wynik|no results|not found/i.test(pageText)) {
         await admin.rpc("apply_bhub_check", {
           p_load_id: loadId,
           p_error: `Baltic Hub nie zna kontenera ${container}.`,
