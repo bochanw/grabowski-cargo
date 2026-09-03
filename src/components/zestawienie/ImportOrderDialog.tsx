@@ -13,6 +13,7 @@ import { findContractorByName, type Contractor } from "@/types/contractor";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { describeBafSplit, splitBaf } from "@/lib/invoice/baf";
+import { shippingLineForNotes } from "@/lib/loads/leasing";
 import type { Direction, Load } from "@/types/load";
 
 type Stage = "pick" | "parsing" | "review" | "saving";
@@ -52,9 +53,11 @@ function loadToForm(load: Load): ParsedOrder {
     notes: load.notes ?? "",
     pickup_type: load.pickup_type ?? "",
     pin_booking: load.pin_booking ?? "",
+    seal_number: load.seal_number ?? "",
     goods_name: load.goods_name ?? "",
     net_weight_kg: load.net_weight_kg,
     gross_weight: load.gross_weight ?? "",
+    submitted_when: load.submitted_when ?? "",
     submitted_where: load.submitted_where ?? "",
     driver_name: load.driver_name ?? "",
     driver_id_number: load.driver_id_number ?? "",
@@ -95,9 +98,11 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     carrier_name: carrierName || null,
     pickup_type: form.pickup_type || null,
     pin_booking: form.pin_booking || null,
+    seal_number: form.seal_number || null,
     goods_name: form.goods_name || null,
     net_weight_kg: form.net_weight_kg,
     gross_weight: form.gross_weight || null,
+    submitted_when: form.submitted_when || null,
     submitted_where: form.submitted_where || null,
     driver_name: form.driver_name || null,
     driver_id_number: form.driver_id_number || null,
@@ -221,6 +226,17 @@ export function ImportOrderDialog({
     // waga towaru z drugiego).
     merged = withRecomputedGross(merged, "net_weight_kg");
 
+    // Gestia z uwag: kontener leasingowy nie ma armatora, a informacja o leasingu stoi w uwagach.
+    const beforeLeasing = merged.shipping_line;
+    merged = withLeasingShippingLine(merged);
+    if (merged.shipping_line !== beforeLeasing) {
+      newWarnings.push(
+        beforeLeasing
+          ? `Uwagi wspominają o leasingu — gestię przestawiono z "${beforeLeasing}" na "Leasing".`
+          : "Uwagi wspominają o leasingu — gestię ustawiono na „Leasing”."
+      );
+    }
+
     // Kierowca/pojazdy: dopasowanie do Panelu floty, fallback z poprzedniego zlecenia.
     const reconciled = reconcileWithFleet(merged, fleet, recentLoads);
     newWarnings.push(...reconciled.warnings);
@@ -260,7 +276,12 @@ export function ImportOrderDialog({
   }
 
   function updateField<K extends keyof ParsedOrder>(key: K, value: ParsedOrder[K]) {
-    setForm((prev) => withRecomputedGross({ ...prev, [key]: value }, key));
+    setForm((prev) => {
+      const next = withRecomputedGross({ ...prev, [key]: value }, key);
+      // Reguła właściciela: uwagi ze słowem "Leasing" przestawiają gestię na "Leasing" — także gdy
+      // dyspozytor dopisze to ręcznie w tym formularzu, nie tylko przy odczycie dokumentu.
+      return key === "notes" ? withLeasingShippingLine(next) : next;
+    });
   }
 
   function selectContractor(id: string) {
@@ -525,6 +546,18 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.pin_booking} onChange={(e) => updateField("pin_booking", e.target.value)} />
                 </Field>
 
+                <Field label="Nr plomby">
+                  <input className={inputClass} value={form.seal_number} onChange={(e) => updateField("seal_number", e.target.value)} />
+                </Field>
+                <Field label="Data złożenia (cut off)">
+                  <input
+                    className={inputClass}
+                    value={form.submitted_when}
+                    onChange={(e) => updateField("submitted_when", e.target.value)}
+                    placeholder="np. 2026-09-12 albo „cut off 12.09, 14:00”"
+                  />
+                </Field>
+
                 <Field label="Wielkość kontenera">
                   <input className={inputClass} value={form.container_size} onChange={(e) => updateField("container_size", e.target.value)} placeholder="np. 20DV" />
                 </Field>
@@ -574,7 +607,12 @@ export function ImportOrderDialog({
                 </Field>
 
                 <Field label={handoverLabel} full>
-                  <input className={inputClass} value={form.submitted_where} onChange={(e) => updateField("submitted_where", e.target.value)} />
+                  <input
+                    className={inputClass}
+                    value={form.submitted_where}
+                    onChange={(e) => updateField("submitted_where", e.target.value)}
+                    placeholder="terminal albo instrukcja z dokumentu (np. „zgodnie z instrukcjami armatora”)"
+                  />
                 </Field>
 
                 <Field label="Kierowca (z Panelu floty)">
@@ -672,6 +710,13 @@ export function ImportOrderDialog({
       </div>
     </div>
   );
+}
+
+// "Jeżeli w uwagach będzie Leasing, to wtedy gestia przestaw na Leasing" — reguła po stronie appki,
+// więc działa niezależnie od tego, skąd wzięły się uwagi (szablon, Claude, mail, ręczne wpisanie).
+function withLeasingShippingLine(order: ParsedOrder): ParsedOrder {
+  const line = shippingLineForNotes(order.notes, order.shipping_line) ?? "";
+  return line === order.shipping_line ? order : { ...order, shipping_line: line };
 }
 
 // Zmiana wagi towaru albo typu kontenera przelicza brutto (towar + tara). Ręcznie wpisany tekst w

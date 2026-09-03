@@ -724,6 +724,40 @@ z BAF razem, albo BAF jako oddzielną pozycję na fakturze — do konfiguracji v
   wdrożyć ją ponownie — `supabase/functions/mail-poll/shared/` zostało już przegenerowane
   (`node scripts/build-edge-shared.mjs`), więc wystarczy samo wdrożenie.
 
+**Leasing w gestii, plomba, „Data złożenia" (cut off), instrukcja zamiast miejsca zdania — kolejne
+zgłoszenia właściciela z tej samej sesji:**
+- **„Jeżeli w uwagach będzie Leasing, to wtedy gestia przestaw na Leasing"** — `src/lib/loads/
+  leasing.ts`, reguła po stronie APPKI, nie w prompcie: działa tak samo przy szablonie znanego
+  spedytora, przy odczycie przez Claude, przy mailu i przy ręcznym dopisaniu uwagi (formularz
+  importu ORAZ edycja inline kolumny „Uwagi" — `buildPatch` dokłada wtedy `shipping_line`).
+  Świadomie NADPISUJE gestię („przestaw"), a skasowanie uwagi jej NIE cofa — appka nie pamięta,
+  co tam stało wcześniej, a dyspozytor i tak może wpisać swoje. Import dopisuje o tym ostrzeżenie
+  w oknie, żeby podmiana armatora na „Leasing" nie zaskoczyła.
+- **Numer plomby** — nowa kolumna `loads.seal_number` (migracja **0014**, ZAAPLIKOWANA przez MCP;
+  w arkuszu klienta nie miała odpowiednika — „Nr ref." i „pin/booking" znaczą co innego). Pole w
+  formularzu importu, kolumna „Nr plomby" w Zestawieniu, pole w schemacie funkcji.
+- **„Złożone kiedy" → „Data złożenia"**, czytana ze zlecenia (w dokumentach zwykle „cut off").
+  Zmieniła się TYLKO etykieta — nazwa kolumny `submitted_when` zostaje, bo siedzi w `activity_log`
+  i w zapisanych ustawieniach widoku każdego użytkownika. Zostaje też TEXT-em, nie datą: cut off
+  bywa z godziną („2026-09-20 12:00") albo warunkiem („cut off wg armatora”), a to jest informacja,
+  po której planuje się dzień. Pole wchodzi do `ParsedOrder`, więc **merguje się** jak reszta —
+  drugi dokument albo mail uzupełni je, jeśli pierwszy nie miał.
+- **Miejsce złożenia pustego bywa INSTRUKCJĄ**, nie miejscem („zgodnie z instrukcjami armatora") —
+  opis pola w funkcji mówi teraz wprost, żeby taką instrukcję przepisać zamiast zostawiać pustkę;
+  `normalizeTerminalName` i tak jej nie rusza (skraca tylko wartość będącą samą nazwą terminala).
+- Funkcja `parse-order-pdf` **wdrożona (v7)**: doszły `seal_number` i `submitted_when` (+ zasada 11
+  o cut off, żeby nie mylić go z datą rozładunku ani terminem płatności).
+- **Zweryfikowane na produkcji**: strzał w wdrożoną funkcję zleceniem eksportowym z plombą, cut
+  offem, leasingiem i „zgodnie z instrukcjami armatora" — wszystkie pola odczytane poprawnie
+  (`seal_number` PL0099887, `submitted_when` „2026-09-20 12:00", `submitted_where` instrukcja,
+  `pickup_type` BHub, BAF 13% doliczany). Logika: 14 sprawdzeń (`scratch-leasing.test.mts`, plik
+  tymczasowy). Przeglądarka (Playwright, tymczasowa strona `/test-leasing`): nowe pola wypełnione,
+  a dopisanie uwagi „Kontener leasingowy" przestawiło gestię z MSC na „Leasing" na żywo.
+- **Do sprawdzenia przy kolejnym PDF-ie Q4Road**: ich szablon (`q4road.ts`) nie czyta jeszcze
+  plomby ani cut offu — nie mam pod ręką dokumentu, żeby zobaczyć etykiety, a zgadywanie regexa bez
+  pliku to prosta droga do cichego błędu (patrz pułapka z kotwicą `$`). Do dopisania, gdy pojawi się
+  zlecenie tego spedytora z tymi rubrykami.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

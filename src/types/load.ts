@@ -24,6 +24,7 @@ export interface Load {
   goods_name: string | null;
   status: string | null;
   pin_booking: string | null;
+  seal_number: string | null; // migracja 0014 — numer plomby
   reference_number: string | null;
   net_weight_kg: number | null;
   gross_weight: string | null;

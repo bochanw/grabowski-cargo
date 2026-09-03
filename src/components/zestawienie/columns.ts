@@ -35,11 +35,15 @@ export const COLUMNS: ColumnDef[] = [
   { key: "goods_name", label: "Nazwa towaru", block: "ladunek" },
   { key: "status", label: "Status", block: "ladunek" },
   { key: "pin_booking", label: "PIN/booking", block: "ladunek" },
+  { key: "seal_number", label: "Nr plomby", block: "ladunek" },
   { key: "reference_number", label: "Nr ref.", block: "ladunek" },
   { key: "net_weight_kg", label: "Waga netto", block: "ladunek", align: "right", kind: "number" },
   { key: "gross_weight", label: "Waga brutto", block: "ladunek" },
   { key: "driver_rate", label: "Stawka kierowcy", block: "ladunek" },
-  { key: "submitted_when", label: "Złożone kiedy", block: "ladunek" },
+  // "Data złożenia" (dawniej "Złożone kiedy") — w dokumentach zwykle "cut off". Zwykły tekst, nie
+  // kolumna typu data: cut off bywa z godziną albo warunkiem ("wg armatora"), a to jest informacja,
+  // po której dyspozytor planuje dzień.
+  { key: "submitted_when", label: "Data złożenia", block: "ladunek" },
   { key: "submitted_where", label: "Złożenie gdzie", block: "ladunek" },
   { key: "driver_initials", label: "Inicjały kierowcy", block: "ladunek" },
   { key: "driver_name", label: "Kierowca", block: "ladunek" },
