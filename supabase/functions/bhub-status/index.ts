@@ -248,11 +248,14 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // Terminal odpowiada „Brak wyników" BEZ powtórzenia numeru, gdy pytano o jeden kontener
-      // (zmierzone na produkcji — patrz zrzut strony od właściciela). Przy paczce takiego zdania
-      // nie wolno tak potraktować: nie wiadomo, którego numeru dotyczy.
-      const pytanoOJeden = typeof item.batchSize === "number" ? item.batchSize === 1 : false;
-      if (!parsed.recognised && pytanoOJeden && /brak wynik|no results|not found/i.test(pageText)) {
+      // Terminal odpowiada „Brak wyników:" BEZ wymienienia numerów (zmierzone na produkcji:
+      // pytanie o pięć kontenerów w trybie „wiele" wróciło dokładnie tak). Traktujemy to jako
+      // „nie zna żadnego z zapytanych" TYLKO wtedy, gdy w odpowiedzi nie ma ANI JEDNEJ karty —
+      // przy odpowiedzi mieszanej (część kart, część nieznanych) numery są wymienione po
+      // dwukropku i czyta je `brakWynikowDla`, więc tu nie wolno zgadywać.
+      const brakJakichkolwiekKart = !/Karta kontenera/i.test(pageText);
+      const mowiBrakWynikow = /brak wynik|no results|not found/i.test(pageText);
+      if (!parsed.recognised && brakJakichkolwiekKart && mowiBrakWynikow) {
         await admin.rpc("apply_bhub_check", {
           p_load_id: loadId,
           p_error: `Baltic Hub nie zna kontenera ${container}.`,
