@@ -163,6 +163,16 @@ interface Token {
   xsrf: string;
 }
 
+/** Wynik JEDNEJ próby wysłania zapytania — z opisem odpowiedzi, nie tylko treścią. */
+interface Proba {
+  jakoXhr: boolean;
+  status: number;
+  typ: string;
+  adres: string;
+  przekierowany: boolean;
+  tresc: string;
+}
+
 /**
  * Skrypt wykonywany W PRZEGLĄDARCE: wysyła zapytanie o kontenery z wnętrza strony, dzięki czemu
  * ciasteczko sesji dokłada się samo.
@@ -176,22 +186,42 @@ export function skryptZapytania(token: Token, postUrl: string, containers: strin
   return `(async () => {
       const token = ${JSON.stringify(token.csrf)};
       const xsrf = ${JSON.stringify(token.xsrf)};
-      const naglowki = {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest',
-      };
-      if (token) naglowki['X-CSRF-TOKEN'] = token;
-      if (xsrf) naglowki['X-XSRF-TOKEN'] = xsrf;
-      let body = ${JSON.stringify("lang=pl")} + ${JSON.stringify(containers)}
-        .map((c) => '&id%5B%5D=' + encodeURIComponent(c)).join('');
-      if (token) body += '&_token=' + encodeURIComponent(token);
-      const res = await fetch(${JSON.stringify(postUrl)}, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: naglowki,
-        body,
-      });
-      return JSON.stringify({ status: res.status, tresc: await res.text() });
+      const body = (() => {
+        let b = ${JSON.stringify("lang=pl")} + ${JSON.stringify(containers)}
+          .map((c) => '&id%5B%5D=' + encodeURIComponent(c)).join('');
+        if (token) b += '&_token=' + encodeURIComponent(token);
+        return b;
+      })();
+
+      async function wyslij(jakoXhr) {
+        const naglowki = { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' };
+        if (jakoXhr) naglowki['X-Requested-With'] = 'XMLHttpRequest';
+        if (token) naglowki['X-CSRF-TOKEN'] = token;
+        if (xsrf) naglowki['X-XSRF-TOKEN'] = xsrf;
+        const res = await fetch(${JSON.stringify(postUrl)}, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: naglowki,
+          body,
+        });
+        const tresc = await res.text();
+        return {
+          jakoXhr,
+          status: res.status,
+          typ: res.headers.get('content-type') || '',
+          adres: res.url,
+          przekierowany: res.redirected === true,
+          tresc,
+        };
+      }
+
+      // Najpierw jak zwykły formularz. Nagłówek XMLHttpRequest przestawia Laravela na tryb AJAX
+      // i potrafi zmienić odpowiedź — pierwsza wersja wysyłała go ZAWSZE i dostała pustą treść.
+      // Druga próba wchodzi tylko wtedy, gdy pierwsza nic nie przyniosła; to ta sama sesja
+      // i ta sama strona, więc nic dodatkowego nie kosztuje.
+      const proby = [await wyslij(false)];
+      if (!proby[0].tresc) proby.push(await wyslij(true));
+      return JSON.stringify({ proby });
     })()`;
 }
 
@@ -299,13 +329,28 @@ export async function fetchViaBrowser(
     if (wynik.exceptionDetails) {
       throw new Error(`Strona zgłosiła błąd: ${wynik.exceptionDetails.text ?? "nieznany"}`);
     }
-    const odpowiedz = JSON.parse(wynik.result?.value ?? "{}") as { status?: number; tresc?: string };
-    if (odpowiedz.status !== 200) {
-      throw new Error(`Baltic Hub odpowiedział HTTP ${odpowiedz.status} na zapytanie o kontenery.`);
+    const odpowiedz = JSON.parse(wynik.result?.value ?? "{}") as { proby?: Proba[] };
+    const proby = odpowiedz.proby ?? [];
+    const udana = proby.find((p) => p.status === 200 && p.tresc);
+
+    if (!udana) {
+      // Opis KAŻDEJ próby, nie tylko ostatniej: "200 i pusto" to zupełnie inny problem niż
+      // "403", a bez kodu, typu treści i adresu końcowego nie da się ich rozróżnić.
+      const opis = proby
+        .map(
+          (p) =>
+            `${p.jakoXhr ? "jako XHR" : "jak formularz"}: HTTP ${p.status}, ` +
+            `typ „${p.typ}”, ${p.tresc.length} znaków` +
+            `${p.przekierowany ? `, przekierowanie na ${p.adres}` : ""}`,
+        )
+        .join("; ");
+      throw new Error(
+        `Baltic Hub nie zwrócił wyników. ${opis || "brak jakiejkolwiek odpowiedzi"}.`,
+      );
     }
 
     await cdp.send("Target.closeTarget", { targetId }).catch(() => undefined);
-    return odpowiedz.tresc ?? "";
+    return udana.tresc;
   } finally {
     cdp.close();
   }
