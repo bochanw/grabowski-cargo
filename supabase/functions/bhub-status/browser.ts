@@ -11,14 +11,22 @@
 // zapytania, plik powstaje w całości w przeglądarce z danych już wczytanych.
 //
 // ====================== DLACZEGO WŁASNY KLIENT CDP ======================
-// Puppeteer i Playwright ciągną za sobą pół Node'a. Tu potrzebujemy dosłownie czterech poleceń
-// protokołu, a Deno ma WebSocket wbudowany — sprawdzone funkcją próbną, że Edge Function otwiera
-// połączenie WSS na zewnątrz (echo.websocket.org: połączono w 240 ms).
+// Puppeteer i Playwright ciągną za sobą pół Node'a, a potrzebujemy dosłownie czterech poleceń
+// protokołu.
+//
+// Połączenie idzie przez WŁASNEGO klienta WebSocket (wsClient.ts), nie przez wbudowany. Powód
+// zmierzony na produkcji: Bright Data wymaga nagłówka `Authorization`, którego wbudowany
+// `WebSocket` nie pozwala podać — zostaje wpisanie danych w adresie, a runtime Supabase (inaczej
+// niż Deno na zwykłym komputerze) najwyraźniej nie buduje z niego nagłówka Basic. To samo
+// uzgodnienie wysłane ręcznie dostaje `HTTP/1.1 101 Switching Protocols`, a wbudowany `WebSocket`
+// pod tym samym adresem kończy się błędem BEZ TREŚCI.
 //
 // ========================= SKĄD OSZCZĘDNOŚĆ =========================
 // Rozliczenie idzie za PRZESŁANE DANE (8 USD/GB), więc blokujemy obrazki, czcionki i style —
 // do odczytania statusu są niepotrzebne, a to one stanowią większość z ~285 kB strony.
 // Jedna sesja przeglądarki obsługuje CAŁY przebieg (wszystkie paczki), nie każdą z osobna.
+
+import { RawWebSocket } from "./wsClient.ts";
 
 const CDP_HOST = "brd.superproxy.io:9222";
 
@@ -44,41 +52,29 @@ interface CdpMessage {
  * Świadomie nie obsługuje niczego ponad to, czego tu używamy.
  */
 class CdpSession {
-  #ws: WebSocket;
+  #ws: RawWebSocket;
   #nextId = 1;
   #oczekujace = new Map<number, { ok: (r: Record<string, unknown>) => void; blad: (e: Error) => void }>();
   #zdarzenia = new Map<string, () => void>();
 
-  private constructor(ws: WebSocket) {
+  private constructor(ws: RawWebSocket) {
     this.#ws = ws;
-    ws.onmessage = (e) => this.#odbierz(String(e.data));
-    ws.onclose = () => this.#przerwij(new Error("Zdalna przeglądarka zamknęła połączenie."));
-    ws.onerror = () => this.#przerwij(new Error("Błąd połączenia ze zdalną przeglądarką."));
+    ws.onMessage = (tekst) => this.#odbierz(tekst);
+    ws.onClose = (powod) => this.#przerwij(new Error(powod));
   }
 
-  static connect(endpoint: string, timeoutMs: number): Promise<CdpSession> {
-    return new Promise((resolve, reject) => {
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(endpoint);
-      } catch (e) {
-        return reject(new Error(`Nie udało się otworzyć połączenia z przeglądarką: ${e}`));
-      }
-      const timer = setTimeout(() => {
-        try { ws.close(); } catch { /* nie szkodzi */ }
-        reject(new Error("Zdalna przeglądarka nie odpowiedziała w wyznaczonym czasie."));
-      }, timeoutMs);
-      ws.onopen = () => {
-        clearTimeout(timer);
-        resolve(new CdpSession(ws));
-      };
-      ws.onerror = () => {
-        clearTimeout(timer);
-        // Bez wskazywania winnego: `onerror` nie wie, czy to hasło, port, czy sam serwer.
-        // Powód dopisuje diagnozujPolaczenie() po tym, jak zapyta serwer wprost.
-        reject(new Error("Nie udało się połączyć ze zdalną przeglądarką."));
-      };
+  static async connect(timeoutMs: number): Promise<CdpSession> {
+    const { user, pass } = daneLogowania();
+    const [hostname, port] = [CDP_HOST.split(":")[0], Number(CDP_HOST.split(":")[1] ?? 443)];
+    // Nagłówek wprost — o to w tym wszystkim chodzi. Adres zostaje czysty, bez danych logowania.
+    const ws = await RawWebSocket.connect({
+      hostname,
+      port,
+      path: "/",
+      headers: { Authorization: `Basic ${btoa(`${user}:${pass}`)}` },
+      timeoutMs,
     });
+    return new CdpSession(ws);
   }
 
   #odbierz(surowe: string) {
@@ -121,7 +117,14 @@ class CdpSession {
         ok: (r) => { clearTimeout(timer); resolve(r); },
         blad: (e) => { clearTimeout(timer); reject(e); },
       });
-      this.#ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      // Nieudany zapis musi odrzucić TO polecenie, a nie zawisnąć do upływu limitu czasu.
+      this.#ws
+        .send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+        .catch((e) => {
+          this.#oczekujace.delete(id);
+          clearTimeout(timer);
+          reject(e instanceof Error ? e : new Error(String(e)));
+        });
     });
   }
 
@@ -156,89 +159,6 @@ function daneLogowania(): { user: string; pass: string } {
 }
 
 /**
- * Adres z danymi logowania. Sprawdzone doświadczalnie, nie założone: Deno wysyła z takiego adresu
- * nagłówek `Authorization: Basic`, a `%XX` odkodowuje przed jego zbudowaniem — czyli
- * `encodeURIComponent` jest tu potrzebne (bez niego hasło ze znakiem `/` w ogóle nie zbuduje URL-a)
- * i niczego nie psuje.
- */
-function endpoint(): string {
-  const { user, pass } = daneLogowania();
-  return `wss://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${CDP_HOST}`;
-}
-
-/**
- * DLACZEGO połączenie nie doszło do skutku.
- *
- * Wbudowany `WebSocket` jest tu ślepy: `onerror` nie niesie ani kodu odpowiedzi, ani treści, więc
- * "nie udało się" znaczy jednocześnie "złe hasło", "port nie wychodzi" i "serwer nie odpowiada".
- * Zgadywanie między nimi kosztowało już rundę, więc przy niepowodzeniu otwieramy zwykłe połączenie
- * TLS, wysyłamy to samo uzgodnienie ręcznie i CZYTAMY odpowiedź serwera. Robimy to wyłącznie po
- * błędzie — normalna ścieżka zostaje prosta.
- */
-async function diagnozujPolaczenie(): Promise<string> {
-  const { user, pass } = daneLogowania();
-  const [hostname, port] = [CDP_HOST.split(":")[0], Number(CDP_HOST.split(":")[1] ?? 443)];
-
-  // Limit czasu na SAMO otwarcie połączenia. Bez niego `connectTls` do zablokowanego portu wisi
-  // bez końca (sprawdzone — trzeba było ubić proces), a zawieszona diagnoza jest gorsza niż jej
-  // brak: funkcja brzegowa ginie z upływem czasu życia i przy zleceniach nie zostaje ŻADEN ślad.
-  let conn: Deno.TlsConn;
-  try {
-    const otwarte = await Promise.race([
-      Deno.connectTls({ hostname, port }),
-      new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
-    ]);
-    if (!otwarte) {
-      return (
-        `połączenie z ${hostname}:${port} nie doszło do skutku w 10 s (bez odmowy, po prostu ` +
-        `cisza) — tak zachowuje się zablokowany port, a nie złe dane logowania.`
-      );
-    }
-    conn = otwarte;
-  } catch (e) {
-    return (
-      `nie udało się w ogóle otworzyć połączenia z ${hostname}:${port} ` +
-      `(${e instanceof Error ? e.message : String(e)}) — to zwykle znaczy, że ruch na ten port ` +
-      `nie wychodzi z Supabase, a nie że dane logowania są złe.`
-    );
-  }
-
-  try {
-    const klucz = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
-    const zadanie =
-      `GET / HTTP/1.1\r\n` +
-      `Host: ${CDP_HOST}\r\n` +
-      `Upgrade: websocket\r\n` +
-      `Connection: Upgrade\r\n` +
-      `Sec-WebSocket-Key: ${klucz}\r\n` +
-      `Sec-WebSocket-Version: 13\r\n` +
-      `Authorization: Basic ${btoa(`${user}:${pass}`)}\r\n` +
-      `\r\n`;
-    await conn.write(new TextEncoder().encode(zadanie));
-
-    const bufor = new Uint8Array(2048);
-    const odczyt = await Promise.race([
-      conn.read(bufor),
-      new Promise<null>((r) => setTimeout(() => r(null), 15_000)),
-    ]);
-    if (!odczyt) return "serwer przyjął połączenie, ale nie odpowiedział na uzgodnienie.";
-
-    const odpowiedz = new TextDecoder().decode(bufor.subarray(0, odczyt));
-    const [naglowek, tresc] = odpowiedz.split("\r\n\r\n");
-    const pierwsza = naglowek.split("\r\n")[0] ?? "";
-    if (/\b101\b/.test(pierwsza)) {
-      return `serwer PRZYJĄŁ uzgodnienie (${pierwsza}) — dane logowania są dobre, problem leży dalej.`;
-    }
-    const ogon = (tresc ?? "").trim().slice(0, 200);
-    return `serwer odpowiedział „${pierwsza}"${ogon ? ` — ${ogon}` : ""}.`;
-  } catch (e) {
-    return `uzgodnienie przerwane: ${e instanceof Error ? e.message : String(e)}`;
-  } finally {
-    try { conn.close(); } catch { /* nie szkodzi */ }
-  }
-}
-
-/**
  * Otwiera stronę Baltic Hub i Z JEJ WNĘTRZA wysyła zapytanie o kontenery. Kluczowe jest to "z
  * wnętrza": przeglądarka dokłada wtedy ciasteczko sesji sama, a token CSRF czytamy ze strony —
  * dokładnie tak, jak robi to dyspozytor klikając "Sprawdź".
@@ -248,16 +168,10 @@ export async function fetchViaBrowser(
   postUrl: string,
   containers: string[],
 ): Promise<string> {
-  let cdp: CdpSession;
-  try {
-    cdp = await CdpSession.connect(endpoint(), 30_000);
-  } catch (e) {
-    // Zamiast domysłu dopisujemy do komunikatu to, co serwer FAKTYCZNIE odpowiedział.
-    const powod = await diagnozujPolaczenie().catch(
-      (d) => `nie udało się ustalić powodu (${d instanceof Error ? d.message : String(d)})`,
-    );
-    throw new Error(`${e instanceof Error ? e.message : String(e)} Sprawdzenie wprost: ${powod}`);
-  }
+  // Powód niepowodzenia niesie już sam klient (kod odpowiedzi i treść od serwera), więc nie ma
+  // tu osobnej diagnozy — dwa mechanizmy mówiące o tym samym rozjechałyby się przy pierwszej
+  // poprawce.
+  const cdp = await CdpSession.connect(30_000);
 
   try {
     const { targetId } = (await cdp.send("Target.createTarget", { url: "about:blank" })) as {
