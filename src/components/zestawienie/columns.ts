@@ -12,7 +12,9 @@ export interface ColumnDef {
   block: ColumnBlock;
   align?: "right";
   // "contractor": wartość to id z public.contractors, wyświetlana/edytowana przez nazwę.
-  kind?: "number" | "date" | "contractor";
+  // "bhub_status": jeden z pięciu kodów Baltic Hub — lista rozwijana, bo kolumna ma w bazie CHECK
+  // (wpisana ręcznie literówka zostałaby odrzucona przez bazę zamiast się zapisać).
+  kind?: "number" | "date" | "contractor" | "bhub_status";
 }
 
 export const COLUMNS: ColumnDef[] = [
@@ -22,6 +24,9 @@ export const COLUMNS: ColumnDef[] = [
   { key: "order_number", label: "Nr zlecenia", block: "ladunek" },
   { key: "forwarder", label: "Spedycja", block: "ladunek" },
   { key: "container_number", label: "Nr kontenera", block: "ladunek" },
+  // Status z Baltic Hub: dwie litery + kolor tła (patrz src/lib/bhub/status.ts). Stoi zaraz przy
+  // numerze kontenera, bo dyspozytor czyta jedno razem z drugim.
+  { key: "bhub_status", label: "Status BHub", block: "ladunek", kind: "bhub_status" },
   { key: "shipping_line", label: "Gestia", block: "ladunek" },
   { key: "company_name", label: "Dane firmy", block: "ladunek" },
   { key: "address", label: "Adres", block: "ladunek" },

@@ -10,6 +10,10 @@ import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/
 import { splitBaf } from "@/lib/invoice/baf";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
+import { ALARM_PREFIX, bhubCellDecoration, isAlarm } from "@/lib/bhub/cellDecoration";
+import { BHUB_STATUSES, BHUB_STATUS_LABELS } from "@/lib/bhub/status";
+import { shouldTrackLoad } from "@/lib/bhub/schedule";
+import { useBhubCheck } from "@/hooks/useBhubCheck";
 import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
@@ -165,6 +169,25 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     for (const document of loadDocuments) counts.set(document.load_id, (counts.get(document.load_id) ?? 0) + 1);
     return counts;
   }, [loadDocuments]);
+
+  // Status kontenerów z Baltic Hub. Cykliczne odpytywanie (co 15 min, 6-18) robi cron po stronie
+  // bazy; stąd wołamy sprawdzenie NA ŻĄDANIE — zaraz po zapisaniu zlecenia z podjęciem z BHub
+  // i z guzika w pasku.
+  const { checking: checkingIds, check: checkBhub, error: bhubError } = useBhubCheck();
+  const trackedIds = useMemo(() => loads.filter(shouldTrackLoad).map((load) => load.id), [loads]);
+
+  // Sprawdzenie zaraz po zapisaniu zlecenia (właściciel: "po wgraniu zlecenia które pobieramy
+  // z BHub program wchodzi na stronę i sprawdza status"). Świeżo wstawionego rekordu może jeszcze
+  // nie być na liście (Realtime ma opóźnienie) — wtedy wołamy i tak, bo to najczęstszy przypadek,
+  // a funkcja brzegowa i tak sprawdza, czy zlecenie podlega śledzeniu.
+  const checkAfterSave = useCallback(
+    async (loadId: string) => {
+      const saved = loads.find((load) => load.id === loadId);
+      if (saved && !shouldTrackLoad(saved)) return;
+      await checkBhub([loadId]);
+    },
+    [loads, checkBhub]
+  );
 
   // Widok jest PER UŻYTKOWNIK (Supabase, migracja 0007): które kolumny, w jakiej kolejności i ile
   // pierwszych zamrożonych. Dopóki ustawienia się wczytują, `resolveColumns(null)` daje widok
@@ -413,14 +436,30 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             </button>
           </>
         )}
-        {saveError ? (
-          <span className="text-xs text-red-600">{saveError}</span>
+        {saveError || bhubError ? (
+          <span className="text-xs text-red-600">{saveError ?? bhubError}</span>
         ) : (
           selectedLoads.length === 0 && (
             <span className="hidden text-xs text-zinc-400 xl:inline">Kliknij komórkę, żeby edytować — Enter zapisuje, Esc anuluje.</span>
           )
         )}
         <div className="ml-auto flex gap-2">
+          {/* Odpytywanie idzie cyklicznie z crona; ten guzik jest na "sprawdź teraz" — i po to,
+              żeby po martwym odczycie (wygasły klucz, blokada) dyspozytor mógł sam zobaczyć powód
+              zamiast czekać do następnego kwadransa. */}
+          <button
+            type="button"
+            disabled={trackedIds.length === 0 || checkingIds.size > 0}
+            onClick={() => void checkBhub(trackedIds)}
+            title={
+              trackedIds.length === 0
+                ? "Nie ma kontenerów do sprawdzenia (podjęcie z BHub, znany numer, status inny niż ZP)"
+                : "Sprawdź teraz statusy w Baltic Hub"
+            }
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400"
+          >
+            Statusy BHub{trackedIds.length > 0 ? ` (${trackedIds.length})` : ""}
+          </button>
           <button
             type="button"
             onClick={() => setDialog({ kind: "contractors" })}
@@ -466,7 +505,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       </div>
 
       {dialog?.kind === "import" && (
-        <ImportOrderDialog recentLoads={recentLoads} onClose={() => setDialog(null)} />
+        <ImportOrderDialog recentLoads={recentLoads} onSaved={checkAfterSave} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
       {dialog?.kind === "view" && (
@@ -491,6 +530,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           mode="attach"
           existingLoad={dialog.load}
           recentLoads={recentLoads.filter((l) => l.id !== dialog.load.id)}
+          onSaved={checkAfterSave}
           onClose={() => setDialog(null)}
         />
       )}
@@ -573,6 +613,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 contractors={contractors}
                 contractorNames={contractorNames}
                 documentCounts={documentCounts}
+                checkingIds={checkingIds}
                 editingCell={editingCell}
                 onStartEdit={setEditingCell}
                 onCancelEdit={() => setEditingCell(null)}
@@ -608,6 +649,8 @@ interface RowHandlers {
   contractorNames: Map<string, string>;
   /** Ile dokumentów wisi przy zleceniu — licznik na guziku "Dokumenty". */
   documentCounts: Map<string, number>;
+  /** Zlecenia, dla których trwa właśnie sprawdzanie statusu w Baltic Hub (znaczek przy kontenerze). */
+  checkingIds: ReadonlySet<string>;
   editingCell: EditingCell | null;
   onStartEdit: (cell: EditingCell) => void;
   onCancelEdit: () => void;
@@ -672,6 +715,7 @@ function DirectionRows({
   contractors,
   contractorNames,
   documentCounts,
+  checkingIds,
   editingCell,
   onStartEdit,
   onCancelEdit,
@@ -720,7 +764,13 @@ function DirectionRows({
           </td>
           {columns.map((column, index) => {
             const isEditing = editingCell?.id === load.id && editingCell.key === column.key;
-            const text = formatCell(load[column.key], column.kind, contractorNames);
+            // Kolor statusu z Baltic Hub, pogrubienie przy zgodnym ISO/gestii, alarm przy
+            // niezgodnym — cała reguła siedzi w src/lib/bhub/cellDecoration.ts.
+            const decoration = bhubCellDecoration(load, String(column.key));
+            const text = decoration?.text ?? formatCell(load[column.key], column.kind, contractorNames);
+            const alarm = isAlarm(decoration);
+            // Znaczek przy numerze kontenera, gdy trwa sprawdzanie w terminalu.
+            const spinning = column.key === "container_number" && checkingIds.has(load.id);
             return (
               <td
                 key={column.key}
@@ -752,10 +802,14 @@ function DirectionRows({
                   // a dymek nad każdą komórką byłby wyłącznie upierdliwy.
                   <div
                     style={cellContentStyle(String(column.key))}
-                    title={widths[String(column.key)] ? text || undefined : undefined}
-                    className={`overflow-hidden text-ellipsis ${CELL_PADDING}`}
+                    // Dymek z Baltic Hub ma pierwszeństwo nad dymkiem "pełna wartość przyciętej
+                    // komórki": alarm bez wyjaśnienia, co się nie zgadza, to samo czerwone tło.
+                    title={decoration?.title ?? (widths[String(column.key)] ? text || undefined : undefined)}
+                    className={`overflow-hidden text-ellipsis ${CELL_PADDING} ${decoration?.className ?? ""}`}
                   >
+                    {alarm ? ALARM_PREFIX : ""}
                     {text}
+                    {spinning && <BhubSpinner />}
                   </div>
                 )}
               </td>
@@ -802,6 +856,23 @@ function DirectionRows({
         </tr>
       ))}
     </>
+  );
+}
+
+/**
+ * Znaczek przy numerze kontenera na czas sprawdzania statusu w Baltic Hub (właściciel: "możesz
+ * jakiś znaczek zostawić przy kontenerze jak będzie się odświeżał"). `aria-hidden` z tekstem obok
+ * dla czytnika ekranu — sam kręcący się okrąg nic nie mówi.
+ */
+function BhubSpinner() {
+  return (
+    <span className="ml-1 inline-flex items-center align-middle" title="Sprawdzam status w Baltic Hub…">
+      <span
+        aria-hidden
+        className="inline-block size-3 animate-spin rounded-full border border-zinc-400 border-t-transparent dark:border-zinc-500 dark:border-t-transparent"
+      />
+      <span className="sr-only">Sprawdzam status w Baltic Hub</span>
+    </span>
   );
 }
 
@@ -891,6 +962,11 @@ function selectOptionsFor(
       ];
     case "pickup_type":
       return withCurrentOption([...PICKUP_LOCATIONS], current);
+    // Status z terminala normalnie ustawia bot, ale kolumna jest edytowalna jak każda inna —
+    // lista, nie wolny tekst, bo w bazie stoi CHECK na te pięć kodów (literówka wpisana ręcznie
+    // wróciłaby błędem zapisu zamiast się zapisać).
+    case "bhub_status":
+      return BHUB_STATUSES.map((code) => ({ value: code, label: `${code} — ${BHUB_STATUS_LABELS[code]}` }));
     case "driver_name":
       return withCurrentOption(fleet.drivers.map((d) => d.name), current);
     case "vehicle_plate":
@@ -951,7 +1027,10 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
     const net = column.key === "net_weight_kg" ? (typeof value === "number" ? value : null) : load.net_weight_kg;
     const size = column.key === "container_size" ? (typeof value === "string" ? value : null) : load.container_size;
     const gross = computeGrossWeightKg(net, size);
-    if (gross !== null && canOverwriteGrossWeight(load.gross_weight)) patch.gross_weight = String(gross);
+    // Waga z Baltic Hub jest nadrzędna — gdy ją mamy, tara jej nie zastępuje.
+    if (gross !== null && canOverwriteGrossWeight(load.gross_weight, load.bhub_gross_weight_kg)) {
+      patch.gross_weight = String(gross);
+    }
   }
   return patch;
 }

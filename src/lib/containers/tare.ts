@@ -20,8 +20,19 @@ export function computeGrossWeightKg(netWeightKg: number | null | undefined, con
   return netWeightKg + tare;
 }
 
-/** Wolno nadpisać tylko puste albo czysto liczbowe brutto — tekst typu "według armatora" zostaje. */
-export function canOverwriteGrossWeight(current: string | null | undefined): boolean {
+/**
+ * Wolno nadpisać tylko puste albo czysto liczbowe brutto — tekst typu "według armatora" zostaje.
+ *
+ * Drugi argument wyłącza przeliczanie CAŁKOWICIE: waga brutto pobrana z Baltic Hub jest wg
+ * właściciela nadrzędna ("ta jest nadrzędna i nadpisuje dowolne wartości ze zleceń"), więc
+ * suma "towar + tara" nie może jej po cichu zastąpić przy najbliższej edycji wagi netto albo typu
+ * kontenera. Tara jest tylko oszacowaniem tablicowym; terminal podaje wagę zważoną.
+ */
+export function canOverwriteGrossWeight(
+  current: string | null | undefined,
+  terminalGrossWeightKg?: number | null
+): boolean {
+  if (terminalGrossWeightKg !== null && terminalGrossWeightKg !== undefined) return false;
   const value = (current ?? "").trim();
   return value === "" || /^\d+([.,]\d+)?(\s*kg)?$/i.test(value);
 }

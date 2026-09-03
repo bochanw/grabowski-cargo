@@ -68,6 +68,17 @@ export interface Load {
   invoice_url: string | null;
   invoice_issued_at: string | null;
 
+  // Status kontenera z Baltic Hub — migracja 0016. Surowy zapis tego, co powiedział terminal;
+  // porównania (ISO ↔ wielkość, armator ↔ gestia) liczy appka przy wyświetlaniu.
+  bhub_status: string | null; // SS / ZS / SO / SP / ZP
+  bhub_status_raw: string | null;
+  bhub_iso_type: string | null;
+  bhub_shipping_line: string | null;
+  bhub_gross_weight_kg: number | null;
+  bhub_checked_at: string | null;
+  bhub_error: string | null;
+  bhub_details: Record<string, unknown> | null;
+
   correct_data_flag: string | null;
   loading_number: string | null;
   wants_own_cmr: string | null;

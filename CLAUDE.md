@@ -836,6 +836,99 @@ połączył, a to to samo w sumie. Nr kontenera się pokrywa"):
 - **UWAGA**: `mail-poll` na produkcji jest dalej w wersji sprzed tej zmiany (i sprzed BAF-u) — bez
   sekretów Exchange'a i tak nie działa; przed uruchomieniem skrzynki wdrożyć ją ponownie.
 
+**Status kontenerów z Baltic Hub — ZBUDOWANE, ale BEZ DZIAŁAJĄCEGO TRANSPORTU** (właściciel: „Dla
+kontenerów które podejmiemy z BHub sprawdzamy ich status na https://baltichub.com/dla-klienta/
+sprawdz-kontener. SS/ZS/SO/SP/ZP + kolor. Waga brutto z terminala jest nadrzędna. Sprawdź ISOtype
+(długość) i Gestię — zgadza się: pogrub, nie zgadza się: alarmuj. Co 15 minut w dni robocze 6-18,
+tylko kontenery bez statusu ZP"):
+
+- **BLOKADA, sprawdzona na trzech niezależnych ścieżkach, nie na reprodukcji: `baltichub.com` stoi
+  za Cloudflare „managed challenge" i odrzuca wszystko, co nie jest przeglądarką na zwykłym łączu.**
+  Zwykły `curl` z sesji → `403 cf-mitigated: challenge`; prawdziwy Chromium (Playwright) → utknął na
+  „Cierpliwości…" i po 60 s challenge nie przeszedł; **jednorazowa Edge Function na TYM projekcie
+  (`probe-baltichub`) → identyczne 403**. 403 wraca nawet na `/robots.txt`, więc blokada obejmuje
+  całą domenę, nie sam formularz. Wniosek: **planowane „Edge Function + pg_cron" nie dosięgnie tej
+  strony** — potrzebna jest usługa przechodząca przez Cloudflare albo oficjalne API terminala.
+- **DRUGA PUŁAPKA, ważna przy wniosku o API: Supabase Edge Functions NIE MAJĄ stałego IP wyjścia.**
+  Pięć kolejnych wywołań tej samej funkcji wyszło z pięciu różnych adresów AWS (98.93.11.29,
+  18.209.87.207, 18.208.208.182, 54.234.64.220, 3.236.162.161) — potwierdza to też dokumentacja
+  Supabase („Why Supabase Edge Functions cannot provide static egress IPs"). Jeśli Baltic Hub żąda
+  IP do listy dozwolonych, **nie da się go podać z Supabase** — trzeba pośrednika ze stałym IP
+  (mały VPS) albo odpytywać z komputera w biurze. Najpierw jednak warto spytać BHub, czy API w ogóle
+  wymaga IP, czy wystarczy klucz.
+- **Zbudowane i zweryfikowane (wszystko poza transportem i parserem strony):**
+  - `src/lib/bhub/status.ts` — pięć kodów, etykiety, kolory (SS czerwony, ZS niebieski, SO żółty,
+    SP pomarańczowy, ZP szary), `isFinalStatus` (ZP = koniec odpytywania). Kod wyprowadzany
+    z DWÓCH faktów (gdzie stoi + czy wisi blokada), nie z dopasowywania napisów — pięć kodów to
+    iloczyn dwóch osi. **Nierozpoznany status = `null` i surowy tekst w `bhub_status_raw`**,
+    pokazywany dosłownie BEZ koloru (właściciel zapowiedział, że znaczenie kolejnych statusów będzie
+    tłumaczył z czasem; kolor znaczyłby, że wiemy, co to jest).
+  - `src/lib/bhub/isoType.ts` — **PUŁAPKA: kod ISO i zapis ze zlecenia czyta się INACZEJ.**
+    W zleceniu „40HC"/„45" długość stoi wprost z przodu, w ISO 6346 długość niesie TYLKO PIERWSZY
+    znak, a drugi to wysokość — więc `45G1` to 40 stóp high cube, NIE 45 stóp. Naiwne porównanie
+    dwóch pierwszych cyfr uznałoby zlecenie na 45 stóp za zgodne z `45G1`, czyli zamilkłoby dokładnie
+    tam, gdzie ma alarmować. Jest na to osobny test.
+  - `src/lib/bhub/shippingLine.ts` — porównanie gestii z aliasami linii. Gestia „Leasing" (nasza
+    własna wartość z reguły o uwagach) świadomie NIE jest porównywana — dawałaby stały fałszywy alarm.
+  - `src/lib/bhub/schedule.ts` — okno pon-pt 6:00-18:00 **czasu warszawskiego** (nie UTC — inaczej
+    latem odpytywanie chodziłoby 8-20 czasu terminala), polskie święta z tej samej listy co domyślna
+    data zlecenia, `shouldTrackLoad` (BHub + numer + nie ZP).
+  - `src/lib/bhub/cellDecoration.ts` — jedno miejsce na wygląd komórek: kolor statusu, pogrubienie
+    przy zgodności, alarm (⚠ + czerwień) przy niezgodności, dymek mówiący CO się nie zgadza.
+  - Migracja **0016** (ZAAPLIKOWANA przez MCP): kolumny `bhub_*` na `loads` + RPC
+    `apply_bhub_check`. RPC, a nie zwykły UPDATE, z dwóch powodów: `app.actor` musi być ustawiony
+    w TEJ SAMEJ transakcji (inaczej dziennik podpisze bota jako `bot:service_role`), a reguła
+    „waga z terminala nadpisuje wszystko" ma siedzieć w jednym miejscu. Trigger dziennika pomija
+    `bhub_checked_at` i `bhub_details` — bez tego KAŻDE odpytanie (co 15 min × każdy kontener)
+    dopisywałoby wpis i utopiło prawdziwą historię.
+  - Migracja **0017** (cron co 15 min) — **ŚWIADOMIE NIEZAAPLIKOWANA**: bez działającego transportu
+    cron dzwoniłby tylko po to, żeby wpisać przy każdym zleceniu ten sam błąd.
+  - `supabase/functions/bhub-status/` — `deno check` przechodzi, **NIE wdrożona**. Źródło strony jest
+    wymienne (`BHUB_SOURCE=direct|proxy`, wzorzec `mailSource.ts`), adres strony i parametry usługi
+    w zmiennych środowiskowych.
+  - UI: kolumna „Status BHub" przy numerze kontenera, guzik „Statusy BHub (N)" w pasku, znaczek
+    kręcący się przy numerze kontenera w trakcie sprawdzania, sprawdzenie odpalane automatycznie
+    po zapisaniu zlecenia (`onSaved`). Edycja statusu listą pięciu kodów (w bazie jest CHECK).
+- **Błąd złapany PRZED wdrożeniem, zapytaniem do bazy zamiast założeniem:** `to_char(24000,
+  'FM9999999990.99')` zwraca **„24000." z kropką na końcu** — taki zapis nie tylko brzydko wygląda
+  w kolumnie „Waga brutto", ale przestaje pasować do wzorca „czysto liczbowej wagi"
+  w `canOverwriteGrossWeight`, więc appka wzięłaby go za ręczny tekst. Naprawione
+  `trim(trailing '.')`.
+- **Błąd złapany testem, nie przy pisaniu:** aliasy armatorów były zapisane w formie sklejonej
+  („mediterraneanshipping"), a normalizacja wycina z prawdziwego tekstu słowa „Shipping"/„Company" —
+  więc „Mediterranean Shipping Company" NIGDY nie trafiało w „MSC". Warianty zapisujemy teraz
+  dosłownie (ze spacjami) i normalizuje je ten sam kod; jest test-straż na tę klasę błędu.
+  Przy okazji „ZIM Sp. z o.o." wychodziło jako „ZIMZOO”, bo po sklejeniu spacji „z o.o." zamienia
+  się w „zoo”, którego granice słów z listy szumu już nie widzą — formy prawne zdejmowane są teraz
+  PRZED sklejeniem.
+- **Zweryfikowane:** logika — 47 sprawdzeń (`scratch-bhub.test.mts`, plik tymczasowy). Baza — RPC
+  odpalony na ŻYWEJ bazie w transakcji cofniętej wyjątkiem: waga `24000` bez kropki nadpisała
+  `22200` ze zlecenia, aktor w dzienniku to `bot:baltichub`, **powtórne identyczne sprawdzenie NIE
+  dopisało wpisu** (pomijanie `bhub_checked_at` działa), a zmiana statusu dopisała; po cofnięciu
+  nie zostało ani jedno zlecenie, wpis ani śmieciowa migracja. Nazwy parametrów RPC zgodne z tym,
+  co wysyła funkcja; filtr PostgREST „wszystko poza ZP" sprawdzony strzałem w REST (HTTP 200).
+  Przeglądarka (Playwright, `next dev`, tymczasowa strona `/test-bhub`) — 25 sprawdzeń: pięć
+  kolorów faktycznie różnych i o właściwej barwie, dymek z wagą/ISO/czasem, pogrubienie przy
+  zgodności, alarm „⚠" z wyjaśnieniem przy 45 vs `45G1`, „Leasing" bez oceny, nieznany status bez
+  koloru, znaczek pojawia się PRZY NUMERZE KONTENERA na czas sprawdzenia i znika po nim, guzik
+  liczy 9 z 10 (ZP pominięty). **UWAGA na Tailwind 4: `getComputedStyle` zwraca kolory jako
+  `lab(...)`, nie `rgb(...)` — asercje na napis „rgb(" cicho nie przechodzą.**
+- **Czego NIE zweryfikowano i czego brakuje:**
+  1. **Transportu** — patrz blokada wyżej. Decyzja właściciela: oficjalne API (wymaga kontaktu
+     z BHub i prawdopodobnie stałego IP), płatna usługa przechodząca przez Cloudflare, albo program
+     na komputerze w biurze.
+  2. **Parsera strony** (`supabase/functions/bhub-status/parse.ts`) — układu strony NIE WIDZIAŁEM
+     ani razu. Parser jest napisany tak, żeby pierwsze prawdziwe uruchomienie samo powiedziało, jak
+     stronę czytać: wyciąga WSZYSTKIE pary etykieta→wartość, komplet zapisuje do
+     `loads.bhub_details`, a nazwy rubryk, które nas interesują, siedzą w jednym słowniku `LABELS`
+     do uzupełnienia po pierwszym przebiegu. **Nie dopisywać tam regexów pod niewidzianą stronę** —
+     to dokładnie ta pułapka, co z kotwicą `$` w q4road.
+  3. Czterech przykładowych kontenerów właściciela (OMTU2301120, MBUU1000292, CAAU2300808,
+     MSBU3460867) nie dało się sprawdzić — strona nie odpowiada z tego środowiska.
+- **Do posprzątania w Dashboardzie** (MCP nie kasuje funkcji): `probe-baltichub` (zagłuszona do
+  HTTP 410 i z powrotem za `verify_jwt`, bo pierwsza wersja przyjmowała dowolny adres w zapytaniu,
+  czyli była otwartym pośrednikiem) oraz `probe-imap-tcp` z poprzedniej sesji.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -854,3 +947,8 @@ połączył, a to to samo w sumie. Nr kontenera się pokrywa"):
 5. Dla eksportu: domyślna data liczy się dziś od `delivery_date` (jedyna data z szablonu Q4Road, tam
    "Miejsca rozładunku"). Gdy pojawi się zlecenie eksportowe z datą ZAŁADUNKU, upewnić się, że parser
    szablonu wpisuje ją tak, żeby "dzień roboczy przed" liczył się od właściwej daty.
+7. **Baltic Hub — dokończenie** (patrz sekcja wyżej): po wybraniu transportu przez właściciela
+   uzupełnić `source.ts`, wdrożyć `bhub-status`, przejść przez pierwsze prawdziwe sprawdzenie,
+   z `bhub_details` odczytać faktyczne nazwy rubryk i dopisać je do `LABELS` w `parse.ts`, dopiero
+   potem zaaplikować migrację 0017 (cron). Przy okazji dopytać właściciela o znaczenie statusów,
+   których strona pokaże więcej niż pięć ustalonych („z czasem będę Ci tłumaczył").

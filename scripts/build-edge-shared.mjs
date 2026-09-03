@@ -19,18 +19,26 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const outDir = join(root, "supabase", "functions", "mail-poll", "shared");
 
-// Ścieżka w src → ścieżka w _shared. Płaska struktura: w bundlu nie ma sensu odtwarzać drzewa
-// aplikacji, a płasko łatwiej przepisać importy.
-const MODULES = {
-  "src/types/parsedOrder.ts": "parsedOrder.ts",
-  "src/lib/containers/tare.ts": "tare.ts",
-  "src/lib/orderTemplates/pickupLocations.ts": "pickupLocations.ts",
-  "src/lib/orderTemplates/q4road.ts": "q4road.ts",
-  "src/lib/orderTemplates/index.ts": "orderTemplates.ts",
-  "src/lib/dates/workingDays.ts": "workingDays.ts",
-  "src/lib/loads/orderNumber.ts": "orderNumber.ts",
+// Funkcja brzegowa → (ścieżka w src → nazwa pliku w jej katalogu shared/). Płaska struktura:
+// w bundlu nie ma sensu odtwarzać drzewa aplikacji, a płasko łatwiej przepisać importy.
+const TARGETS = {
+  "mail-poll": {
+    "src/types/parsedOrder.ts": "parsedOrder.ts",
+    "src/lib/containers/tare.ts": "tare.ts",
+    "src/lib/orderTemplates/pickupLocations.ts": "pickupLocations.ts",
+    "src/lib/orderTemplates/q4road.ts": "q4road.ts",
+    "src/lib/orderTemplates/index.ts": "orderTemplates.ts",
+    "src/lib/dates/workingDays.ts": "workingDays.ts",
+    "src/lib/loads/orderNumber.ts": "orderNumber.ts",
+  },
+  // Odpytywanie Baltic Hub: okno godzinowe (dni robocze 6-18) i model pięciu statusów muszą
+  // znaczyć DOKŁADNIE to samo w przeglądarce i w cronie — stąd kopia, a nie druga implementacja.
+  "bhub-status": {
+    "src/lib/dates/workingDays.ts": "workingDays.ts",
+    "src/lib/bhub/status.ts": "status.ts",
+    "src/lib/bhub/schedule.ts": "schedule.ts",
+  },
 };
 
 // Specyfikator w src → specyfikator w bundlu.
@@ -41,33 +49,40 @@ const REWRITES = [
   [/from "\.\.\/lib\/orderTemplates\/pickupLocations"/g, 'from "./pickupLocations.ts"'],
   [/from "\.\/pickupLocations"/g, 'from "./pickupLocations.ts"'],
   [/from "\.\/q4road"/g, 'from "./q4road.ts"'],
+  [/from "\.\.\/dates\/workingDays"/g, 'from "./workingDays.ts"'],
+  [/from "\.\/status"/g, 'from "./status.ts"'],
 ];
 
 const BANNER = (source) =>
   `// PLIK GENEROWANY — nie edytuj tutaj. Źródło: ${source}\n` +
   `// Wygenerowane przez scripts/build-edge-shared.mjs (patrz komentarz w skrypcie).\n\n`;
 
-mkdirSync(outDir, { recursive: true });
-
 let unresolved = [];
-for (const [src, out] of Object.entries(MODULES)) {
-  let code = readFileSync(join(root, src), "utf8");
-  // "use client" nie znaczy nic w Deno, ale zostawiony wygląda na pomyłkę — usuwamy.
-  code = code.replace(/^["']use client["'];?\s*\n/m, "");
-  for (const [pattern, replacement] of REWRITES) code = code.replace(pattern, replacement);
+let count = 0;
+for (const [fn, modules] of Object.entries(TARGETS)) {
+  const outDir = join(root, "supabase", "functions", fn, "shared");
+  mkdirSync(outDir, { recursive: true });
 
-  // Kontrola: po przepisaniu NIE MOŻE zostać żaden import bez rozszerzenia albo z aliasem —
-  // taki bundle wdrożyłby się i wywalił dopiero przy pierwszym mailu.
-  for (const match of code.matchAll(/from\s+"([^"]+)"/g)) {
-    const spec = match[1];
-    const bare = !spec.startsWith(".") && !spec.startsWith("npm:") && !spec.startsWith("jsr:") && !spec.startsWith("http");
-    if (bare || (spec.startsWith(".") && !spec.endsWith(".ts"))) {
-      unresolved.push(`${src} → ${spec}`);
+  for (const [src, out] of Object.entries(modules)) {
+    let code = readFileSync(join(root, src), "utf8");
+    // "use client" nie znaczy nic w Deno, ale zostawiony wygląda na pomyłkę — usuwamy.
+    code = code.replace(/^["']use client["'];?\s*\n/m, "");
+    for (const [pattern, replacement] of REWRITES) code = code.replace(pattern, replacement);
+
+    // Kontrola: po przepisaniu NIE MOŻE zostać żaden import bez rozszerzenia albo z aliasem —
+    // taki bundle wdrożyłby się i wywalił dopiero przy pierwszym mailu.
+    for (const match of code.matchAll(/from\s+"([^"]+)"/g)) {
+      const spec = match[1];
+      const bare = !spec.startsWith(".") && !spec.startsWith("npm:") && !spec.startsWith("jsr:") && !spec.startsWith("http");
+      if (bare || (spec.startsWith(".") && !spec.endsWith(".ts"))) {
+        unresolved.push(`${src} → ${spec} (${fn})`);
+      }
     }
-  }
 
-  writeFileSync(join(outDir, out), BANNER(src) + code);
-  console.log(`  ${src} → supabase/functions/mail-poll/shared/${out}`);
+    writeFileSync(join(outDir, out), BANNER(src) + code);
+    console.log(`  ${src} → supabase/functions/${fn}/shared/${out}`);
+    count += 1;
+  }
 }
 
 if (unresolved.length > 0) {
@@ -75,4 +90,4 @@ if (unresolved.length > 0) {
   for (const u of unresolved) console.error(`  ${u}`);
   process.exit(1);
 }
-console.log(`\nGotowe — ${Object.keys(MODULES).length} modułów.`);
+console.log(`\nGotowe — ${count} plików.`);
