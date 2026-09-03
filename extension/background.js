@@ -17,6 +17,7 @@
 // ============================================================
 
 import { konto, ustawienia, wywolaj, zaloguj, wyloguj } from "./api.js";
+import { wpiszJakCzlowiek } from "./input.js";
 
 const ALARM = "sprawdzanie";
 const CZEKANIE_NA_POLE_MS = 90_000; // Cloudflare potrafi weryfikować kilkadziesiąt sekund.
@@ -157,7 +158,35 @@ async function zapytajTerminal(kartaId, adres, numery) {
   const okienka = await naStronie(kartaId, "zamknij");
   await spij(800);
 
-  const wyslane = await naStronie(kartaId, "wyslij", [numery]);
+  // Wpisanie i uruchomienie wyszukiwania. NAJPIERW droga „jak człowiek" (prawdziwe zdarzenia myszy
+  // i klawiatury), bo tylko ona uruchamia reCAPTCHĘ formularza — bez niej terminal oddaje pustą
+  // listę wyników, co wygląda jak „nie zna kontenera". Stara droga (klik z kodu) zostaje jako
+  // awaryjna: gdy nie da się podłączyć debugera, lepiej spróbować niż nie zrobić nic.
+  const ustawienie = await naStronie(kartaId, "ustawTryb", [numery.length]);
+  await spij(400);
+  const wsk = await naStronie(kartaId, "wskazniki");
+
+  let wyslane;
+  if (wsk.ok) {
+    try {
+      const zaufane = await wpiszJakCzlowiek(kartaId, wsk, numery.join(", "));
+      wyslane = {
+        wyslane: true,
+        sposob: zaufane.sposob,
+        tryb: `${ustawienie.opis ?? "?"} :: ${wsk.tryb ?? "?"}`,
+        pole: wsk.opisPola,
+        guzik: wsk.opisGuzika,
+        wpisano: numery.join(", "),
+        kandydaci: wsk.kandydaci,
+      };
+    } catch (e) {
+      wyslane = await naStronie(kartaId, "wyslij", [numery]);
+      wyslane.sposob = `${wyslane.sposob ?? "?"} (droga awaryjna, debuger: ${e.message})`;
+    }
+  } else {
+    wyslane = await naStronie(kartaId, "wyslij", [numery]);
+  }
+
   if (!wyslane.wyslane) {
     const blad = bladZeSzczegolami(
       `Nie udało się uruchomić wyszukiwania: ${wyslane.powod ?? "nieznany powód"}. Tryb: ${wyslane.tryb ?? "?"}.`,

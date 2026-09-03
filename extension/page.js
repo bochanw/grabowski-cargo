@@ -416,9 +416,55 @@
     return { wyslane: true, sposob: "Enter", ...uzyte };
   }
 
+  /**
+   * Punkty do KLIKNIĘCIA MYSZĄ (środek pola i środek guzika, we współrzędnych okna).
+   *
+   * Potrzebne, bo klikanie z kodu (`element.click()`) nie wystarcza: zdarzenie ma
+   * `isTrusted === false`, reCAPTCHA na tym formularzu się nie uruchamia i terminal oddaje pustą
+   * listę wyników. Prawdziwe kliknięcia wysyła `input.js` przez protokół debugowania i potrzebuje
+   * do tego współrzędnych — stąd ta funkcja.
+   *
+   * Pole przewijamy na środek okna PRZED pomiarem, bo w punkt poza widocznym obszarem nie da się
+   * kliknąć. Guzik mierzymy po tym samym przewinięciu (na tej stronie stoi tuż obok pola).
+   */
+  function wskazniki() {
+    const pole = znajdzPole();
+    if (!pole) return { ok: false, powod: "nie znalazłem pola na numery", ...opiszStrone() };
+    pole.scrollIntoView({ block: "center", inline: "center" });
+
+    const srodek = (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) };
+    };
+    const wOknie = (p) => p.w > 0 && p.h > 0 && p.x > 0 && p.y > 0 && p.y < innerHeight && p.x < innerWidth;
+
+    const guzik = znajdzGuzik(pole);
+    const punktPola = srodek(pole);
+    const punktGuzika = guzik ? srodek(guzik) : null;
+
+    // Czyścimy pole przed pisaniem — wpisanie po staremu nie wymaga zaufanego zdarzenia,
+    // a zostawiony numer z poprzedniej paczki dokleiłby się do nowego.
+    const ustawiacz = Object.getOwnPropertyDescriptor(pole.constructor.prototype, "value")?.set;
+    if (ustawiacz) ustawiacz.call(pole, "");
+    else pole.value = "";
+    pole.dispatchEvent(new Event("input", { bubbles: true }));
+
+    return {
+      ok: wOknie(punktPola),
+      pole: punktPola,
+      guzik: punktGuzika && wOknie(punktGuzika) ? punktGuzika : null,
+      opisPola: opisPola(pole),
+      opisGuzika: opisGuzika(guzik),
+      tryb: opiszTryb(),
+      kandydaci: kandydaciGuzikow(pole),
+    };
+  }
+
   globalThis.__bhub = {
     /** Czy strona jest gotowa do wypełnienia (przeszła weryfikację Cloudflare i ma pole). */
     stan: () => ({ gotowa: Boolean(znajdzPole()), zagadka: opiszZagadke(), ...opiszStrone() }),
+    ustawTryb: (ile) => ustawTryb(ile),
+    wskazniki,
     zamknij: () => zamknijOkienka(),
     wyslij,
     /**
