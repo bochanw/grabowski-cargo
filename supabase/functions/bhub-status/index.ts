@@ -176,26 +176,36 @@ Deno.serve(async (req: Request) => {
     let query = admin
       .from("loads")
       .select("id, container_number, pickup_type, bhub_status")
-      .eq("pickup_type", "BHub")
       .not("container_number", "is", null)
-      // "ZP już nie ruszamy (jest już zwolniony i nie ma to sensu)".
-      .or("bhub_status.is.null,bhub_status.neq.ZP")
       .order("bhub_checked_at", { ascending: true, nullsFirst: true })
       .limit(typeof body.limit === "number" && body.limit > 0 ? Math.min(body.limit, MAX_CONTAINERS_PER_RUN) : MAX_CONTAINERS_PER_RUN);
+
     if (requestedIds) {
+      // CZŁOWIEK PYTA O KONKRETNE ZLECENIA — bez filtrów.
+      //
+      // Reguły "tylko podjęcie z BHub", "tylko nie-ZP" i "nie częściej niż co 10 minut" są po to,
+      // żeby cykl nie zawracał terminalowi głowy bez potrzeby. Wobec kliknięcia dyspozytora nie
+      // mają sensu: właściciel wprost — "mają status ZP, więc program ich już nie sprawdza, jak
+      // teraz sprawdzić ponownie?". Odpowiedź brzmi: zaznaczyć wiersze i poprosić, a wtedy
+      // sprawdzamy je niezależnie od tego, co stoi w kolumnie statusu.
       query = query.in("id", requestedIds);
     } else {
       const swieze = new Date(Date.now() - SWIEZOSC_MINUT * 60_000).toISOString();
-      query = query.or(`bhub_checked_at.is.null,bhub_checked_at.lt.${swieze}`);
+      query = query
+        .eq("pickup_type", "BHub")
+        // "ZP już nie ruszamy (jest już zwolniony i nie ma to sensu)".
+        .or("bhub_status.is.null,bhub_status.neq.ZP")
+        .or(`bhub_checked_at.is.null,bhub_checked_at.lt.${swieze}`);
     }
 
     const { data: rows, error } = await query;
     if (error) return json({ ok: false, reason: "db", error: error.message }, 500);
 
     // Druga straż po stronie kodu: ta sama reguła co w appce (shared/schedule.ts), żeby zapytanie
-    // SQL i kod nie mogły się rozjechać w tym, co znaczy "podlega śledzeniu".
+    // SQL i kod nie mogły się rozjechać w tym, co znaczy "podlega śledzeniu". Przy pytaniu
+    // o konkretne zlecenia straż jest wyłączona — patrz komentarz wyżej.
     const items = ((rows ?? []) as LoadRow[])
-      .filter(shouldTrackLoad)
+      .filter((load) => (requestedIds ? Boolean((load.container_number ?? "").trim()) : shouldTrackLoad(load)))
       .map((load) => ({ loadId: load.id, container: (load.container_number ?? "").trim().toUpperCase() }));
 
     await touchAgent(admin, agent, userId, {});

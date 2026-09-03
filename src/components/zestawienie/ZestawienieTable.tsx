@@ -431,6 +431,19 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             >
               Wystaw fakturę ({selectedLoads.length})
             </button>
+            {/* Sprawdzenie NA ŻĄDANIE, z pominięciem reguł cyklu. Cykliczne odpytywanie omija
+                kontenery ze statusem ZP (właściciel: "ZP już nie ruszamy"), więc bez tego guzika
+                nie dało się ich sprawdzić ponownie — a bywa potrzebne, gdy status zmienił się po
+                zwolnieniu albo gdy pierwszy odczyt czegoś nie zdążył pobrać. */}
+            <button
+              type="button"
+              disabled={checkingIds.size > 0}
+              onClick={() => void checkBhub(selectedLoads.map((l) => l.id))}
+              title="Sprawdź w Baltic Hub zaznaczone zlecenia — także te ze statusem ZP, które pomija odpytywanie cykliczne"
+              className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400"
+            >
+              Sprawdź statusy ({selectedLoads.length})
+            </button>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
