@@ -940,6 +940,45 @@ tylko kontenery bez statusu ZP"):
   HTTP 410 i z powrotem za `verify_jwt`, bo pierwsza wersja przyjmowała dowolny adres w zapytaniu,
   czyli była otwartym pośrednikiem) oraz `probe-imap-tcp` z poprzedniej sesji.
 
+**Baltic Hub — co ustalone NA ŻYWO (ta sama sesja, po podłączeniu Bright Daty):**
+- **Transport DZIAŁA.** Bright Data Web Unlocker przechodzi przez Cloudflare (sekrety
+  `BHUB_SOURCE=brightdata`, `BRIGHTDATA_API_TOKEN`, `BRIGHTDATA_ZONE=web_unlocker1` wpisał
+  właściciel). Zmierzone: **jedno pobranie trwa ~25 s**. Pierwsza wersja pytała o kontenery po
+  jednym i funkcja brzegowa wyczerpała czas życia po TRZECIM z pięciu — a urwana funkcja nie
+  zapisuje błędu, więc dwa zlecenia zostały bez sprawdzenia I BEZ ŚLADU.
+- **Jak naprawdę pyta się o wyniki** (z podglądu zakładki Sieć u właściciela, nie ze zgadywania):
+  `POST https://baltichub.com/multi` z ciałem `lang=pl&id[]=NR1&id[]=NR2…`. Sam adres
+  `/dla-klienta/sprawdz-kontener` zwraca WYŁĄCZNIE formularz — pole na kontenery buduje JavaScript,
+  więc w źródle strony go nie ma (appka zapisała stamtąd tylko przyciski od ciasteczek) i żaden
+  adres z numerem w parametrze nie mógł zadziałać. Kosztowało to dwie rundy.
+- **`id[]` powtórzone = jedno zapytanie na wiele kontenerów.** Stąd pobieranie PACZKAMI po 10
+  (`BATCH_SIZE`): przy 25 s i koszcie za zapytanie pytanie po jednym było dziesięć razy dłuższe
+  i dziesięć razy droższe za tę samą odpowiedź.
+- **BLOKADA, aktualna: `/multi` odpowiada stroną „Page Expired" (Laravel, 419 = wygasły token
+  CSRF).** Zapytanie dochodzi pod właściwy adres i we właściwej formie, ale serwis wymaga tokenu
+  z `<meta name="csrf-token">` POBRANEGO WCZEŚNIEJ ze strony i odesłanego razem z ciasteczkiem
+  sesji. Bright Data Web Unlocker traktuje każde zapytanie osobno, a własne nagłówki/ciasteczka
+  wymagają trybu, który przestawia rozliczenie na „płacisz też za nieudane zapytania" — świadomie
+  odrzucone. **Drogi wyjścia: (a) eksport XLSX, jeśli okaże się GET-em (Laravel nie wymaga tokenu
+  przy GET), (b) Bright Data Scraping Browser (~8 USD/GB, prawdziwa przeglądarka klika sama;
+  do sprawdzenia, czy da się nim sterować z Edge Function).**
+- **Znaczenie pól — z DOKUMENTACJI TERMINALA** (sekcja „Opis elementów karty kontenera" na stronie
+  sprawdzania kontenera), nie z domysłu: `Weight [KG]` = **waga VGM**, `Cargo Weight` = VGM minus
+  tara, `Commodity Weight` = waga dla Urzędu Celnego. **`T-State` ma OSIEM wartości: Inbound
+  (w drodze na terminal), Yard, EC/In, EC/Out, Departed, Loaded, Advised, Retired — NIE MA
+  „Vessel"**, której szukała pierwsza wersja kodu, więc kontener w drodze nie dostawał statusu.
+  Odpowiednik „na statku" to `Inbound`. Stany „kontenera już tu nie ma" nie dostają żadnego
+  z pięciu kodów — **do ustalenia z właścicielem, jak je oznaczać**.
+- **Trzy błędy złapane na żywych danych, wszystkie z testami-strażami:** (1) wzorzec kodu ISO był
+  tak szeroki, że łapał angielskie słowa ze strony — do bazy trafiły „LINK" i „LEFT" jako typ
+  kontenera (przy dopuszczonym „M" przechodziło nawet „MENU"); (2) te śmieci NIE DAŁY SIĘ USUNĄĆ,
+  bo zapis szedł przez `coalesce(nowa, stara)` — migracja **0018** wprowadza jawny `p_parsed`
+  i czyści błędne wpisy; (3) pusta odpowiedź Bright Daty (200, zero znaków) udawała „stronę bez
+  danych" — teraz to jawny błąd z adresem, a do `bhub_details` zawsze trafia `_adres`,
+  `_dlugosc_odpowiedzi` i `_paczka`.
+- Funkcja `bhub-status` wdrożona (v10). **Repo jest o jeden commit do przodu** (słownik T-State +
+  nazwanie „Page Expired") — do wdrożenia razem z rozwiązaniem transportu.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
