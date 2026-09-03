@@ -62,6 +62,7 @@ export const COLUMNS: ColumnDef[] = [
   { key: "rate_misc", label: "Stawka (inne)", block: "rozliczenie" },
   { key: "adr_flag", label: "ADR", block: "rozliczenie" },
   { key: "gct_leasing_addons", label: "GCT leasing dodatki", block: "rozliczenie", align: "right", kind: "number" },
+  { key: "freight_base_amount", label: "Stawka bazowa", block: "rozliczenie", align: "right", kind: "number" },
   { key: "baf_percentage", label: "%BAF", block: "rozliczenie", align: "right", kind: "number" },
   { key: "baf_amount", label: "Kwota BAF", block: "rozliczenie", align: "right", kind: "number" },
   { key: "total_amount", label: "SUMA", block: "rozliczenie", align: "right", kind: "number" },

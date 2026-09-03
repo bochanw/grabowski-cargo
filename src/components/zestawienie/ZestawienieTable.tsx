@@ -7,6 +7,7 @@ import { useDeleteLoad, useUpdateLoad } from "@/hooks/useLoads";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
+import { splitBaf } from "@/lib/invoice/baf";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
@@ -884,6 +885,26 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
       patch.payment_terms_note = load.payment_terms_note ?? contractor.payment_terms_note;
     }
   }
+  // BAF: stawka bazowa, procent i SUMA to jedna zależność (baza + BAF = suma), więc edycja
+  // KTÓREJKOLWIEK z nich przelicza pozostałe — inaczej kolumny rozjechałyby się po pierwszej
+  // ręcznej poprawce, a faktura poszłaby ze starym rozbiciem.
+  if (load && (column.key === "freight_base_amount" || column.key === "baf_percentage" || column.key === "total_amount")) {
+    const numberOrNull = (candidate: string | number | null) => (typeof candidate === "number" ? candidate : null);
+    const percent = column.key === "baf_percentage" ? numberOrNull(value) : load.baf_percentage;
+    // Edycja SUMY liczy w drugą stronę (od kwoty z BAF-em w dół), pozostałe — od bazy w górę.
+    // Zmiana samego procentu przy pustej bazie też liczy od sumy: to jest wtedy jedyna znana kwota.
+    const base = column.key === "freight_base_amount" ? numberOrNull(value) : load.freight_base_amount;
+    const total = column.key === "total_amount" ? numberOrNull(value) : load.total_amount;
+    const fromTotal = column.key === "total_amount" || base === null;
+    const split = splitBaf(fromTotal ? total : base, percent, fromTotal);
+    patch.freight_base_amount = split.base;
+    patch.baf_amount = split.baf;
+    patch.total_amount = split.total;
+    // "Kwota" (blok Fakturowanie) trzyma kwotę do zafakturowania — ale po wystawieniu faktury jest
+    // już zapisem tego, co faktycznie poszło do Fakturowni, więc wtedy jej nie ruszamy.
+    if (!load.fakturownia_invoice_id) patch.invoice_amount = split.total;
+  }
+
   // Brutto = towar + tara kontenera — zmiana wagi netto albo typu kontenera przelicza brutto
   // (ręczny tekst typu "według armatora" zostaje).
   if (load && (column.key === "net_weight_kg" || column.key === "container_size")) {

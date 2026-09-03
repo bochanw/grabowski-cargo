@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useUpdateLoad } from "@/hooks/useLoads";
 import { createInvoice, type CreatedInvoice } from "@/lib/supabase/createInvoice";
-import { buildInvoiceTitle, type ExportOrigin } from "@/lib/invoice/invoiceTitle";
-import type { Contractor } from "@/types/contractor";
+import { buildBafPositionTitle, buildInvoiceTitle, type ExportOrigin } from "@/lib/invoice/invoiceTitle";
+import { bafInvoiceMode, type BafInvoiceMode, type Contractor } from "@/types/contractor";
 import type { Load } from "@/types/load";
 
 const REASON_MESSAGES: Record<string, string> = {
@@ -15,7 +15,10 @@ const REASON_MESSAGES: Record<string, string> = {
 };
 
 interface PositionState {
+  /** Jedno zlecenie może dać DWIE pozycje (fracht + BAF), więc identyfikuje je para id+rodzaj. */
+  key: string;
   loadId: string;
+  kind: "freight" | "baf";
   title: string;
   titleTouched: boolean;
   amountNet: number | null;
@@ -24,16 +27,39 @@ interface PositionState {
   orderNumber: string;
 }
 
-function initialPositions(loads: Load[]): PositionState[] {
-  return loads.map((load) => ({
-    loadId: load.id,
-    title: buildInvoiceTitle(load, "poimport"),
-    titleTouched: false,
-    amountNet: load.invoice_amount,
-    origin: "poimport",
-    isExport: load.direction === "E",
-    orderNumber: load.order_number ?? "",
-  }));
+/**
+ * Pozycje faktury: jedna na zlecenie, ALBO dwie (fracht + dodatek paliwowy), gdy kontrahent ma
+ * ustawione `baf_invoice_mode = 'separate'` (właściciel: "albo stawkę z BAF razem, albo BAF jako
+ * oddzielną pozycję — do konfiguracji via klient"). Rozbicie stawki siedzi już przy zleceniu
+ * (freight_base_amount / baf_amount, migracja 0013) — tu tylko decydujemy, ile pozycji z niego zrobić.
+ */
+function initialPositions(loads: Load[], mode: BafInvoiceMode): PositionState[] {
+  return loads.flatMap((load) => {
+    const common = {
+      loadId: load.id,
+      titleTouched: false,
+      origin: "poimport" as ExportOrigin,
+      isExport: load.direction === "E",
+      orderNumber: load.order_number ?? "",
+    };
+    const splitOut = mode === "separate" && load.baf_amount !== null && load.freight_base_amount !== null;
+    if (splitOut) {
+      return [
+        { ...common, key: `${load.id}:freight`, kind: "freight" as const, title: buildInvoiceTitle(load, "poimport"), amountNet: load.freight_base_amount },
+        { ...common, key: `${load.id}:baf`, kind: "baf" as const, title: buildBafPositionTitle(load), amountNet: load.baf_amount },
+      ];
+    }
+    return [
+      {
+        ...common,
+        key: `${load.id}:freight`,
+        kind: "freight" as const,
+        title: buildInvoiceTitle(load, "poimport"),
+        // Kwota RAZEM z BAF-em: total_amount, a dla zleceń sprzed rozbicia stawki — invoice_amount.
+        amountNet: load.total_amount ?? load.invoice_amount,
+      },
+    ];
+  });
 }
 
 // Data sprzedaży: przy kilku ładunkach z różnych dni bierzemy NAJPÓŹNIEJSZĄ jako propozycję —
@@ -57,7 +83,12 @@ export function InvoiceDialog({
   onClose: () => void;
 }) {
   const updateLoad = useUpdateLoad();
-  const [positions, setPositions] = useState<PositionState[]>(() => initialPositions(loads));
+  // Kontrahent (a z nim sposób pokazania BAF-u) jest znany z propsów już przy pierwszym renderze —
+  // liczymy go PRZED stanem pozycji, bo od niego zależy, ile tych pozycji w ogóle powstanie.
+  const contractorIds = Array.from(new Set(loads.map((l) => l.contractor_id)));
+  const contractor = contractorIds.length === 1 ? contractors.find((c) => c.id === contractorIds[0]) ?? null : null;
+  const bafMode = bafInvoiceMode(contractor);
+  const [positions, setPositions] = useState<PositionState[]>(() => initialPositions(loads, bafMode));
   const [sellDate, setSellDate] = useState(() => defaultSellDate(loads));
   const [paymentTermsDays, setPaymentTermsDays] = useState<number | null>(
     loads[0]?.payment_terms_days ?? null
@@ -67,8 +98,6 @@ export function InvoiceDialog({
   const [created, setCreated] = useState<CreatedInvoice | null>(null);
 
   const byLoadId = new Map(loads.map((l) => [l.id, l]));
-  const contractorIds = Array.from(new Set(loads.map((l) => l.contractor_id)));
-  const contractor = contractorIds.length === 1 ? contractors.find((c) => c.id === contractorIds[0]) ?? null : null;
   const alreadyIssued = loads.filter((l) => l.fakturownia_invoice_id);
   const totalNet = positions.reduce((sum, p) => sum + (p.amountNet ?? 0), 0);
 
@@ -89,14 +118,15 @@ export function InvoiceDialog({
   if (positions.some((p) => !p.title.trim())) blockers.push("Każda pozycja musi mieć tytuł.");
   if (alreadyIssued.length > 0) blockers.push(`Zlecenia z już wystawioną fakturą: ${alreadyIssued.map((l) => l.order_number ?? l.id).join(", ")} — odznacz je.`);
 
-  function updatePosition(loadId: string, patch: Partial<PositionState>) {
+  function updatePosition(key: string, patch: Partial<PositionState>) {
     setPositions((prev) =>
       prev.map((p) => {
-        if (p.loadId !== loadId) return p;
+        if (p.key !== key) return p;
         const next = { ...p, ...patch };
         // Zmiana "skąd pusty" (eksport) przelicza tytuł, dopóki dyspozytor go ręcznie nie poprawił.
-        if (patch.origin && !next.titleTouched) {
-          const load = byLoadId.get(loadId);
+        // Tytuł pozycji BAF nie zawiera trasy, więc jego nie ma po co przeliczać.
+        if (patch.origin && !next.titleTouched && p.kind === "freight") {
+          const load = byLoadId.get(p.loadId);
           if (load) next.title = buildInvoiceTitle(load, patch.origin);
         }
         return next;
@@ -124,18 +154,26 @@ export function InvoiceDialog({
     }
     setCreated(result.invoice);
 
-    // Faktura wystawiona — podpinamy ją do KAŻDEGO zlecenia z osobna (kwota netto tej pozycji).
-    const failures: string[] = [];
+    // Faktura wystawiona — podpinamy ją do KAŻDEGO zlecenia z osobna. Kwota przy zleceniu to SUMA
+    // jego pozycji: przy rozbitym BAF-ie zlecenie ma na fakturze dwie pozycje, a zafakturowane
+    // zostało i tak jedno zlecenie na pełną kwotę.
+    const amountByLoad = new Map<string, number>();
+    const orderNumberByLoad = new Map<string, string>();
     for (const position of positions) {
-      const saveError = await updateLoad(position.loadId, {
+      amountByLoad.set(position.loadId, (amountByLoad.get(position.loadId) ?? 0) + (position.amountNet ?? 0));
+      orderNumberByLoad.set(position.loadId, position.orderNumber);
+    }
+    const failures: string[] = [];
+    for (const [loadId, amountNet] of amountByLoad) {
+      const saveError = await updateLoad(loadId, {
         fakturownia_invoice_id: result.invoice.id,
         invoice_number: result.invoice.number || null,
         invoice_url: result.invoice.viewUrl,
         invoice_issued_at: result.invoice.issueDate,
         invoice_payment_date: result.invoice.paymentTo,
-        invoice_amount: position.amountNet,
+        invoice_amount: amountNet,
       });
-      if (saveError) failures.push(`${position.orderNumber || position.loadId}: ${saveError}`);
+      if (saveError) failures.push(`${orderNumberByLoad.get(loadId) || loadId}: ${saveError}`);
     }
     if (failures.length > 0) {
       setError(`Faktura wystawiona (${result.invoice.number}), ale nie udało się zapisać jej przy zleceniach: ${failures.join("; ")}`);
@@ -206,9 +244,10 @@ export function InvoiceDialog({
 
               <div className="flex flex-col gap-3">
                 {positions.map((position, index) => (
-                  <div key={position.loadId} className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
+                  <div key={position.key} className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
                       Pozycja {index + 1} — zlecenie {position.orderNumber || "(bez numeru)"}
+                      {position.kind === "baf" ? " · dodatek paliwowy" : ""}
                     </div>
                     <div className="grid grid-cols-3 gap-3">
                       <Field label="Tytuł pozycji na fakturze" full>
@@ -216,7 +255,7 @@ export function InvoiceDialog({
                           className={inputClass}
                           rows={2}
                           value={position.title}
-                          onChange={(e) => updatePosition(position.loadId, { title: e.target.value, titleTouched: true })}
+                          onChange={(e) => updatePosition(position.key, { title: e.target.value, titleTouched: true })}
                         />
                       </Field>
                       <Field label="Kwota netto (PLN)">
@@ -225,12 +264,12 @@ export function InvoiceDialog({
                           step="0.01"
                           className={inputClass}
                           value={position.amountNet ?? ""}
-                          onChange={(e) => updatePosition(position.loadId, { amountNet: e.target.value === "" ? null : Number(e.target.value) })}
+                          onChange={(e) => updatePosition(position.key, { amountNet: e.target.value === "" ? null : Number(e.target.value) })}
                         />
                       </Field>
-                      {position.isExport && (
+                      {position.isExport && position.kind === "freight" && (
                         <Field label="Skąd pusty kontener (eksport)">
-                          <select className={inputClass} value={position.origin} onChange={(e) => updatePosition(position.loadId, { origin: e.target.value as ExportOrigin })}>
+                          <select className={inputClass} value={position.origin} onChange={(e) => updatePosition(position.key, { origin: e.target.value as ExportOrigin })}>
                             <option value="poimport">Poimport</option>
                             <option value="depot">z Depotu</option>
                           </select>
@@ -244,6 +283,14 @@ export function InvoiceDialog({
               <p className="text-xs text-zinc-500">
                 Kwoty są NETTO — Fakturownia doliczy VAT (23% krajowy / „np” przy VAT-EU). Data wystawienia: dziś.
               </p>
+              {loads.some((load) => load.baf_amount !== null) && (
+                <p className="text-xs text-zinc-500">
+                  {bafMode === "separate"
+                    ? "Dodatek paliwowy (BAF) idzie osobną pozycją — tak ma ustawiony ten kontrahent."
+                    : "Dodatek paliwowy (BAF) jest wliczony w kwotę pozycji — tak ma ustawiony ten kontrahent."}
+                  {" Zmiana ustawienia: „Kontrahenci” → „BAF na fakturze”."}
+                </p>
+              )}
             </>
           )}
         </div>

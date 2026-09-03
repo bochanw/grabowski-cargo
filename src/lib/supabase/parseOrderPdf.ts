@@ -1,5 +1,4 @@
 import { supabase } from "./client";
-import { matchPickupLocation } from "@/lib/orderTemplates/pickupLocations";
 import { normalizeParsedOrder, type ParsedOrder } from "@/types/parsedOrder";
 
 // Odczyt dokumentu przez Claude (Edge Function `parse-order-pdf`) — FALLBACK dla dokumentów spoza
@@ -68,10 +67,8 @@ export async function parseOrderPdf(file: File): Promise<ParseOrderPdfResult> {
       return { ok: false, reason: data.reason ?? "error", error: data.error ?? "Nieznany błąd odczytu." };
     }
     // Model zwraca luźny obiekt (brakujące/nietypowe pola) — do formularza wchodzi dopiero po
-    // normalizacji. "Podjęcie" sprowadzamy do jednego z trzech terminali tak samo jak parsery
-    // szablonów, żeby wartość pasowała do listy rozwijanej.
-    const parsed = normalizeParsedOrder(data.parsed);
-    return { ok: true, parsed: { ...parsed, pickup_type: matchPickupLocation(parsed.pickup_type) } };
+    // normalizacji (ona sprowadza też nazwy terminali do listy rozwijanej, patrz normalizeParsedOrder).
+    return { ok: true, parsed: normalizeParsedOrder(data.parsed) };
   } catch (e) {
     return { ok: false, reason: "network", error: e instanceof Error ? e.message : String(e) };
   }
