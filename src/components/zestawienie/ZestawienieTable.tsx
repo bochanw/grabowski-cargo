@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent } from "react";
+import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { Load, Direction } from "@/types/load";
 import { useDeleteLoad, useUpdateLoad } from "@/hooks/useLoads";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
@@ -11,12 +11,20 @@ import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
+import { SkrzynkaPanel } from "./SkrzynkaPanel";
+import { useEmailInbox } from "@/hooks/useEmailInbox";
 import { ContractorsDialog } from "./ContractorsDialog";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { useContractors } from "@/hooks/useContractors";
-import { useViewSettings } from "@/hooks/useViewSettings";
-import { resolveColumns } from "@/lib/view/viewSettings";
+import { useSaveViewSettings, useViewSettings } from "@/hooks/useViewSettings";
+import {
+  clampColumnWidth,
+  resolveColumns,
+  toStoredSettings,
+  withColumnWidth,
+  type ViewSettings,
+} from "@/lib/view/viewSettings";
 import type { Contractor } from "@/types/contractor";
 
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
@@ -56,6 +64,35 @@ function stickyCellStyle(index: number, frozenCount: number, zIndex: number): CS
   if (frozenCount === 0 || index > frozenCount) return undefined;
   return { position: "sticky", left: `var(--frozen-left-${index}, 0px)`, zIndex };
 }
+
+/**
+ * Zwężanie kolumn (klient: "obecny widok jest za szeroki"). Szerokość każdej kolumny siedzi w
+ * zmiennej CSS na elemencie <table>, a komórki czytają ją przez var() — brak zmiennej znaczy
+ * "auto", czyli dokładnie to, co tabela robiła zawsze (szerokość z najdłuższej wartości).
+ *
+ * Zmienna, a nie stan Reacta, z tego samego powodu co przy zamrożonych kolumnach: w trakcie
+ * przeciągania uchwytu ustawiamy ją wprost na elemencie, więc kilkadziesiąt razy na sekundę
+ * przerysowuje się sama tabela w przeglądarce, a nie kilkaset komórek w Reakcie.
+ *
+ * Szerokość idzie na WEWNĘTRZNY <div>, nie na komórkę: dla `table-layout: auto` przeglądarka
+ * traktuje `width` komórki tylko jako sugestię i rozpycha ją do treści (a `max-width` na komórce
+ * w tym trybie w ogóle nie działa). Blok o zadanej szerokości z `overflow: hidden` narzuca
+ * kolumnie szerokość twardo i przycina tekst wielokropkiem.
+ */
+function columnWidthVar(key: string): string {
+  return `--cw-${key}`;
+}
+
+function cellContentStyle(key: string): CSSProperties {
+  return { width: `var(${columnWidthVar(key)}, auto)` };
+}
+
+/**
+ * Wypełnienie komórki siedzi na tym wewnętrznym bloku, a nie na <td>/<th> (które mają `p-0`):
+ * dzięki temu zapisana szerokość to szerokość CAŁEJ kolumny — ta sama liczba niezależnie od tego,
+ * czy komórka jest w trybie odczytu, czy z otwartym edytorem.
+ */
+const CELL_PADDING = "px-2 py-1";
 
 interface DayGroup {
   dateKey: string;
@@ -100,6 +137,10 @@ type Dialog =
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isInboxOpen, setIsInboxOpen] = useState(false);
+  // Licznik przy guziku „Skrzynka" — zlecenie z maila ma się rzucać w oczy samo, bez
+  // zaglądania do panelu. Hook jest tu, a nie w panelu, bo licznik musi żyć także zamknięty.
+  const { data: inboxMessages } = useEmailInbox();
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -116,9 +157,18 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   // pierwszych zamrożonych. Dopóki ustawienia się wczytują, `resolveColumns(null)` daje widok
   // domyślny — tabela nie miga pustymi kolumnami.
   const { data: viewSettings = null } = useViewSettings();
+  const saveViewSettings = useSaveViewSettings();
   const view = useMemo(() => resolveColumns(viewSettings), [viewSettings]);
   const columns = view.visible;
   const frozenCount = view.frozen;
+
+  // Szerokości kolumn → zmienne CSS na <table>. Kolumna bez wpisu nie dostaje zmiennej, więc
+  // var(--cw-…, auto) zwraca "auto" i kolumna zachowuje się jak przed tą zmianą.
+  const widthVars = useMemo(() => {
+    const style: Record<string, string> = {};
+    for (const [key, px] of Object.entries(view.widths)) style[columnWidthVar(key)] = `${px}px`;
+    return style as CSSProperties;
+  }, [view.widths]);
 
   // Wyszukiwarka: filtr w pamięci po WSZYSTKICH polach rekordu + nazwie kontrahenta. Tekst do
   // przeszukania liczony raz na rekord (nie przy każdym wciśnięciu klawisza).
@@ -161,7 +211,91 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   // zmianie zestawu kolumn albo liczby wierszy.
   useLayoutEffect(() => {
     applyFrozenOffsets();
-  }, [applyFrozenOffsets, columns, visibleLoads.length]);
+  }, [applyFrozenOffsets, columns, visibleLoads.length, view.widths]);
+
+  // Zmierzone szerokości widocznych kolumn — okno "Widok" potrzebuje ich do "Zwęź wszystkie":
+  // bez pomiaru nie da się odróżnić kolumny szerokiej (do zwężenia) od takiej, która z natury ma
+  // 50 px i wpisanie jej 110 px ROZSZERZYŁOBY tabelę zamiast ją zwęzić.
+  const measureColumnWidths = useCallback(() => {
+    const measured: Record<string, number> = {};
+    columns.forEach((column, index) => {
+      const width = headerRefs.current[index + 1]?.getBoundingClientRect().width;
+      if (width) measured[String(column.key)] = Math.round(width);
+    });
+    return measured;
+  }, [columns]);
+
+  // Zwężanie kolumny: zapis idzie do TEJ SAMEJ konfiguracji per użytkownik co kolumny i ich
+  // kolejność (public.user_view_settings) — szerokość jedzie za człowiekiem na inne stanowisko.
+  const saveWidth = useCallback(
+    async (key: string, width: number | null) => {
+      const hiddenKeys = new Set(
+        view.ordered.filter((column) => view.isHidden(column.key)).map((column) => String(column.key))
+      );
+      const base: ViewSettings = toStoredSettings(view.ordered, hiddenKeys, view.frozen, view.widths);
+      const error = await saveViewSettings(withColumnWidth(base, key, width));
+      // Udany zapis sprząta po poprzednim nieudanym — inaczej w pasku wisiałby komunikat o
+      // błędzie, którego już nie ma (złapane testem w przeglądarce).
+      if (!error) {
+        setSaveError(null);
+        return;
+      }
+      setSaveError(`Nie udało się zapisać szerokości kolumny: ${error}`);
+      // Nieudany zapis cofa konfigurację w pamięci, ale zmienną ustawioną wprost w trakcie
+      // przeciągania musimy cofnąć sami — inaczej kolumna zostałaby zwężona tylko na tym ekranie,
+      // do najbliższego odświeżenia, mimo komunikatu o błędzie.
+      const previous = view.widths[key];
+      const table = tableRef.current;
+      if (!table) return;
+      if (previous === undefined) table.style.removeProperty(columnWidthVar(key));
+      else table.style.setProperty(columnWidthVar(key), `${previous}px`);
+    },
+    [saveViewSettings, view]
+  );
+
+  const startResize = useCallback(
+    (event: ReactPointerEvent<HTMLElement>, column: ColumnDef, headerIndex: number) => {
+      // Drugi klik dubletu pomijamy — od resetu do "auto" jest onDoubleClick na uchwycie.
+      if (event.button !== 0 || event.detail > 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const table = tableRef.current;
+      const header = headerRefs.current[headerIndex];
+      if (!table || !header) return;
+
+      const key = String(column.key);
+      const startX = event.clientX;
+      // Szerokość startowa z wyrenderowanego nagłówka: kolumna "auto" nie ma zapisanej liczby, a
+      // przeciąganie ma się zaczynać dokładnie tam, gdzie stoi krawędź.
+      const startWidth = header.getBoundingClientRect().width;
+      let latest = clampColumnWidth(startWidth);
+      let moved = false;
+
+      const onMove = (moveEvent: PointerEvent) => {
+        moved = true;
+        latest = clampColumnWidth(startWidth + moveEvent.clientX - startX);
+        table.style.setProperty(columnWidthVar(key), `${latest}px`);
+        // Zamrożone kolumny stoją na zmierzonych odsunięciach — po zwężeniu jednej z nich muszą
+        // się przesunąć razem z nią, a nie dopiero po puszczeniu myszy.
+        applyFrozenOffsets();
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.removeProperty("cursor");
+        document.body.style.removeProperty("user-select");
+        // Sam klik w uchwyt (bez ruchu) niczego nie zapisuje — inaczej kolumna "auto" dostawałaby
+        // sztywną szerokość przez przypadkowe muśnięcie krawędzi.
+        if (moved) void saveWidth(key, latest);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      // Bez tego ruch myszą zaznacza treść tabeli, a kursor mruga nad każdą mijaną komórką.
+      document.body.style.setProperty("cursor", "col-resize");
+      document.body.style.setProperty("user-select", "none");
+    },
+    [applyFrozenOffsets, saveWidth]
+  );
 
   useEffect(() => {
     const table = tableRef.current;
@@ -280,6 +414,18 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           </button>
           <button
             type="button"
+            onClick={() => setIsInboxOpen((open) => !open)}
+            title="Zlecenia odczytane ze skrzynki firmowej, czekające na zatwierdzenie"
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              isInboxOpen
+                ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                : "border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
+            }`}
+          >
+            Skrzynka{inboxMessages && inboxMessages.length > 0 ? ` (${inboxMessages.length})` : ""}
+          </button>
+          <button
+            type="button"
             onClick={() => setIsHistoryOpen((open) => !open)}
             className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
               isHistoryOpen
@@ -307,7 +453,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         <ImportOrderDialog recentLoads={recentLoads} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
-      {dialog?.kind === "view" && <ViewSettingsDialog onClose={() => setDialog(null)} />}
+      {dialog?.kind === "view" && (
+        <ViewSettingsDialog measureColumnWidths={measureColumnWidths} onClose={() => setDialog(null)} />
+      )}
       {dialog?.kind === "invoice" && (
         <InvoiceDialog
           // Świeże rekordy z listy (dialog mógł zostać otwarty przed aktualizacją Realtime).
@@ -337,7 +485,11 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             gubi krawędzie przyklejonych komórek — obramowania siedzą wtedy na wspólnej siatce
             tabeli, nie na komórce, która się przesuwa. Stąd ramki wierszy są na <td>, nie na <tr>
             (w trybie separate przeglądarka ignoruje obramowanie wiersza). */}
-        <table ref={tableRef} className="w-full min-w-max border-separate border-spacing-0 text-xs">
+        <table
+          ref={tableRef}
+          style={widthVars}
+          className="w-full min-w-max border-separate border-spacing-0 text-xs"
+        >
           <thead className="sticky top-0 z-10 bg-zinc-100 dark:bg-zinc-900">
             <tr>
               <th
@@ -354,11 +506,30 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                     headerRefs.current[index + 1] = element;
                   }}
                   style={stickyCellStyle(index + 1, frozenCount, 20)}
-                  className={`whitespace-nowrap border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 text-left font-medium text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 ${
+                  className={`relative whitespace-nowrap border-b border-zinc-200 bg-zinc-100 p-0 text-left font-medium text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 ${
                     column.align === "right" ? "text-right" : ""
                   }`}
                 >
-                  {column.label}
+                  <div
+                    style={cellContentStyle(String(column.key))}
+                    className="overflow-hidden text-ellipsis px-2 py-1.5"
+                    title={view.widths[String(column.key)] ? column.label : undefined}
+                  >
+                    {column.label}
+                  </div>
+                  {/* Uchwyt na prawej krawędzi nagłówka — jak w Excelu: przeciągnij, żeby zwęzić,
+                      dwuklik wraca do szerokości z treści. Leży na wypełnieniu komórki, więc nie
+                      zabiera miejsca etykiecie. */}
+                  <span
+                    onPointerDown={(event) => startResize(event, column, index + 1)}
+                    onDoubleClick={() => void saveWidth(String(column.key), null)}
+                    onClick={(event) => event.stopPropagation()}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`Zmień szerokość kolumny ${column.label}`}
+                    title="Przeciągnij, żeby zmienić szerokość. Dwuklik = dopasuj do treści."
+                    className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none select-none hover:bg-blue-400/70"
+                  />
                 </th>
               ))}
               <th className="border-b border-zinc-200 px-2 py-1.5 dark:border-zinc-800" />
@@ -378,6 +549,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 group={group}
                 columns={columns}
                 frozenCount={frozenCount}
+                widths={view.widths}
                 fleet={fleet}
                 contractors={contractors}
                 contractorNames={contractorNames}
@@ -395,6 +567,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           </tbody>
         </table>
       </div>
+      {isInboxOpen && <SkrzynkaPanel onClose={() => setIsInboxOpen(false)} loads={loads} />}
       {isHistoryOpen && <ActivityLogPanel onClose={() => setIsHistoryOpen(false)} />}
       </div>
     </div>
@@ -404,6 +577,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
 interface RowHandlers {
   /** Ile pierwszych kolumn jest przyklejonych do lewej — patrz stickyCellStyle. 0 = żadna. */
   frozenCount: number;
+  /** Które kolumny mają narzuconą szerokość — tylko te mogą przyciąć wartość (i tylko tam ma
+   *  sens dymek z pełną treścią). */
+  widths: Record<string, number>;
   fleet: Fleet;
   selectedIds: Set<string>;
   onToggleSelected: (id: string) => void;
@@ -465,6 +641,7 @@ function DirectionRows({
   columns,
   isFirst,
   frozenCount,
+  widths,
   fleet,
   selectedIds,
   onToggleSelected,
@@ -517,6 +694,7 @@ function DirectionRows({
           </td>
           {columns.map((column, index) => {
             const isEditing = editingCell?.id === load.id && editingCell.key === column.key;
+            const text = formatCell(load[column.key], column.kind, contractorNames);
             return (
               <td
                 key={column.key}
@@ -524,21 +702,35 @@ function DirectionRows({
                 onClick={() => {
                   if (!isEditing) onStartEdit({ id: load.id, key: column.key });
                 }}
-                className={`whitespace-nowrap border-b border-zinc-100 px-2 py-1 text-zinc-800 dark:border-zinc-900 dark:text-zinc-200 ${
+                className={`whitespace-nowrap border-b border-zinc-100 p-0 text-zinc-800 dark:border-zinc-900 dark:text-zinc-200 ${
                   column.align === "right" ? "text-right tabular-nums" : ""
-                } ${index + 1 <= frozenCount ? "bg-inherit" : ""} ${isEditing ? "p-0" : "cursor-text"}`}
+                } ${index + 1 <= frozenCount ? "bg-inherit" : ""} ${isEditing ? "" : "cursor-text"}`}
               >
                 {isEditing ? (
-                  <CellEditor
-                    load={load}
-                    column={column}
-                    fleet={fleet}
-                    contractors={contractors}
-                    onCancel={onCancelEdit}
-                    onCommit={(raw) => onCommit(load, column, raw)}
-                  />
+                  // Edytor dostaje tę samą szerokość co komórka, żeby wejście w edycję nie
+                  // przesuwało reszty tabeli. Dolna granica (min-width) tylko po to, żeby dało się
+                  // pisać w kolumnie zwężonej do kilkudziesięciu pikseli.
+                  <div style={{ ...cellContentStyle(String(column.key)), minWidth: "6rem" }}>
+                    <CellEditor
+                      load={load}
+                      column={column}
+                      fleet={fleet}
+                      contractors={contractors}
+                      onCancel={onCancelEdit}
+                      onCommit={(raw) => onCommit(load, column, raw)}
+                    />
+                  </div>
                 ) : (
-                  formatCell(load[column.key], column.kind, contractorNames)
+                  // title tylko przy narzuconej szerokości: tam wartość bywa przycięta i musi dać
+                  // się obejrzeć bez rozszerzania kolumny. W kolumnie "auto" nic się nie przycina,
+                  // a dymek nad każdą komórką byłby wyłącznie upierdliwy.
+                  <div
+                    style={cellContentStyle(String(column.key))}
+                    title={widths[String(column.key)] ? text || undefined : undefined}
+                    className={`overflow-hidden text-ellipsis ${CELL_PADDING}`}
+                  >
+                    {text}
+                  </div>
                 )}
               </td>
             );

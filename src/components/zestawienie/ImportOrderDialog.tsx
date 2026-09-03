@@ -96,12 +96,22 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
 
 export function ImportOrderDialog({
   onClose,
+  onSaved,
   existingLoad,
+  initialParsed,
   mode = existingLoad ? "edit" : "import",
   recentLoads = [],
 }: {
   onClose: () => void;
+  /** Wywoływane PO udanym zapisie, przed zamknięciem — Skrzynka oznacza tak maila jako zaakceptowanego. */
+  onSaved?: () => void | Promise<void>;
   existingLoad?: Load;
+  /**
+   * Pola odczytane już wcześniej, poza tym oknem — dziś ze Skrzynki (mail przeczytany serwerowo
+   * przez `mail-poll`). Formularz startuje wtedy od razu w trybie przeglądu, bo nie ma czego
+   * wgrywać: dokument został przeczytany, zanim dyspozytor kliknął.
+   */
+  initialParsed?: ParsedOrder;
   /** "attach" = dopnij kolejny dokument do istniejącego zlecenia (wypełnia tylko puste pola). */
   mode?: "import" | "edit" | "attach";
   /** Istniejące zlecenia od najnowszego — fallback "z poprzedniego zlecenia" dla pól floty. */
@@ -110,8 +120,14 @@ export function ImportOrderDialog({
   const { data: fleetData } = useFleet();
   const fleet: Fleet = fleetData ?? EMPTY_FLEET;
   const { data: contractors = [] } = useContractors();
-  const [stage, setStage] = useState<Stage>(mode === "edit" ? "review" : "pick");
-  const [form, setForm] = useState<ParsedOrder>(() => (existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER));
+  // Pola ze Skrzynki są już odczytane, więc ekran wyboru pliku byłby tylko przeszkodą.
+  const [stage, setStage] = useState<Stage>(mode === "edit" || initialParsed ? "review" : "pick");
+  const [form, setForm] = useState<ParsedOrder>(() => {
+    const base = existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER;
+    // Te same reguły scalania co przy dopinaniu drugiego dokumentu: dane z maila wypełniają TYLKO
+    // puste pola, nigdy nie nadpisują tego, co już stoi na zleceniu.
+    return initialParsed ? mergeParsedOrders(base, initialParsed) : base;
+  });
   const [carrierName, setCarrierName] = useState(existingLoad?.carrier_name ?? DEFAULT_CARRIER);
   const [contractorId, setContractorId] = useState(existingLoad?.contractor_id ?? "");
   const [recognized, setRecognized] = useState<string[]>([]);
@@ -307,6 +323,8 @@ export function ImportOrderDialog({
       setStage("review");
       return;
     }
+    // Dopiero po UDANYM zapisie — mail w Skrzynce ma zostać do przejrzenia, jeśli zapis padł.
+    await onSaved?.();
     onClose();
   }
 

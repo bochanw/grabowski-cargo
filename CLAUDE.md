@@ -554,6 +554,127 @@ zamrozić pierwsze N kolumn — one zawsze będą na maksa z lewej"):
   **NIE zweryfikowany z przeglądarki zapis na żywym koncie** (to środowisko nie ma konta do
   zalogowania) — pierwsze kliknięcie właściciela pokaże, czy upsert przechodzi.
 
+**Szerokość kolumn per użytkownik — ZROBIONE** (klient: „obecny widok jest za szeroki, możemy jakoś
+zwęzić dynamicznie? Ale żeby się dla każdego pracownika zapisywała szerokość"):
+- **Bez migracji** — szerokości siedzą w tym samym `user_view_settings.settings` (jsonb) co kolumny,
+  kolejność i zamrażanie; kształt konfiguracji zna wyłącznie appka. Nowe pole `widths` (klucz
+  kolumny → px); BRAK wpisu = „auto", czyli dokładnie dotychczasowe zachowanie (szerokość z
+  najdłuższej wartości). Stary wiersz bez `widths` czyta się normalnie.
+- **Szerokość jest zmienną CSS na `<table>`** (`--cw-<kolumna>`), a nie stanem Reacta: w trakcie
+  przeciągania uchwytu ustawiamy ją wprost na elemencie, więc przerysowuje się tabela w
+  przeglądarce, a nie kilkaset komórek w Reakcie (ten sam wzorzec co `--frozen-left-N`).
+- **PUŁAPKA: `width`/`max-width` NA KOMÓRCE nie działa przy `table-layout: auto`** — przeglądarka
+  traktuje je jak sugestię i rozpycha kolumnę do treści. Dlatego szerokość dostaje WEWNĘTRZNY
+  `<div>` (`overflow: hidden` + `text-ellipsis`), a `<td>`/`<th>` mają `p-0` i wypełnienie przeszło
+  na ten div — dzięki temu zapisana liczba to szerokość CAŁEJ kolumny, tak samo w trybie odczytu
+  jak z otwartym edytorem (wejście w edycję nie przesuwa reszty tabeli).
+- UI: uchwyt na prawej krawędzi każdego nagłówka (przeciągnij = zwęź, dwuklik = z powrotem „auto"),
+  a w oknie „Widok" sekcja „Szerokość kolumn": **„Zwęź wszystkie"** (110 px), **„Szerokości: auto"**
+  i pole px przy każdej kolumnie. Zakres 48–640 px, przycinany przy zapisie I przy odczycie z jsonb.
+  Dymek (`title`) z pełną wartością TYLKO w kolumnach z narzuconą szerokością — w kolumnie „auto"
+  nic się nie przycina, więc byłby wyłącznie upierdliwy.
+- **Dwa błędy złapane testem w przeglądarce, nie przy pisaniu:**
+  1. „Zwęź wszystkie" ROZSZERZAŁO tabelę (5816 → 6719 px), bo kolumny naturalnie węższe od 110 px
+     („Godz.", „ADR") dostawały 110 px. Poprawka: okno bierze z tabeli FAKTYCZNIE zmierzone
+     szerokości (`measureColumnWidths` z `headerRefs`) i rusza tylko kolumny szersze od docelowej.
+     Wniosek: „zwęź" musi porównywać się do tego, co widać, a nie do tego, co zapisane — kolumna
+     bez wpisu nie znaczy „szeroka".
+  2. Po nieudanym zapisie w pasku wisiał komunikat o błędzie mimo późniejszego udanego zapisu.
+  Do tego nieudany zapis (np. brak sesji) COFA zmienną CSS ustawioną w trakcie przeciągania —
+  inaczej kolumna zostawałaby zwężona tylko na tym ekranie, wbrew komunikatowi o błędzie.
+- Zweryfikowane: logika — 23 przypadki (`scratch-widths.test.mts`, plik tymczasowy: normalizacja
+  śmieci z jsonb, przycinanie zakresu, „zwęź" nigdy nie rozszerza, round-trip); przeglądarka
+  (Playwright, `next dev`, tymczasowa strona `/test-widok` z mockiem i atrapą tabeli
+  `user_view_settings`, bo w środowisku sesji nie ma konta) — 14 + 7 sprawdzeń: przeciąganie zwęża
+  na żywo, tekst przycinany wielokropkiem, zamrożone kolumny przeliczają odsunięcia po zwężeniu,
+  „Zwęź wszystkie" faktycznie zwęża tabelę, ręczna wartość i powrót do „auto".
+  **NIE zweryfikowane na żywym koncie** — pierwszy zapis u właściciela pokaże, czy upsert przechodzi.
+
+**Automatyczny odczyt zleceń ze skrzynki — ZBUDOWANY** (właściciel: „program śledzi maile — nawet
+jak klient dośle informacje w treści/dodatkowym to program to zobaczy; nr zlecenia jest unikalny").
+
+**PUŁAPKA NA STARCIE: to NIE jest Gmail, tylko Microsoft Exchange** (właściciel sprostował w trakcie
+sesji; pierwsza wersja była pisana pod Gmaila po IMAP-ie). Skutek jest zasadniczy: **Microsoft
+wyłączył Basic Auth dla IMAP-a w Exchange Online z końcem 2022**, więc wariant „login + hasło
+aplikacji" tam NIE ZADZIAŁA. Zostaje **Microsoft Graph z uwierzytelnieniem APLIKACYJNYM** (client
+credentials) — i jest to lepsze niż plan gmailowy: nic nie wygasa po 7 dniach, nie umiera przy
+zmianie hasła użytkownika, nie trzeba trzymać niczyjego hasła. **NIEROZSTRZYGNIĘTE: czy klient ma
+Exchange w chmurze czy lokalny** (właściciel odpowiedział „własna domena klienta jest", co pasuje do
+obu). Dlatego źródło poczty jest WYMIENNE i obie ścieżki są gotowe.
+
+- `supabase/functions/mail-poll/` — poller. `mailSource.ts` to wspólny interfejs źródła; `graph.ts`
+  (Exchange Online, domyślne, `MAIL_SOURCE=graph`) i `imapSource.ts` + `imap.ts` (Exchange lokalny,
+  `MAIL_SOURCE=imap`). Różnica między chmurą a serwerem kończy się na pobraniu wiadomości — cała
+  reszta potoku jest wspólna, więc przełączenie to zmiana JEDNEJ zmiennej środowiskowej.
+- **Kontrakt ten sam co przy ręcznym imporcie: NIC nie zapisuje się samo do `loads`.** Mail ląduje
+  w kolejce „Skrzynka" jako PROPOZYCJA; zlecenie powstaje dopiero po kliknięciu dyspozytora
+  (właściciel wybrał to wprost zamiast zapisu automatycznego). Pomyłka modelu nie wchodzi cicho do
+  bazy ani na fakturę.
+- **Kolejność odczytu — ta sama co w `ImportOrderDialog`, darmowe i pewne przed płatnym:**
+  (1) prefiltr BEZ modelu (`relevance.ts`), (2) znany szablon regexem, (3) Claude. Mail, który nie
+  przejdzie punktu 1, nie kosztuje ani grosza. Zakres wybrany przez właściciela: „tylko z
+  załącznikiem PDF + odpowiedzi w wątku".
+- **Jak realizowany jest wymóg „dośle informację w treści":** prefiltr przepuszcza maila bez
+  załącznika, gdy (a) w temacie/treści stoi numer zlecenia z bazy — porównanie na formach
+  znormalizowanych (`normalized_order_number` w SQL i `normalizeOrderNumber` w TS liczą TO SAMO), więc
+  „ZD 1797-6 2026" trafia w „ZD/1797/6/2026"; albo (b) to odpowiedź w wątku już powiązanym ze
+  zleceniem (Graph daje `conversationId`, IMAP `References`). Wtedy do modelu idzie sam tekst maila
+  (ułamek kosztu PDF-a). Numery krótsze niż 5 znaków po normalizacji są pomijane, żeby „12/26" nie
+  łapało przypadkowych liczb.
+- **Szablony działają teraz TAKŻE serwerowo** (`pdfText.ts` — pdfjs w Deno, build „legacy", bez
+  workera, `isEvalSupported: false`). Powód nie jest kosztowy tylko jakościowy: szablon jest
+  deterministyczny, model probabilistyczny — wysyłanie do modelu dokumentu, który umiemy przeczytać
+  regexem, byłoby cofnięciem się w dokładności. **Żeby regexy nie istniały w dwóch kopiach**
+  (gwarantowany rozjazd przy pierwszej poprawce), źródłem prawdy zostaje `src/`, a
+  `scripts/build-edge-shared.mjs` generuje kopię dla Deno do `supabase/functions/mail-poll/shared/`.
+  **Odpalać ten skrypt po KAŻDEJ zmianie w `src/lib/orderTemplates/`, `src/types/parsedOrder.ts`,
+  `src/lib/containers/tare.ts`, `src/lib/dates/workingDays.ts` — przed wdrożeniem `mail-poll`.**
+- `parse-order-pdf` przyjmuje teraz `{ text }` obok `{ pdfBase64 }` — treść maila idzie przez TEN SAM
+  schemat pól i ten sam prompt co dokument, zamiast drugiego zestawu reguł. Prompt ma regułę 11:
+  mail niesie zwykle JEDNĄ informację, więc wypełnij tylko to, co faktycznie podaje (appka scala to
+  z istniejącym zleceniem, więc zmyślona wartość byłaby realną szkodą).
+- Migracje **0010** (`email_messages`, `email_attachments`, `email_ingest_state`, bucket
+  `order-emails`, RLS, Realtime), **0011** (kursor niezależny od źródła — 0010 zakładała UID-y
+  IMAP-owe, Graph używa znacznika czasu; kursor to teraz JEDNO pole tekstowe, którego kształt zna
+  wyłącznie źródło) i **0012** (pg_cron co 2 min) — **WSZYSTKIE ZAAPLIKOWANE przez MCP**.
+- Dedup stoi WYŁĄCZNIE na `UNIQUE (message_id)`. Dlatego kursor Graphowy porównuje `ge`, nie `gt`
+  — lepiej powtórzyć wiadomość i odbić się o UNIQUE niż ją zgubić.
+- UI: `SkrzynkaPanel.tsx` (panel boczny + licznik przy guziku „Skrzynka" w pasku),
+  `useEmailInbox.ts` (Realtime, nazwa kanału z `useId()` — pułapka z ContractorsDialog),
+  `useIngestState()`. **Martwy odczyt widać w panelu na czerwono** — sekret Microsoftu wygasa, zgoda
+  administratora bywa cofana, a bez tego appka po prostu przestałaby dostawać zlecenia w ciszy.
+  „Sprawdź teraz" wywołuje pollera poza harmonogramem (autoryzacja sesją dyspozytora).
+  `ImportOrderDialog` dostał propy `initialParsed` (pola z maila, start od razu w „review") i
+  `onSaved` (Skrzynka oznacza maila jako zaakceptowanego dopiero po UDANYM zapisie).
+
+**Zweryfikowane, każde na prawdziwej ścieżce, nie na reprodukcji:**
+- Edge Function ŁĄCZY SIĘ z `imap.gmail.com:993` (handshake 23 ms) — blokada portów w Supabase
+  dotyczy tylko SMTP 25/465/587. Sprawdzone jednorazową funkcją próbną PRZED napisaniem klienta.
+- `postal-mime` i `pdfjs-dist` działają w Deno na tym projekcie (też funkcją próbną, przed kodem).
+- Klient IMAP: 5 testów przeciwko ATRAPIE SERWERA mówiącej protokołem (`imap.test.ts`) — literał
+  `{N}` z CRLF w środku, strumień nierozjeżdżający się po FETCH, `UID SEARCH X:*` zwracające
+  najwyższy UID mimo braku nowych, komunikat błędu logowania bez wycieku hasła.
+- Prefiltr: 8 testów (`relevance.test.ts`).
+- **Tryb tekstowy `parse-order-pdf` sprawdzony STRZAŁEM W PRODUKCJĘ** prawdziwą treścią maila
+  („rozładunek przesuwamy na piątek 12.09 na 08:30"): model zwrócił numer zlecenia, kontener, nową
+  datę i godzinę, spedytora z podpisu — i ZOSTAWIŁ RESZTĘ PUSTĄ, nie zgadł nawet kierunku.
+- `deno check` + `next build` przechodzą.
+
+**Czego NIE zweryfikowano: całej ścieżki od skrzynki** — nie ma jeszcze danych dostępowych do
+Exchange'a. Pierwszy przebieg na żywej skrzynce jest przed nami.
+
+**Do dokończenia przez administratora Microsoft 365** (właściciel: „nie mam, ale mam kogo poprosić"):
+rejestracja aplikacji w Entra ID, uprawnienie **Mail.Read typu APPLICATION** (nie delegated) + zgoda
+administratora, i — **to nie jest opcja, tylko wymóg** — `New-ApplicationAccessPolicy` zawężająca
+aplikację do JEDNEJ skrzynki; bez tego Mail.Read na poziomie aplikacji daje dostęp do wszystkich
+skrzynek w tenancie. Potem sekrety w Supabase (Project Settings → Edge Functions → Secrets):
+`MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MAILBOX_ADDRESS`, `INGEST_SECRET`; ten ostatni
+TEN SAM ciąg także w Project Settings → Vault (stamtąd czyta go cron). Dla Exchange lokalnego zamiast
+tego: `MAIL_SOURCE=imap` + `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD`.
+
+**Do posprzątania:** tymczasowa funkcja diagnostyczna `probe-imap-tcp` na projekcie (nic nie robi,
+nie ma sekretów) — MCP nie umie kasować funkcji, więc do usunięcia w Dashboard → Edge Functions.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

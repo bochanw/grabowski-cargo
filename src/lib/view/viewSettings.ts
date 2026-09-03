@@ -15,9 +15,25 @@ export interface ViewSettings {
   hidden: string[];
   /** Ile pierwszych WIDOCZNYCH kolumn zostaje przyklejonych do lewej przy przewijaniu w bok. */
   frozen: number;
+  /**
+   * Szerokość kolumny w pikselach, klucz kolumny → px. BRAK wpisu znaczy "auto" — kolumna jest
+   * tak szeroka, jak jej najdłuższa wartość (tak działała cała tabela, zanim doszło zwężanie).
+   * Klient: widok jest za szeroki — zwężenie musi zostawiać ślad per użytkownik, jak reszta widoku.
+   */
+  widths: Record<string, number>;
 }
 
 const ALL_KEYS = COLUMNS.map((column) => String(column.key));
+
+/** Poniżej ~48 px zostaje sam wielokropek, powyżej ~640 px zwężanie przestaje mieć sens. */
+export const MIN_COLUMN_WIDTH = 48;
+export const MAX_COLUMN_WIDTH = 640;
+/** Szerokość dla "Zwęź wszystkie" — mieści datę, numer kontenera i większość nazw miejscowości. */
+export const COMPACT_COLUMN_WIDTH = 110;
+
+export function clampColumnWidth(px: number): number {
+  return Math.round(Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, px)));
+}
 
 // Właściciel: "daj każdemu wszystko i najwyżej będziemy sobie ręcznie wyłączać" — domyślnie
 // KOMPLET kolumn, w kolejności z kodu. Ukrywanie to świadoma decyzja użytkownika, nie stan startowy.
@@ -27,6 +43,9 @@ export const DEFAULT_VIEW_SETTINGS: ViewSettings = {
   // Świadomie 0: zamrożenie kolumn zmienia układ tabeli, więc nie narzucamy go nikomu z góry —
   // każdy ustawia sobie N w oknie "Widok".
   frozen: 0,
+  // Domyślnie żadna kolumna nie ma narzuconej szerokości — dopóki nikt nic nie zwęzi, tabela
+  // wygląda dokładnie jak dotąd.
+  widths: {},
 };
 
 /**
@@ -41,14 +60,29 @@ export function normalizeViewSettings(raw: unknown): ViewSettings {
   const order = stringArray(source.order);
   const hidden = stringArray(source.hidden);
   const frozen = typeof source.frozen === "number" && Number.isFinite(source.frozen) ? Math.max(0, Math.floor(source.frozen)) : 0;
+  const widths = widthMap(source.widths);
   // Pusty `order` = wiersz z domyślnym '{}' albo śmieci — traktujemy jak brak konfiguracji.
-  if (order.length === 0) return { ...DEFAULT_VIEW_SETTINGS, frozen };
-  return { order: unique(order), hidden: unique(hidden), frozen };
+  if (order.length === 0) return { ...DEFAULT_VIEW_SETTINGS, frozen, widths };
+  return { order: unique(order), hidden: unique(hidden), frozen, widths };
 }
 
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+/**
+ * Szerokości z jsonb-a lądują wprost w stylu tabeli, więc przycinamy je do sensownego zakresu tu,
+ * a nie przy renderowaniu: wiersz zapisany starszą wersją appki (albo ręcznie w SQL Editor) nie ma
+ * prawa rozjechać widoku, a 0 albo NaN w `width` potrafi zwinąć kolumnę do zera.
+ */
+function widthMap(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === "number" && Number.isFinite(raw)) result[key] = clampColumnWidth(raw);
+  }
+  return result;
 }
 
 function unique(values: string[]): string[] {
@@ -62,6 +96,8 @@ export interface ResolvedView {
   visible: ColumnDef[];
   /** Ile pierwszych z `visible` przykleić do lewej (przycięte do liczby widocznych). */
   frozen: number;
+  /** Narzucone szerokości (px) — kolumny bez wpisu zostają "auto". */
+  widths: Record<string, number>;
   isHidden: (key: keyof Load) => boolean;
 }
 
@@ -89,16 +125,56 @@ export function resolveColumns(settings: ViewSettings | null): ResolvedView {
 
   const isHidden = (key: keyof Load) => hidden.has(String(key));
   const visible = ordered.filter((column) => !isHidden(column.key));
-  return { ordered, visible, frozen: Math.min(effective.frozen, visible.length), isHidden };
+  return {
+    ordered,
+    visible,
+    frozen: Math.min(effective.frozen, visible.length),
+    widths: effective.widths ?? {},
+    isHidden,
+  };
 }
 
 /** Konfiguracja do zapisu po zmianie widoczności/kolejności — zawsze z pełną, aktualną listą kolumn. */
-export function toStoredSettings(ordered: ColumnDef[], hiddenKeys: Set<string>, frozen: number): ViewSettings {
+export function toStoredSettings(
+  ordered: ColumnDef[],
+  hiddenKeys: Set<string>,
+  frozen: number,
+  widths: Record<string, number>
+): ViewSettings {
   return {
     order: ordered.map((column) => String(column.key)),
     hidden: ordered.map((column) => String(column.key)).filter((key) => hiddenKeys.has(key)),
     frozen: Math.max(0, Math.floor(frozen)),
+    widths,
   };
+}
+
+/** Nowa szerokość jednej kolumny; `null` = z powrotem "auto" (szerokość z treści). */
+export function withColumnWidth(settings: ViewSettings, key: string, width: number | null): ViewSettings {
+  const widths = { ...settings.widths };
+  if (width === null) delete widths[key];
+  else widths[key] = clampColumnWidth(width);
+  return { ...settings, widths };
+}
+
+/**
+ * "Zwęź wszystkie" — jedno kliknięcie zamiast przeciągania kilkudziesięciu kolumn (to jest ta
+ * skarga klienta w całości). Kolumna węższa od zadanej zostaje, jaka była: guzik ZWĘŻA, więc nie
+ * ma prawa niczego rozszerzyć i cofnąć komuś jego własnej, ciaśniejszej roboty.
+ */
+export function withCompactWidths(settings: ViewSettings, keys: string[], width: number): ViewSettings {
+  const target = clampColumnWidth(width);
+  const widths = { ...settings.widths };
+  for (const key of keys) {
+    const current = widths[key];
+    if (current === undefined || current > target) widths[key] = target;
+  }
+  return { ...settings, widths };
+}
+
+/** Wszystkie kolumny z powrotem na "auto". */
+export function withAutoWidths(settings: ViewSettings): ViewSettings {
+  return { ...settings, widths: {} };
 }
 
 /** Przesunięcie kolumny o jedno miejsce w górę/dół listy (kolejność ustawiamy strzałkami). */

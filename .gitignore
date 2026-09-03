@@ -40,3 +40,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Deno (lokalny typecheck/testy Edge Functions)
+supabase/functions/*/node_modules/
+supabase/functions/*/deno.lock
+deno.lock
