@@ -554,6 +554,42 @@ zamrozić pierwsze N kolumn — one zawsze będą na maksa z lewej"):
   **NIE zweryfikowany z przeglądarki zapis na żywym koncie** (to środowisko nie ma konta do
   zalogowania) — pierwsze kliknięcie właściciela pokaże, czy upsert przechodzi.
 
+**Szerokość kolumn per użytkownik — ZROBIONE** (klient: „obecny widok jest za szeroki, możemy jakoś
+zwęzić dynamicznie? Ale żeby się dla każdego pracownika zapisywała szerokość"):
+- **Bez migracji** — szerokości siedzą w tym samym `user_view_settings.settings` (jsonb) co kolumny,
+  kolejność i zamrażanie; kształt konfiguracji zna wyłącznie appka. Nowe pole `widths` (klucz
+  kolumny → px); BRAK wpisu = „auto", czyli dokładnie dotychczasowe zachowanie (szerokość z
+  najdłuższej wartości). Stary wiersz bez `widths` czyta się normalnie.
+- **Szerokość jest zmienną CSS na `<table>`** (`--cw-<kolumna>`), a nie stanem Reacta: w trakcie
+  przeciągania uchwytu ustawiamy ją wprost na elemencie, więc przerysowuje się tabela w
+  przeglądarce, a nie kilkaset komórek w Reakcie (ten sam wzorzec co `--frozen-left-N`).
+- **PUŁAPKA: `width`/`max-width` NA KOMÓRCE nie działa przy `table-layout: auto`** — przeglądarka
+  traktuje je jak sugestię i rozpycha kolumnę do treści. Dlatego szerokość dostaje WEWNĘTRZNY
+  `<div>` (`overflow: hidden` + `text-ellipsis`), a `<td>`/`<th>` mają `p-0` i wypełnienie przeszło
+  na ten div — dzięki temu zapisana liczba to szerokość CAŁEJ kolumny, tak samo w trybie odczytu
+  jak z otwartym edytorem (wejście w edycję nie przesuwa reszty tabeli).
+- UI: uchwyt na prawej krawędzi każdego nagłówka (przeciągnij = zwęź, dwuklik = z powrotem „auto"),
+  a w oknie „Widok" sekcja „Szerokość kolumn": **„Zwęź wszystkie"** (110 px), **„Szerokości: auto"**
+  i pole px przy każdej kolumnie. Zakres 48–640 px, przycinany przy zapisie I przy odczycie z jsonb.
+  Dymek (`title`) z pełną wartością TYLKO w kolumnach z narzuconą szerokością — w kolumnie „auto"
+  nic się nie przycina, więc byłby wyłącznie upierdliwy.
+- **Dwa błędy złapane testem w przeglądarce, nie przy pisaniu:**
+  1. „Zwęź wszystkie" ROZSZERZAŁO tabelę (5816 → 6719 px), bo kolumny naturalnie węższe od 110 px
+     („Godz.", „ADR") dostawały 110 px. Poprawka: okno bierze z tabeli FAKTYCZNIE zmierzone
+     szerokości (`measureColumnWidths` z `headerRefs`) i rusza tylko kolumny szersze od docelowej.
+     Wniosek: „zwęź" musi porównywać się do tego, co widać, a nie do tego, co zapisane — kolumna
+     bez wpisu nie znaczy „szeroka".
+  2. Po nieudanym zapisie w pasku wisiał komunikat o błędzie mimo późniejszego udanego zapisu.
+  Do tego nieudany zapis (np. brak sesji) COFA zmienną CSS ustawioną w trakcie przeciągania —
+  inaczej kolumna zostawałaby zwężona tylko na tym ekranie, wbrew komunikatowi o błędzie.
+- Zweryfikowane: logika — 23 przypadki (`scratch-widths.test.mts`, plik tymczasowy: normalizacja
+  śmieci z jsonb, przycinanie zakresu, „zwęź" nigdy nie rozszerza, round-trip); przeglądarka
+  (Playwright, `next dev`, tymczasowa strona `/test-widok` z mockiem i atrapą tabeli
+  `user_view_settings`, bo w środowisku sesji nie ma konta) — 14 + 7 sprawdzeń: przeciąganie zwęża
+  na żywo, tekst przycinany wielokropkiem, zamrożone kolumny przeliczają odsunięcia po zwężeniu,
+  „Zwęź wszystkie" faktycznie zwęża tabelę, ręczna wartość i powrót do „auto".
+  **NIE zweryfikowane na żywym koncie** — pierwszy zapis u właściciela pokaże, czy upsert przechodzi.
+
 **Automatyczny odczyt zleceń ze skrzynki — ZBUDOWANY** (właściciel: „program śledzi maile — nawet
 jak klient dośle informacje w treści/dodatkowym to program to zobaczy; nr zlecenia jest unikalny").
 
