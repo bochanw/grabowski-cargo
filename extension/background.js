@@ -21,6 +21,8 @@ import { konto, ustawienia, wywolaj, zaloguj, wyloguj } from "./api.js";
 const ALARM = "sprawdzanie";
 const CZEKANIE_NA_POLE_MS = 90_000; // Cloudflare potrafi weryfikować kilkadziesiąt sekund.
 const CZEKANIE_NA_WYNIKI_MS = 60_000;
+/** Ile z tego czasu daje pierwsze podejście (klik), zanim spróbujemy Enterem. */
+const CZEKANIE_NA_PIERWSZE_MS = 20_000;
 const KROK_MS = 1500;
 
 // Jeden przebieg naraz. Dwa (alarm + „Sprawdź teraz" z appki) wpisywałyby numery w to samo pole.
@@ -163,23 +165,40 @@ async function zapytajTerminal(kartaId, adres, numery) {
     );
   }
 
-  const wyniki = await czekaj(kartaId, "wyniki", (s) => s.gotowe, CZEKANIE_NA_WYNIKI_MS);
+  // Pierwsze podejście: to, co zrobił `wyslij` (klik w guzik albo wysłanie formularza).
+  let wyniki = await czekaj(kartaId, "wyniki", (s) => s.gotowe, CZEKANIE_NA_PIERWSZE_MS);
+
+  // Drugie podejście: Enter w polu. Na tej stronie kontrolka uruchamiająca wyszukiwanie NIE jest
+  // zwykłym guzikiem (spis guzików całej strony nie zawierał ani jednego „Sprawdź" — same przyciski
+  // ciasteczek), więc klik mógł trafić w nic. Pole jest już wypełnione, więc to nic nie psuje.
+  let drugie = null;
+  if (!wyniki.ok) {
+    drugie = await naStronie(kartaId, "wyslij", [numery, { enter: true }]).catch((e) => ({ powod: e.message }));
+    wyniki = await czekaj(kartaId, "wyniki", (s) => s.gotowe, CZEKANIE_NA_WYNIKI_MS - CZEKANIE_NA_PIERWSZE_MS);
+  }
+
   if (!wyniki.ok) {
     const zagadka = wyniki.stan.zagadka?.czekaNaCzlowieka;
+    const zgodaWisi = okienka.zgodaNadalOtwarta;
     throw bladZeSzczegolami(
       zagadka
         ? "Baltic Hub poprosił o rozwiązanie zagadki (reCAPTCHA). Otwórz przypiętą kartę i kliknij ją — " +
             "kolejne sprawdzenia pójdą już same."
-        : `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 60 s. ` +
-            `Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}.`,
+        : zgodaWisi
+          ? "Nad stroną Baltic Hub wisi okno zgody na ciasteczka i przykrywa formularz. Otwórz przypiętą " +
+            "kartę, zaakceptuj je raz ręcznie — kolejne sprawdzenia pójdą już same."
+          : `Wyszukiwanie uruchomione (${wyslane.sposob}, potem Enter), ale wyniki nie pojawiły się ` +
+            `w ciągu 60 s. Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}. ` +
+            `Migawka strony zapisana do diagnozy.`,
       {
         _etap: "brak wyników",
         _okienka: JSON.stringify(okienka),
         _zagadka: JSON.stringify(wyniki.stan.zagadka ?? {}),
+        _drugie_podejscie: JSON.stringify(drugie ?? {}),
         ...wyslane,
         ...wyniki.stan,
       },
-      Boolean(zagadka),
+      Boolean(zagadka) || Boolean(zgodaWisi),
     );
   }
 

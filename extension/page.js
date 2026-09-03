@@ -21,8 +21,32 @@
 
   const napis = (el) => ((el && (el.textContent || el.value)) || "").replace(/\s+/g, " ").trim();
 
+  /**
+   * Czy element siedzi w oknie zgody na ciasteczka albo innym oknie nakładkowym.
+   *
+   * ZMIERZONE NA PRODUKCJI (pierwsze uruchomienie u właściciela): baltichub.com używa CookieYes,
+   * którego bannerek ma guziki „Dostosuj | Odrzuć wszystkie | Akceptuj wszystko", a „Dostosuj"
+   * jest zwykłym BUTTON[type=submit]. Szukanie guzika „pierwszy submit na stronie" trafiło
+   * właśnie w niego: numery zostały wpisane, po czym otworzył się panel ustawień ciasteczek,
+   * a appka czekała 60 s na wyniki, których nikt nie zamówił.
+   *
+   * Dlatego cała maszyneria zgody jest teraz WYKLUCZONA z szukania pola i guzika — zamykamy ją,
+   * ale nigdy nie traktujemy jej przycisków jako formularza terminala.
+   */
+  function wOknieZgody(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      const id = n.id || "";
+      const klasa = typeof n.className === "string" ? n.className : "";
+      if (/cky|cookie|consent|gdpr|rodo/i.test(`${id} ${klasa}`)) return true;
+      if (n.getAttribute && n.getAttribute("role") === "dialog") return true;
+    }
+    return false;
+  }
+
   const widocznePola = () =>
-    [...document.querySelectorAll("input, textarea")].filter((el) => el.type !== "hidden" && el.offsetParent !== null);
+    [...document.querySelectorAll("input, textarea")].filter(
+      (el) => el.type !== "hidden" && el.offsetParent !== null && !wOknieZgody(el),
+    );
 
   const opisPola = (el) =>
     !el
@@ -67,20 +91,44 @@
    * online" (długie), a nagłówki tabeli wyników to „Unit Number", „ISO Type"; jedno i drugie
    * łapało się na luźne dopasowanie i klik nie robił nic.
    */
-  function znajdzGuzik(pole) {
-    const zakres = (pole && pole.form) || document;
-    const wszystkie = [...zakres.querySelectorAll("button, input[type=submit], input[type=button], a")].filter(
-      (b) => b.offsetParent !== null,
-    );
+  /** Napisy, w które NIGDY nie wolno kliknąć jako w „guzik wyszukiwania". */
+  const ZAKAZANE = /dostosuj|odrzu|zapisz moje|poka\S* wi\S*|ustawienia|preferenc|customize|manage|reject|settings|online/i;
 
-    return (
-      wszystkie.find(
-        (b) => (b.type || "") === "submit" && !/search|szukaj/i.test((b.form && b.form.getAttribute("action")) || ""),
-      ) ||
-      wszystkie.find((b) => /^(sprawd\S*|szukaj|wyszukaj|poka\S*)$/i.test(napis(b))) ||
-      wszystkie.find((b) => napis(b).length <= 24 && /sprawd|wyszuk/i.test(napis(b)) && !/online/i.test(napis(b))) ||
-      null
-    );
+  /**
+   * Guzik uruchamiający wyszukiwanie — szukany OD POLA, nie od strony.
+   *
+   * Kolejność (od najpewniejszej): guzik w tym samym formularzu co pole, potem w kolejnych
+   * pojemnikach nadrzędnych pola (najbliższy wygrywa), na końcu cała strona po dokładnym napisie.
+   * Zawsze z pominięciem okna zgody i napisów z listy ZAKAZANE.
+   *
+   * Powód takiej kolejności jest zmierzony: na tej stronie formularza na `/multi` NIE MA (numery
+   * wysyła JavaScript), w nawigacji stoi „Sprawdź kontener online", nagłówki tabeli wyników to
+   * guziki („Unit Number", „ISO Type"), a bannerek ciasteczek ma własny BUTTON[type=submit]
+   * „Dostosuj". Każde z tych czterech dopasowań już raz kosztowało przebieg.
+   */
+  function znajdzGuzik(pole) {
+    const dobry = (b) =>
+      b.offsetParent !== null && !wOknieZgody(b) && napis(b).length <= 30 && !ZAKAZANE.test(napis(b));
+    const pasuje = (b) => /^(sprawd\S*|szukaj|wyszukaj|poka\S*|wy\S*lij|submit)$/i.test(napis(b)) ||
+      (/sprawd|wyszuk|szukaj/i.test(napis(b)) && napis(b).length <= 24);
+    const guziki = (zakres) =>
+      [...zakres.querySelectorAll("button, input[type=submit], input[type=button], a")].filter(dobry);
+
+    // 1. Formularz pola (gdy w ogóle istnieje).
+    if (pole && pole.form) {
+      const wFormularzu = guziki(pole.form);
+      const trafiony = wFormularzu.find(pasuje) || wFormularzu.find((b) => (b.type || "") === "submit");
+      if (trafiony) return trafiony;
+    }
+
+    // 2. Coraz szersze otoczenie pola — najbliższy guzik o właściwym napisie wygrywa.
+    for (let el = pole?.parentElement, krok = 0; el && krok < 6; el = el.parentElement, krok++) {
+      const trafiony = guziki(el).find(pasuje);
+      if (trafiony) return trafiony;
+    }
+
+    // 3. Ostatecznie cała strona, ale WYŁĄCZNIE po dokładnym napisie.
+    return guziki(document).find((b) => /^(sprawd\S*|szukaj|wyszukaj)$/i.test(napis(b))) || null;
   }
 
   /**
@@ -127,29 +175,53 @@
   function zamknijOkienka() {
     const zrobione = [];
     const zgoda = /^(akceptuj|zaakceptuj|zgadzam|zezw\S*|rozumiem|accept|allow|got it|ok)\b/i;
-    const odmowa = /odrzu|nie zgadzam|reject|decline|ustawienia|settings/i;
+    const widoczny = (x) => x.offsetParent !== null;
 
-    for (const b of [...document.querySelectorAll("button, a, [role=button]")].filter((x) => x.offsetParent !== null)) {
-      const t = napis(b);
-      if (t.length <= 40 && zgoda.test(t) && !odmowa.test(t)) {
-        b.click();
-        zrobione.push(`zgoda: „${t.slice(0, 30)}”`);
-        break;
+    // 1. CookieYes po nazwie własnej — to jego bannerek stoi na baltichub.com (`ckyPreferenceCenter`
+    //    w migawce z produkcji). Trafienie po klasie jest pewniejsze niż po napisie, bo nie zależy
+    //    od języka strony.
+    for (const b of [...document.querySelectorAll('.cky-btn-accept, [data-cky-tag="accept-button"]')].filter(widoczny)) {
+      b.click();
+      zrobione.push("CookieYes: akceptacja");
+      break;
+    }
+
+    // 2. Zwykła zgoda po napisie — nigdy „Dostosuj", „Odrzuć wszystkie" ani „Zapisz moje preferencje".
+    if (!zrobione.length) {
+      for (const b of [...document.querySelectorAll("button, a, [role=button]")].filter(widoczny)) {
+        const t = napis(b);
+        if (t.length <= 40 && zgoda.test(t) && !ZAKAZANE.test(t)) {
+          b.click();
+          zrobione.push(`zgoda: „${t.slice(0, 30)}”`);
+          break;
+        }
       }
     }
 
+    // 3. Krzyżyki — WYŁĄCZNIE w widocznym oknie zgody.
+    //
+    // Poprzednia wersja klikała każdy `.modal .close` na stronie i to okazało się szkodliwe:
+    // na produkcji po tych klikach `<body>` DOSTAŁO klasę `modal-open` (czyli okno się otworzyło,
+    // a nie zamknęło), po czym guzik „Dostosuj" z panelu ciasteczek stał się widoczny i został
+    // kliknięty jako „wyszukiwanie". Nie ruszamy okien, których nie rozumiemy.
     for (const b of [
-      ...document.querySelectorAll("[data-bs-dismiss=modal], [data-dismiss=modal], .modal .btn-close, .modal .close"),
+      ...document.querySelectorAll("[data-bs-dismiss=modal], [data-dismiss=modal], .btn-close, .close, [aria-label*=zamknij i], [aria-label*=close i]"),
     ]
-      .filter((x) => x.offsetParent !== null)
-      .slice(0, 3)) {
+      .filter((x) => widoczny(x) && wOknieZgody(x))
+      .slice(0, 2)) {
       b.click();
-      zrobione.push("zamknięcie okna");
+      zrobione.push("zamknięcie okna zgody");
     }
+
+    const otwarte = [...document.querySelectorAll("*")].some(
+      (n) => n.offsetParent !== null && wOknieZgody(n) && n.getBoundingClientRect().height > 80,
+    );
 
     return {
       zrobione: zrobione.length ? zrobione.join(" + ") : "(nic do zamknięcia)",
       po: opisOkienek(),
+      // Do komunikatu błędu: „nie ma wyników" znaczy co innego, gdy nad stroną wciąż wisi zgoda.
+      zgodaNadalOtwarta: otwarte,
     };
   }
 
@@ -211,10 +283,45 @@
    * Wartość ustawiamy przez ustawiacz z prototypu, bo strony pisane w Reakcie/Vue nie zauważają
    * zwykłego przypisania do `value` i przy wysyłce widzą pole puste.
    */
-  function wyslij(numery) {
+  /**
+   * Wszystko, w co dałoby się kliknąć W POBLIŻU pola — do migawki przy niepowodzeniu.
+   *
+   * Zmierzone na produkcji: spis guzików CAŁEJ strony (`button, input[type=submit]`) nie zawierał
+   * ani jednego „Sprawdź" — same przyciski ciasteczek i EN/PL. Czyli kontrolka uruchamiająca
+   * wyszukiwanie nie jest zwykłym `<button>`. Bez tej listy nie da się zgadnąć, czym jest,
+   * a zgadywanie bez zobaczenia strony już raz kosztowało rundę.
+   */
+  function kandydaciGuzikow(pole) {
+    const out = [];
+    for (let el = pole?.parentElement, krok = 0; el && krok < 5; el = el.parentElement, krok++) {
+      for (const b of el.querySelectorAll("button, input[type=submit], input[type=button], a, [role=button], [onclick]")) {
+        if (b.offsetParent === null || wOknieZgody(b)) continue;
+        const opis = `${b.tagName}[${b.type || b.getAttribute("role") || "-"}] „${napis(b).slice(0, 30)}”`;
+        if (!out.includes(opis)) out.push(opis);
+        if (out.length >= 12) return out.join(" | ");
+      }
+    }
+    return out.join(" | ") || "(brak kandydatów obok pola)";
+  }
+
+  /** Enter w polu — dla stron, na których wyszukiwanie uruchamia skrypt, a nie guzik. */
+  function nacisnijEnter(pole) {
+    for (const typ of ["keydown", "keypress", "keyup"]) {
+      pole.dispatchEvent(new KeyboardEvent(typ, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+    }
+  }
+
+  function wyslij(numery, opcje) {
     const tryb = opiszTryb();
     const pole = znajdzPole();
     if (!pole) return { wyslane: false, powod: "nie znalazłem pola na numery", tryb, ...opiszStrone() };
+
+    // Drugie podejście: pole jest już wypełnione, więc tylko naciskamy Enter.
+    if (opcje && opcje.enter) {
+      pole.focus();
+      nacisnijEnter(pole);
+      return { wyslane: true, sposob: "Enter (drugie podejście)", tryb, pole: opisPola(pole), wpisano: pole.value };
+    }
 
     const wartosc = (numery || []).join(", ");
     const ustawiacz = Object.getOwnPropertyDescriptor(pole.constructor.prototype, "value")?.set;
@@ -230,6 +337,7 @@
       guzik: opisGuzika(guzik),
       wpisano: pole.value,
       okienka: opisOkienek(),
+      kandydaci: kandydaciGuzikow(pole),
     };
 
     if (guzik) {
@@ -245,7 +353,8 @@
       form.submit();
       return { wyslane: true, sposob: "form.submit", ...uzyte };
     }
-    pole.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
+    pole.focus();
+    nacisnijEnter(pole);
     return { wyslane: true, sposob: "Enter", ...uzyte };
   }
 
