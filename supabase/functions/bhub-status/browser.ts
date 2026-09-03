@@ -234,26 +234,20 @@ const POMOCNIKI = `
    * kontenery po przecinku". Ten przełącznik trybu trzeba więc kliknąć PRZED wpisaniem — bez tego
    * formularz na numery może być w ogóle nieaktywny.
    */
-  function wybierzTrybPojedynczy() {
-    const zrobione = [];
-
-    // Bywa przyciskiem radiowym, nie napisem — na tej stronie jest radio 'name=seacontainer'.
+  /**
+   * Tryb zapytania NIE JEST przez nas przestawiany — tylko opisywany.
+   *
+   * Powód z produkcji: radio 'seacontainer' ma dwie opcje i strona sama zaznacza właściwą.
+   * Poprzednia wersja "pomocnie" klikała każdą odznaczoną, która pasowała do nazwy, i przestawiła
+   * tryb na 'multi', psując domyślny wybór. Zbyt gorliwy automat zrobił tu więcej szkody niż
+   * pożytku; jeśli kiedyś trzeba będzie wybrać konkretną opcję, zrobimy to po jej WARTOŚCI,
+   * a nie po samej nazwie grupy.
+   */
+  function opiszTryb() {
     const radia = [...document.querySelectorAll('input[type=radio], input[type=checkbox]')];
-    for (const r of radia) {
-      const etykieta = ((r.name || '') + ' ' + (r.value || '') + ' ' + (r.id || '') + ' ' +
-        ((r.labels && r.labels[0] && r.labels[0].textContent) || '')).replace(/\\s+/g, ' ');
-      if (/pojedyncz|single|seacontainer|kontener/i.test(etykieta) && !r.checked) {
-        r.click();
-        zrobione.push('radio ' + (r.name || '?') + '=' + (r.value || '?'));
-      }
-    }
-
-    const kandydaci = [...document.querySelectorAll('button, a, label, [role=tab], [role=button], li, span')];
-    const cel = kandydaci.find((el) => /pojedyncze\\s*zapytanie|single\\s*(query|request)/i
-      .test((el.textContent || '').replace(/\\s+/g, ' ')));
-    if (cel) { cel.click(); zrobione.push('napis „' + (cel.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 30) + '”'); }
-
-    return zrobione.length ? zrobione.join(' + ') : '(nie znalazłem przełącznika trybu)';
+    if (!radia.length) return '(brak przełączników)';
+    return radia.map((r) => (r.name || '?') + '=' + (r.value || '?') + (r.checked ? ' [zaznaczone]' : ''))
+      .join(', ');
   }
 
   function opiszStrone() {
@@ -292,7 +286,7 @@ export function skryptStanuStrony(): string {
  */
 export function skryptWyslania(containers: string[]): string {
   return `(() => {${POMOCNIKI}
-    const tryb = wybierzTrybPojedynczy();
+    const tryb = opiszTryb();
     const pole = znajdzPole();
     if (!pole) return JSON.stringify({ wyslane: false, powod: 'nie znalazłem pola na numery', tryb, ...opiszStrone() });
 
@@ -319,7 +313,14 @@ export function skryptTresci(): string {
   return `(() => {${POMOCNIKI}
     return JSON.stringify({
       tekst: document.body?.innerText || '',
-      html: (document.documentElement?.outerHTML || '').slice(0, 60000),
+      // Otoczenie POLA, nie początek strony: pierwsza wersja brała pierwsze 60 tys. znaków
+      // dokumentu i formularz w ogóle się w nich nie zmieścił.
+      html: (() => {
+        const pole = znajdzPole();
+        let el = pole;
+        for (let i = 0; i < 6 && el && el.parentElement; i++) el = el.parentElement;
+        return ((el && el.outerHTML) || document.body?.innerHTML || '').slice(0, 40000);
+      })(),
       ...opiszStrone(),
     });
   })()`;
@@ -366,6 +367,32 @@ async function poczekaj(
  * widoczny tekst wyników. Kluczowe jest to, że robi to PRZEGLĄDARKA: ma sesję, ciasteczka i token,
  * i wysyła dokładnie takie zapytanie, jakie serwis rozumie.
  */
+/**
+ * Prosi zdalną przeglądarkę o ROZWIĄZANIE reCAPTCHY.
+ *
+ * Formularz Baltic Hubu jest nią chroniony — w spisie pól strony stoi `g-recaptcha-response`
+ * (ukryte pole i textarea). Dopóki jest puste, serwis nie odda wyników, choćby pole i guzik
+ * były trafione idealnie; tak właśnie kończyły się poprzednie przebiegi.
+ *
+ * `Captcha.solve` to polecenie DODANE przez Bright Datę do protokołu przeglądarki, nie część
+ * standardu — dlatego zwykły Chrome go nie zna i dlatego trzeba je wywołać wprost. Niepowodzenie
+ * NIE przerywa przebiegu: bywa, że zagadka w ogóle się nie pojawia, a wtedy brak solvera nie jest
+ * błędem. To, co się wydarzyło, trafia do migawki.
+ */
+async function rozwiazZagadke(cdp: CdpSession, sessionId: string): Promise<string> {
+  try {
+    const wynik = (await cdp.send(
+      "Captcha.solve",
+      { detectTimeout: 25_000 },
+      sessionId,
+      40_000,
+    )) as { status?: string; error?: string };
+    return `Captcha.solve: ${wynik.status ?? "?"}${wynik.error ? ` (${wynik.error})` : ""}`;
+  } catch (e) {
+    return `Captcha.solve nie zadziałało: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
 /**
  * Błąd z MIGAWKĄ strony. Komunikat musi zostać krótki, bo trafia do `bhub_error`, a każda jego
  * zmiana ląduje w dzienniku zmian; kod strony jest za duży, więc idzie osobno do `bhub_details`,
@@ -414,24 +441,28 @@ export async function fetchViaBrowser(
       );
     }
 
+    // Zagadkę rozwiązujemy PRZED wpisaniem numerów: jej rozwiązanie wpisuje się w ukryte pole
+    // formularza, a niektóre serwisy zerują je przy przeładowaniu widoku.
+    const zagadka = await rozwiazZagadke(cdp, sessionId);
+
     const wyslane = await odczytaj(cdp, sessionId, skryptWyslania(containers));
     if (!wyslane.wyslane) {
       throw bladZeSzczegolami(
         `Nie udało się uruchomić wyszukiwania: ${wyslane.powod ?? "nieznany powód"}. ` +
           `Tryb: ${wyslane.tryb ?? "?"}. Migawka strony zapisana do diagnozy.`,
-        { _etap: "nie udało się uruchomić wyszukiwania", ...wyslane },
+        { _etap: "nie udało się uruchomić wyszukiwania", _zagadka: zagadka, ...wyslane },
       );
     }
 
-    const wyniki = await poczekaj(cdp, sessionId, skryptTresci(), (s) => maWyniki(s.tekst ?? ""), 40_000);
+    const wyniki = await poczekaj(cdp, sessionId, skryptTresci(), (s) => maWyniki(s.tekst ?? ""), 35_000);
     if (!wyniki.ok) {
       throw bladZeSzczegolami(
         // Krótko, bo `bhub_error` trafia do dziennika zmian. Komplet (spis pól, guziki, kod
         // strony) idzie do migawki obok, której dziennik nie zapisuje.
-        `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 40 s. ` +
+        `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 35 s. ` +
           `Tryb: ${wyslane.tryb ?? "?"}. Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}. ` +
-          `Migawka strony zapisana do diagnozy.`,
-        { _etap: "brak wyników", ...wyslane, ...wyniki.stan },
+          `Zagadka: ${zagadka}. Migawka strony zapisana do diagnozy.`,
+        { _etap: "brak wyników", _zagadka: zagadka, ...wyslane, ...wyniki.stan },
       );
     }
 
