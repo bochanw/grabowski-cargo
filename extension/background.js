@@ -124,12 +124,26 @@ async function czekaj(kartaId, nazwa, gotowe, limitMs) {
 }
 
 /**
+ * Czy odpowiedź w ogóle DOTYCZY naszego zapytania.
+ *
+ * Zmierzone na produkcji: gdy zapytanie dochodzi puste (reCAPTCHA nie zdążyła się uruchomić),
+ * terminal odpowiada „Brak wyników:" i nic więcej. Prawdziwe „nie znam tego kontenera" ZAWSZE
+ * powtarza numer echem — „Brak wyników dla: CAAU2300808". To jest nasz rozróżnik: brak karty
+ * I brak naszego numeru = zapytanie poszło w próżnię, więc trzeba spróbować jeszcze raz,
+ * a nie zapisywać przy zleceniu nieprawdę.
+ */
+function odpowiedzDotyczyNas(tekst, numery) {
+  if (/Karta kontenera/i.test(tekst)) return true;
+  return numery.some((n) => tekst.toUpperCase().includes(n.toUpperCase()));
+}
+
+/**
  * Jedna paczka numerów: wejście na stronę, wpisanie, klik, odczytanie wyników.
  * Zwraca widoczny tekst strony — rozumie go funkcja brzegowa (`parse.ts`), nie rozszerzenie.
  * Podział jest celowy: reguły odczytu terminala mają być w JEDNYM miejscu, po stronie serwera,
  * żeby poprawka nie wymagała aktualizacji rozszerzenia na każdym komputerze.
  */
-async function zapytajTerminal(kartaId, adres, numery) {
+async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   await chrome.tabs.update(kartaId, { url: adres });
   // Świeże wejście na stronę przy każdej paczce: formularz bywa jednorazowy, a wyniki
   // poprzedniej paczki zostawałyby w treści i mieszały się z nową.
@@ -156,7 +170,12 @@ async function zapytajTerminal(kartaId, adres, numery) {
   // Zgoda na ciasteczka przykrywa stronę przezroczystą warstwą, która przechwytuje każde
   // kliknięcie — bez jej zamknięcia klik w „Sprawdź" nie robi nic, a strona wygląda na sprawną.
   const okienka = await naStronie(kartaId, "zamknij");
-  await spij(800);
+
+  // Oddech przed pisaniem. Zmierzone na produkcji: trzy pierwsze kontenery w przebiegu wróciły
+  // z pustą odpowiedzią, a dwa ostatnie z pełnymi kartami — reCAPTCHA po prostu nie zdążyła się
+  // uruchomić przy pierwszych wejściach na stronę. Te trzy sekundy są tańsze niż przebieg,
+  // który zapisuje przy zleceniu nieprawdę.
+  await spij(3000);
 
   // Wpisanie i uruchomienie wyszukiwania. NAJPIERW droga „jak człowiek" (prawdziwe zdarzenia myszy
   // i klawiatury), bo tylko ona uruchamia reCAPTCHĘ formularza — bez niej terminal oddaje pustą
@@ -234,7 +253,16 @@ async function zapytajTerminal(kartaId, adres, numery) {
     );
   }
 
-  return wyniki.stan.tekst ?? "";
+  const tekst = wyniki.stan.tekst ?? "";
+
+  // Odpowiedź przyszła, ale nie o nas — czyli zapytanie poszło puste. Druga próba na świeżo
+  // wczytanej stronie (reCAPTCHA jest wtedy już rozgrzana) zwykle wraca z kartą.
+  if (!odpowiedzDotyczyNas(tekst, numery) && proba < 2) {
+    await spij(2000);
+    return zapytajTerminal(kartaId, adres, numery, proba + 1);
+  }
+
+  return tekst;
 }
 
 // ---------------------------------------------------------------- przebieg

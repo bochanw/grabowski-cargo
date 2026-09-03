@@ -465,6 +465,28 @@
     stan: () => ({ gotowa: Boolean(znajdzPole()), zagadka: opiszZagadke(), ...opiszStrone() }),
     ustawTryb: (ile) => ustawTryb(ile),
     wskazniki,
+
+    /**
+     * Co NAPRAWDĘ jest w formularzu tuż przed wysłaniem — czytane ze strony, nie z naszych założeń.
+     *
+     * Powód: przez kilka rund terminal odpowiadał „Brak wyników:" BEZ numeru, czyli dostawał puste
+     * zapytanie, a my nie mieliśmy jak odróżnić „numer nie trafił do pola" od „numer trafił, ale
+     * serwis odrzucił zapytanie". Te cztery wartości rozstrzygają to jednym przebiegiem:
+     *   wartosc      — czy numer faktycznie stoi w polu,
+     *   aktywny      — czy pisaliśmy do TEGO pola, czy do innego elementu,
+     *   widocznosc   — karta w tle jest dla strony „ukryta"; część zabezpieczeń wtedy nie działa,
+     *   zagadka      — czy reCAPTCHA wypełniła swoje ukryte pole (czyli czy w ogóle się uruchomiła).
+     */
+    stanPola: () => {
+      const pole = znajdzPole();
+      return {
+        wartosc: pole ? pole.value : "(brak pola)",
+        aktywny: document.activeElement ? opisPola(document.activeElement) : "-",
+        widocznosc: document.visibilityState,
+        fokus: document.hasFocus(),
+        zagadka: opiszZagadke(),
+      };
+    },
     zamknij: () => zamknijOkienka(),
     wyslij,
     /**
