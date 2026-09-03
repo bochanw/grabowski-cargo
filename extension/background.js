@@ -18,6 +18,7 @@
 
 import { konto, ustawienia, wywolaj, zaloguj, wyloguj } from "./api.js";
 import { wpiszJakCzlowiek } from "./input.js";
+import { odpowiedzDotyczyNas } from "./odpowiedz.js";
 
 const ALARM = "sprawdzanie";
 const CZEKANIE_NA_POLE_MS = 90_000; // Cloudflare potrafi weryfikować kilkadziesiąt sekund.
@@ -124,20 +125,6 @@ async function czekaj(kartaId, nazwa, gotowe, limitMs) {
 }
 
 /**
- * Czy odpowiedź w ogóle DOTYCZY naszego zapytania.
- *
- * Zmierzone na produkcji: gdy zapytanie dochodzi puste (reCAPTCHA nie zdążyła się uruchomić),
- * terminal odpowiada „Brak wyników:" i nic więcej. Prawdziwe „nie znam tego kontenera" ZAWSZE
- * powtarza numer echem — „Brak wyników dla: CAAU2300808". To jest nasz rozróżnik: brak karty
- * I brak naszego numeru = zapytanie poszło w próżnię, więc trzeba spróbować jeszcze raz,
- * a nie zapisywać przy zleceniu nieprawdę.
- */
-function odpowiedzDotyczyNas(tekst, numery) {
-  if (/Karta kontenera/i.test(tekst)) return true;
-  return numery.some((n) => tekst.toUpperCase().includes(n.toUpperCase()));
-}
-
-/**
  * Jedna paczka numerów: wejście na stronę, wpisanie, klik, odczytanie wyników.
  * Zwraca widoczny tekst strony — rozumie go funkcja brzegowa (`parse.ts`), nie rozszerzenie.
  * Podział jest celowy: reguły odczytu terminala mają być w JEDNYM miejscu, po stronie serwera,
@@ -217,7 +204,15 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   }
 
   // Pierwsze podejście: to, co zrobił `wyslij` (klik w guzik albo wysłanie formularza).
-  let wyniki = await czekaj(kartaId, "wyniki", (s) => s.gotowe, CZEKANIE_NA_PIERWSZE_MS);
+  //
+  // CZEKAMY NA ODPOWIEDŹ, KTÓRA DOTYCZY NAS — nie na samo pojawienie się sekcji wyników.
+  // Zmierzone u właściciela: strona najpierw pokazuje pustą sekcję „Brak wyników:", a kartę
+  // kontenera dorzuca chwilę później. Warunek „widać sekcję wyników" łapał się na to pierwsze
+  // i zabierał migawkę o sekundę za wcześnie — dane były na ekranie, a przy zleceniu lądowało
+  // „Baltic Hub nie zna kontenera". Karta albo „Brak wyników dla: <nasz numer>" to jedyne dwa
+  // stany, które faktycznie kończą wyszukiwanie.
+  const dotyczyNas = (s) => odpowiedzDotyczyNas(s.tekst ?? "", numery);
+  let wyniki = await czekaj(kartaId, "wyniki", dotyczyNas, CZEKANIE_NA_PIERWSZE_MS);
 
   // Drugie podejście: Enter w polu. Na tej stronie kontrolka uruchamiająca wyszukiwanie NIE jest
   // zwykłym guzikiem (spis guzików całej strony nie zawierał ani jednego „Sprawdź" — same przyciski
@@ -225,7 +220,7 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   let drugie = null;
   if (!wyniki.ok) {
     drugie = await naStronie(kartaId, "wyslij", [numery, { enter: true }]).catch((e) => ({ powod: e.message }));
-    wyniki = await czekaj(kartaId, "wyniki", (s) => s.gotowe, CZEKANIE_NA_WYNIKI_MS - CZEKANIE_NA_PIERWSZE_MS);
+    wyniki = await czekaj(kartaId, "wyniki", dotyczyNas, CZEKANIE_NA_WYNIKI_MS - CZEKANIE_NA_PIERWSZE_MS);
   }
 
   if (!wyniki.ok) {
