@@ -27,21 +27,24 @@ const NOISE = /\b(sp|zoo|spzoo|sa|ag|gmbh|ltd|limited|inc|nv|bv|as|plc|co|compan
 // Shipping Company": normalizacja wycina z prawdziwego tekstu słowa "shipping"/"company", więc
 // zostawało samo "mediterranean", czego w tablicy nie było. Złapane testem, nie przy pisaniu —
 // stąd reguła: wariant zapisujemy dosłownie, normalizuje go kod.
+// Warianty oznaczone "kod terminala" pochodzą WPROST z eksportu Baltic Hub (kolumna "Line
+// Operator") — terminal pisze armatora trzyliterowym kodem, a nie nazwą, więc bez nich zgodna
+// gestia wychodziłaby jako niezgodna. Potwierdzone na prawdziwym pliku: CMA, OOL, MSC.
 const RAW_ALIASES: { canonical: string; variants: string[] }[] = [
   { canonical: "MSC", variants: ["msc", "mediterranean shipping company"] },
-  { canonical: "MAERSK", variants: ["maersk", "maersk line", "a.p. moller", "sealand"] },
-  { canonical: "CMACGM", variants: ["cma cgm", "cma-cgm"] },
-  { canonical: "HAPAG", variants: ["hapag", "hapag-lloyd", "hlag"] },
-  { canonical: "ONE", variants: ["one", "ocean network express"] },
+  { canonical: "MAERSK", variants: ["maersk", "maersk line", "a.p. moller", "sealand", "msk", "mae"] },
+  { canonical: "CMACGM", variants: ["cma cgm", "cma-cgm", "cma"] }, // kod terminala: CMA
+  { canonical: "HAPAG", variants: ["hapag", "hapag-lloyd", "hlag", "hlc"] },
+  { canonical: "ONE", variants: ["one", "ocean network express", "onе"] },
   { canonical: "EVERGREEN", variants: ["evergreen", "evergreen marine", "emc"] },
-  { canonical: "COSCO", variants: ["cosco", "coscon", "cosco shipping"] },
+  { canonical: "COSCO", variants: ["cosco", "coscon", "cosco shipping", "cos"] },
   { canonical: "HMM", variants: ["hmm", "hyundai merchant marine", "hyundai"] },
   { canonical: "YANGMING", variants: ["yang ming", "yml"] },
-  { canonical: "OOCL", variants: ["oocl", "orient overseas"] },
+  { canonical: "OOCL", variants: ["oocl", "orient overseas", "ool"] }, // kod terminala: OOL
   { canonical: "ZIM", variants: ["zim", "zim integrated"] },
   { canonical: "PIL", variants: ["pil", "pacific international"] },
   { canonical: "ARKAS", variants: ["arkas"] },
-  { canonical: "UNIFEEDER", variants: ["unifeeder"] },
+  { canonical: "UNIFEEDER", variants: ["unifeeder", "unf"] },
   { canonical: "XPRESSFEEDERS", variants: ["x-press feeders", "xpress", "sea consortium"] },
 ];
 

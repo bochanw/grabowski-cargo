@@ -1,46 +1,50 @@
-// Odczyt strony Baltic Hub z wynikiem dla kontenera.
+// Odczyt danych kontenera z Baltic Hub.
 //
-// ============== UWAGA — TO JEDYNY KAWAŁEK NIEZWERYFIKOWANY ==============
-// Strony nie dało się otworzyć z tego środowiska (Cloudflare — patrz komentarz w source.ts), więc
-// NIE ZNAM jej układu ani nazw rubryk. Zgadywanie regexów pod niewidzianą stronę już raz kosztowało
-// tę appkę cichy błąd (CLAUDE.md, pułapka z kotwicą `$`), więc parser jest napisany tak, żeby
-// pierwsze prawdziwe uruchomienie SAMO powiedziało, jak stronę czytać:
+// Kolumny i ich znaczenie są POTWIERDZONE na prawdziwym eksporcie z terminala (plik XLSX
+// przysłany przez właściciela, 3 kontenery + 1 nieznany), a nie zgadnięte:
 //
-//   1. `extractPairs` wyciąga WSZYSTKIE pary etykieta→wartość z tabel i list definicyjnych, nie
-//      znając z góry ani jednej nazwy rubryki.
-//   2. Komplet par leci do `loads.bhub_details` przy każdym sprawdzeniu.
-//   3. Nazwy rubryk, które nas interesują, siedzą niżej w jednym słowniku LABELS — po pierwszym
-//      przebiegu wystarczy zajrzeć w `bhub_details` i dopisać faktyczne nazwy.
+//   Unit Nbr        numer kontenera; "--Brak danych--" = terminal go nie zna
+//   ISO Type        22G1 itd. → porównanie z "Wielkością" zlecenia
+//   Line Operator   TRZYLITEROWY kod armatora (CMA, OOL, MSC) → porównanie z "Gestią"
+//   Weight [KG]     waga brutto (sprawdzone: Cargo Weight + tara kontenera)
+//   T-State         gdzie stoi kontener: "Yard" = plac, "Vessel" = statek
+//   *Stops          stopki; PUSTE = brak blokad
 //
-// Dzięki temu nierozpoznana strona nie kończy się pustym polem bez śladu: dane surowe są zapisane,
-// a status bez przypisanego kodu appka pokazuje dosłownie (bez koloru), zamiast zgadywać.
-// =======================================================================
+// Reguła właściciela wprost: "Jeżeli *Stops jest puste, T-State Yard - dajemy ZP".
+// Kod nie dopasowuje napisów do pięciu gotowych statusów, tylko składa je z tych dwóch kolumn
+// (patrz deriveBhubStatus) — dzięki temu pozostałe kombinacje (statek, stopka) wychodzą same.
+//
+// ROZRÓŻNIENIE, które ma znaczenie: kolumna PUSTA to co innego niż kolumna, której NIE MA.
+// Pusta "*Stops" znaczy "brak stopek". Brak kolumny znaczy "nie umiałem odczytać strony" i wtedy
+// status musi zostać nieznany — inaczej nieudany odczyt pokazywałby dyspozytorowi spokojne ZP.
 
 import { deriveBhubStatus, matchBhubStatus, type BhubStatus } from "./shared/status.ts";
 
 export interface ParsedContainer {
   status: BhubStatus | null;
-  /** Dosłownie to, co o statusie mówi strona — pokazywane, gdy nie umiemy nadać kodu. */
+  /** Dosłownie to, co o stanie mówi terminal — pokazywane, gdy nie umiemy nadać kodu. */
   statusRaw: string | null;
   isoType: string | null;
   shippingLine: string | null;
   grossWeightKg: number | null;
-  /** Komplet odczytanych par etykieta→wartość. */
+  /** Komplet odczytanych pól. */
   details: Record<string, string>;
-  /** Strona odpowiedziała, ale kontenera nie zna. */
+  /** Terminal odpowiedział, ale kontenera nie zna. */
   notFound: boolean;
 }
 
-// Kandydaci na nazwy rubryk — porównanie po formie znormalizowanej (bez wielkości liter, spacji
-// i znaków). Lista jest CELOWO szeroka (polski i angielski, warianty), bo tańsze jest dopisanie
-// nazwy, której strona nie używa, niż przeoczenie tej, której używa.
+// Nazwy z eksportu Baltic Hub idą PIERWSZE, bo findByLabel próbuje najpierw trafienia dokładnego:
+// "weightkg" łapie "Weight [KG]" i nie myli się z "Cargo Weight [KG]" ani "Commodity Weight [KG]".
+// Dalsze warianty zostają na wypadek, gdyby strona (inaczej niż eksport) nazywała rubryki po polsku.
 const LABELS = {
-  isoType: ["isotype", "iso", "typiso", "typkontenera", "containertype", "sizetype", "typ"],
-  grossWeight: ["wagabrutto", "brutto", "grossweight", "vgm", "waga", "weight", "masabrutto"],
-  shippingLine: ["armator", "linia", "gestia", "shippingline", "carrier", "line", "operator"],
-  status: ["status", "statuskontenera", "containerstatus", "stan"],
-  holds: ["stopki", "stopka", "blokady", "blokada", "holds", "hold"],
-  location: ["lokalizacja", "miejsce", "polozenie", "położenie", "location", "position", "yard"],
+  container: ["unitnbr", "numer", "nrkontenera", "containerno", "container"],
+  isoType: ["isotype", "typiso", "typkontenera", "containertype", "sizetype"],
+  grossWeight: ["weightkg", "weight", "wagabrutto", "grossweight", "masabrutto", "vgm"],
+  shippingLine: ["lineoperator", "armator", "operator", "shippingline", "carrier", "linia"],
+  holds: ["stops", "stopki", "stopka", "blokady", "blokada", "holds", "hold"],
+  location: ["tstate", "state", "lokalizacja", "polozenie", "location", "yard"],
+  /** Osobna rubryka "status" bywa na stronie, w eksporcie jej nie ma — próbujemy jej najpierw. */
+  status: ["statuskontenera", "containerstatus", "statuscontainer"],
 } as const;
 
 function normalizeLabel(raw: string): string {
@@ -57,7 +61,7 @@ function normalizeLabel(raw: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
-function stripTags(html: string): string {
+export function stripTags(html: string): string {
   return html
     .replace(/<[^>]*>/g, " ")
     .replace(/&nbsp;/gi, " ")
@@ -71,9 +75,35 @@ function stripTags(html: string): string {
 }
 
 /**
- * Pary etykieta→wartość z układów, w których wyniki takich formularzy praktycznie zawsze stoją:
- * wiersz tabeli (nagłówek + komórka), dwie komórki obok siebie, lista definicyjna, oraz
- * "Etykieta: wartość" w zwykłym tekście.
+ * Tabela KOLUMNOWA: wiersz nagłówków + wiersze danych (tak wygląda eksport terminala i tak
+ * wyglądają wyniki dla wielu kontenerów naraz). Puste komórki ZOSTAJĄ w wyniku jako pusty tekst —
+ * patrz komentarz na górze pliku: pusta "*Stops" to informacja, nie brak informacji.
+ */
+export function extractTableRows(html: string): Record<string, string>[] {
+  const rows: Record<string, string>[] = [];
+  for (const table of html.matchAll(/<table[^>]*>([\s\S]*?)<\/table>/gi)) {
+    const trs = [...table[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map((m) => m[1]);
+    if (trs.length < 2) continue;
+    const cellsOf = (tr: string) =>
+      [...tr.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((m) => stripTags(m[1]));
+    const header = cellsOf(trs[0]);
+    if (header.length < 2) continue;
+    for (const tr of trs.slice(1)) {
+      const cells = cellsOf(tr);
+      if (cells.length === 0) continue;
+      const row: Record<string, string> = {};
+      header.forEach((name, i) => {
+        if (name) row[name] = cells[i] ?? "";
+      });
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+/**
+ * Pary etykieta→wartość — układ "karty" (etykieta i wartość obok siebie), inny niż tabela
+ * kolumnowa. Używane, gdy strona pokazuje jeden kontener zamiast listy.
  */
 export function extractPairs(html: string): Record<string, string> {
   const body = html
@@ -83,22 +113,13 @@ export function extractPairs(html: string): Record<string, string> {
 
   const add = (label: string, value: string) => {
     const key = stripTags(label);
-    const val = stripTags(value);
-    // Pusta wartość albo etykieta dłuższa niż etykieta bywa (to już zdanie) — pomijamy.
-    if (!key || !val || key.length > 60) return;
-    if (!(key in pairs)) pairs[key] = val;
+    if (!key || key.length > 60) return;
+    if (!(key in pairs)) pairs[key] = stripTags(value);
   };
 
-  // <tr><th|td>etykieta</th|td><td>wartość</td></tr>
-  for (const row of body.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const cells = [...row[1].matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((m) => m[1]);
-    if (cells.length === 2) add(cells[0], cells[1]);
-  }
-  // <dt>etykieta</dt><dd>wartość</dd>
   for (const dl of body.matchAll(/<dt[^>]*>([\s\S]*?)<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/gi)) {
     add(dl[1], dl[2]);
   }
-  // "Etykieta: wartość" w zwykłym tekście (ostatnia deska ratunku, gdy wynik nie jest tabelą).
   for (const line of stripTags(body).split(/(?=[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\s*:)/)) {
     const match = line.match(/^([^:]{2,40}):\s*([^:]{1,80}?)\s*$/);
     if (match) add(match[1], match[2]);
@@ -106,39 +127,90 @@ export function extractPairs(html: string): Record<string, string> {
   return pairs;
 }
 
-function findByLabel(pairs: Record<string, string>, candidates: readonly string[]): string | null {
-  const normalized = new Map(Object.entries(pairs).map(([k, v]) => [normalizeLabel(k), v]));
+/**
+ * Wartość rubryki. `undefined` = TAKIEJ KOLUMNY NIE MA (nie umieliśmy odczytać),
+ * pusty tekst = kolumna jest, ale pusta. To rozróżnienie decyduje o tym, czy wolno nadać status.
+ */
+export function pick(row: Record<string, string>, candidates: readonly string[]): string | undefined {
+  const normalized = new Map(Object.entries(row).map(([k, v]) => [normalizeLabel(k), v]));
   for (const candidate of candidates) {
     const hit = normalized.get(candidate);
-    if (hit) return hit;
+    if (hit !== undefined) return hit;
   }
-  // Dopasowanie po fragmencie ("Waga brutto [kg]" zawiera "wagabrutto").
+  // Dopasowanie zapasowe tylko po POCZĄTKU nazwy ("Waga brutto [kg]" → "wagabrutto"), nigdy po
+  // dowolnym fragmencie. Fragment byłby niebezpieczny właśnie przy wadze: "Cargo Weight [KG]"
+  // zawiera "weightkg", więc przy braku kolumny "Weight [KG]" appka wzięłaby wagę TOWARU za wagę
+  // brutto i zapisała ją przy zleceniu jako nadrzędną — cicho i bez śladu.
   for (const candidate of candidates) {
     for (const [key, value] of normalized) {
-      if (key.includes(candidate)) return value;
+      if (key.startsWith(candidate)) return value;
     }
   }
-  return null;
+  return undefined;
 }
 
-/** Liczba kilogramów z zapisu strony: "32 500", "32500 kg", "32.5 t", "24 000,50". */
-export function parseWeight(raw: string | null): number | null {
+/** Liczba kilogramów z zapisu terminala: "8240", "8240.0", "23 976", "21126,5". */
+export function parseWeight(raw: string | undefined): number | null {
   if (!raw) return null;
-  const isTons = /\bt(ony|on|\b)/i.test(raw) && !/\bkg\b/i.test(raw);
   const digits = raw.replace(/[^\d.,]/g, "").replace(/\s/g, "");
   if (!digits) return null;
-  // Separator dziesiętny to ostatni przecinek/kropka, o ile po nim są 1-2 cyfry; reszta to tysiące.
+  // Separator tysięcy odpada tylko wtedy, gdy po nim stoją dokładnie trzy cyfry.
   const normalized = digits.replace(/[.,](?=\d{3}(?:\D|$))/g, "").replace(",", ".");
   const value = Number(normalized);
-  if (!Number.isFinite(value)) return null;
-  return isTons ? value * 1000 : value;
+  return Number.isFinite(value) ? value : null;
 }
 
-/** Kod ISO 6346 (np. 22G1, 45G1, 22U1) wyłuskany z wartości rubryki. */
-export function parseIsoCode(raw: string | null): string | null {
+/** Kod ISO 6346 (22G1, 45G1, 22U1) wyłuskany z wartości rubryki. */
+export function parseIsoCode(raw: string | undefined): string | null {
   if (!raw) return null;
   const match = raw.toUpperCase().match(/\b([2-4L9][0-9A-Z][A-Z][0-9A-Z])\b/);
   return match ? match[1] : null;
+}
+
+const NOT_FOUND = /brak danych|brak wynik|nie znaleziono|not found|no results/i;
+
+/**
+ * Jeden wiersz danych terminala → to, co appka zapisuje przy zleceniu. Wspólne dla KAŻDEGO źródła
+ * (tabela na stronie, eksport, w przyszłości API) — różni się tylko to, jak powstaje `row`.
+ */
+export function interpretRow(row: Record<string, string>): Omit<ParsedContainer, "details"> {
+  const containerCell = pick(row, LABELS.container) ?? "";
+  if (NOT_FOUND.test(containerCell) || Object.values(row).every((v) => !v.trim())) {
+    return { status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null, notFound: true };
+  }
+
+  const location = pick(row, LABELS.location);
+  const holds = pick(row, LABELS.holds);
+  const statusCell = pick(row, LABELS.status);
+
+  // Kolejność: gotowy status z osobnej rubryki, potem złożenie z miejsca i stopek.
+  let status = matchBhubStatus(statusCell);
+  if (!status && location !== undefined && holds !== undefined) {
+    const place = location.toLowerCase();
+    const onVessel = /statk|statek|vessel|burt|ship/.test(place)
+      ? true
+      : /yard|plac|sklad|skład|terminal|ground/.test(place)
+        ? false
+        : null;
+    const holdsText = holds.trim().toLowerCase();
+    status = deriveBhubStatus({
+      onVessel,
+      operationalHold: /operacyj|operational/.test(holdsText),
+      // Reguła właściciela: puste "*Stops" = brak blokad.
+      held: holdsText !== "" && !/brak|none|no holds/.test(holdsText),
+    });
+  }
+
+  const statusRaw = [statusCell, location, holds].filter((v) => v && v.trim()).join(" / ") || null;
+
+  return {
+    status,
+    statusRaw,
+    isoType: parseIsoCode(pick(row, LABELS.isoType)),
+    shippingLine: (pick(row, LABELS.shippingLine) ?? "").trim() || null,
+    grossWeightKg: parseWeight(pick(row, LABELS.grossWeight)),
+    notFound: false,
+  };
 }
 
 /**
@@ -149,9 +221,7 @@ export function parseIsoCode(raw: string | null): string | null {
 function describePage(html: string, text: string): Record<string, string> {
   const forms = [...html.matchAll(/<form[^>]*>/gi)].map((m) => m[0]);
   const fields = [...html.matchAll(/<(input|select|textarea|button)\b[^>]*>/gi)]
-    .map((m) => m[0])
-    // Ukryte pola tokenów ASP.NET potrafią mieć ogromne wartości — obcinamy, nazwa wystarczy.
-    .map((tag) => (tag.length > 300 ? `${tag.slice(0, 300)}…` : tag));
+    .map((m) => (m[0].length > 300 ? `${m[0].slice(0, 300)}…` : m[0]));
   const scripts = [...html.matchAll(/<script[^>]*\ssrc=["']([^"']+)["']/gi)].map((m) => m[1]);
   const bodyStart = html.search(/<body\b/i);
 
@@ -164,52 +234,42 @@ function describePage(html: string, text: string): Record<string, string> {
   };
 }
 
+/** Numer kontenera do porównań: same znaki alfanumeryczne, wielkimi literami. */
+function key(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/**
+ * Odczyt odpowiedzi terminala dla JEDNEGO kontenera. Odpowiedź może zawierać wiele kontenerów
+ * (formularz przyjmuje do dziesięciu po przecinku), więc najpierw szukamy wiersza z naszym numerem.
+ */
 export function parseContainerPage(html: string, containerNumber: string): ParsedContainer {
-  const details = extractPairs(html);
+  const wanted = key(containerNumber);
+  const rows = extractTableRows(html);
+  const row =
+    rows.find((r) => Object.values(r).some((v) => key(v) === wanted)) ??
+    (rows.length === 1 ? rows[0] : undefined);
+
   const text = stripTags(html);
-
-  // Kontener nieznany terminalowi — komunikat, nie błąd transportu.
-  const notFound =
-    Object.keys(details).length === 0 &&
-    /nie znaleziono|brak wynik|not found|no results|nie ma takiego/i.test(text);
-
-  const statusRaw = findByLabel(details, LABELS.status);
-  const holdsRaw = findByLabel(details, LABELS.holds);
-  const locationRaw = findByLabel(details, LABELS.location);
-
-  // Najpierw próba wprost z rubryki "status", potem złożenie z dwóch faktów (gdzie stoi + czy jest
-  // stopka) — patrz deriveBhubStatus w shared/status.ts.
-  let status = matchBhubStatus(statusRaw);
-  if (!status) {
-    const haystack = `${locationRaw ?? ""} ${statusRaw ?? ""} ${holdsRaw ?? ""}`.toLowerCase();
-    const onVessel = /statk|statek|vessel|burt/.test(haystack)
-      ? true
-      : /plac|yard|skład|sklad|terminal/.test(haystack)
-        ? false
-        : null;
-    const heldText = `${statusRaw ?? ""} ${holdsRaw ?? ""}`.toLowerCase();
-    const noHolds = /brak|none|bez stopek|nie ma/.test(heldText) || (holdsRaw ?? "") === "";
-    status = deriveBhubStatus({
-      onVessel,
-      operationalHold: /operacyjn|operational/.test(heldText),
-      held: !noHolds,
-    });
+  if (row) {
+    return { ...interpretRow(row), details: { ...row, _container: containerNumber } };
   }
 
-  // Samodiagnoza: jeśli ze strony nie dało się wyciągnąć praktycznie nic, dokładamy do migawki to,
-  // co pozwala ustalić DLACZEGO. Pierwszy przebieg pokazał, że sam adres z numerem w parametrze
-  // zwraca pusty formularz — więc diagnoza musi obejmować sam formularz (jak wysyła dane) i listę
-  // skryptów (gdzie szukać wywołania AJAX), a nie tylko sekcję <head>, która nic nie mówiła.
-  // Gdy etykiety zaczną się rozpoznawać, cały ten dopisek znika sam.
-  const diagnostics = Object.keys(details).length < 3 ? describePage(html, text) : {};
+  // Brak tabeli — próbujemy układu "karty" (etykieta → wartość).
+  const pairs = extractPairs(html);
+  if (Object.keys(pairs).length >= 3) {
+    return { ...interpretRow(pairs), details: { ...pairs, _container: containerNumber } };
+  }
 
+  // Nic nie rozpoznaliśmy. Jeśli strona wprost mówi, że nie zna kontenera — to nie jest błąd.
+  const notFound = NOT_FOUND.test(text);
   return {
-    status,
-    statusRaw: statusRaw ?? holdsRaw ?? null,
-    isoType: parseIsoCode(findByLabel(details, LABELS.isoType)) ?? parseIsoCode(text),
-    shippingLine: findByLabel(details, LABELS.shippingLine),
-    grossWeightKg: parseWeight(findByLabel(details, LABELS.grossWeight)),
-    details: { ...details, ...diagnostics, _container: containerNumber },
+    status: null,
+    statusRaw: null,
+    isoType: null,
+    shippingLine: null,
+    grossWeightKg: null,
     notFound,
+    details: { ...describePage(html, text), _container: containerNumber },
   };
 }
