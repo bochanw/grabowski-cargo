@@ -14,6 +14,8 @@ import { ALARM_PREFIX, bhubCellDecoration, isAlarm } from "@/lib/bhub/cellDecora
 import { BHUB_STATUSES, BHUB_STATUS_LABELS } from "@/lib/bhub/status";
 import { shouldTrackLoad } from "@/lib/bhub/schedule";
 import { useBhubCheck } from "@/hooks/useBhubCheck";
+import { useBhubAgent } from "@/hooks/useBhubAgent";
+import { opisOstatniegoSprawdzenia } from "@/lib/bhub/agentStatus";
 import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
@@ -170,10 +172,12 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
     return counts;
   }, [loadDocuments]);
 
-  // Status kontenerów z Baltic Hub. Cykliczne odpytywanie (co 15 min, 6-18) robi cron po stronie
-  // bazy; stąd wołamy sprawdzenie NA ŻĄDANIE — zaraz po zapisaniu zlecenia z podjęciem z BHub
-  // i z guzika w pasku.
-  const { checking: checkingIds, check: checkBhub, error: bhubError } = useBhubCheck();
+  // Status kontenerów z Baltic Hub. Odpytuje ROZSZERZENIE do Chrome w przeglądarce dyspozytora
+  // (terminal odrzuca ruch z serwerowni — Cloudflare i reCAPTCHA), cyklicznie co 15 minut oraz
+  // na żądanie: zaraz po zapisaniu zlecenia z podjęciem z BHub i z guzika w pasku.
+  const { checking: checkingIds, check: checkBhub, error: bhubError, extension } = useBhubCheck();
+  const { data: bhubAgent } = useBhubAgent();
+  const bhubStatus = useMemo(() => opisOstatniegoSprawdzenia(bhubAgent, extension), [bhubAgent, extension]);
   const trackedIds = useMemo(() => loads.filter(shouldTrackLoad).map((load) => load.id), [loads]);
 
   // Sprawdzenie zaraz po zapisaniu zlecenia (właściciel: "po wgraniu zlecenia które pobieramy
@@ -443,10 +447,22 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             <span className="hidden text-xs text-zinc-400 xl:inline">Kliknij komórkę, żeby edytować — Enter zapisuje, Esc anuluje.</span>
           )
         )}
-        <div className="ml-auto flex gap-2">
-          {/* Odpytywanie idzie cyklicznie z crona; ten guzik jest na "sprawdź teraz" — i po to,
-              żeby po martwym odczycie (wygasły klucz, blokada) dyspozytor mógł sam zobaczyć powód
-              zamiast czekać do następnego kwadransa. */}
+        <div className="ml-auto flex items-center gap-2">
+          {/* Odpytywanie idzie cyklicznie z rozszerzenia (co 15 min); ten guzik jest na "sprawdź
+              teraz". Obok STAN ODCZYTU: odkąd sprawdza cudza przeglądarka, zastój ma być widać —
+              inaczej dyspozytor patrzyłby na wczorajszy status przekonany, że jest dzisiejszy. */}
+          <span
+            title={bhubStatus.tytul}
+            className={`hidden text-xs xl:inline ${
+              bhubStatus.ton === "blad"
+                ? "text-red-600"
+                : bhubStatus.ton === "uwaga"
+                  ? "text-amber-600"
+                  : "text-zinc-400"
+            }`}
+          >
+            {bhubStatus.tekst}
+          </span>
           <button
             type="button"
             disabled={trackedIds.length === 0 || checkingIds.size > 0}
@@ -454,7 +470,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             title={
               trackedIds.length === 0
                 ? "Nie ma kontenerów do sprawdzenia (podjęcie z BHub, znany numer, status inny niż ZP)"
-                : "Sprawdź teraz statusy w Baltic Hub"
+                : `Sprawdź teraz statusy w Baltic Hub. ${bhubStatus.tytul}`
             }
             className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400"
           >

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <title>Statusy kontenerów</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        width: 330px;
+        margin: 0;
+        padding: 14px;
+        font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #fff;
+        color: #18181b;
+      }
+      @media (prefers-color-scheme: dark) { body { background: #09090b; color: #fafafa; } }
+      h1 { font-size: 14px; margin: 0 0 10px; }
+      label { display: block; margin: 8px 0 3px; font-size: 12px; opacity: 0.75; }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 8px;
+        border: 1px solid #d4d4d8;
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+      }
+      button {
+        width: 100%;
+        margin-top: 10px;
+        padding: 8px;
+        border: 0;
+        border-radius: 6px;
+        background: #18181b;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.drugi { background: transparent; color: inherit; border: 1px solid #d4d4d8; font-weight: 400; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .stan { margin-top: 12px; padding: 9px 10px; border-radius: 6px; background: rgba(120, 120, 130, 0.12); font-size: 12px; }
+      .blad { color: #b91c1c; }
+      .ok { color: #15803d; }
+      .drobne { font-size: 11px; opacity: 0.7; margin-top: 6px; word-break: break-word; }
+      hr { border: 0; border-top: 1px solid rgba(120, 120, 130, 0.25); margin: 14px 0 4px; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <h1>Statusy kontenerów — Baltic Hub</h1>
+
+    <section id="logowanie" hidden>
+      <p class="drobne">Zaloguj się tym samym e-mailem i hasłem, co w appce.</p>
+      <label for="email">E-mail</label>
+      <input id="email" type="email" autocomplete="username" />
+      <label for="haslo">Hasło</label>
+      <input id="haslo" type="password" autocomplete="current-password" />
+      <button id="zaloguj">Zaloguj</button>
+      <p id="bladLogowania" class="drobne blad" hidden></p>
+    </section>
+
+    <section id="panel" hidden>
+      <div class="stan" id="stan">Sprawdzam…</div>
+      <button id="sprawdz">Sprawdź teraz</button>
+      <button id="karta" class="drugi">Otwórz stronę terminala</button>
+      <hr />
+      <label for="adres">Adres strony terminala</label>
+      <input id="adres" type="url" />
+      <label for="etykieta">Nazwa tego komputera (widoczna w appce)</label>
+      <input id="etykieta" type="text" placeholder="np. Dyspozytornia 1" />
+      <button id="zapisz" class="drugi">Zapisz ustawienia</button>
+      <button id="wyloguj" class="drugi">Wyloguj</button>
+    </section>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,314 @@
+// ============================================================
+// background.js — cała orkiestracja rozszerzenia.
+//
+// PRZEBIEG: funkcja `bhub-status` mówi, o które kontenery pytać → otwieramy stronę terminala
+// w karcie tej przeglądarki → wpisujemy numery i klikamy → czytamy widoczny tekst → odsyłamy go
+// do funkcji, która go rozumie i zapisuje przy zleceniach.
+//
+// DLACZEGO TO MA STAĆ W PRZEGLĄDARCE DYSPOZYTORA: baltichub.com odrzuca ruch z serwerowni
+// (Cloudflare + reCAPTCHA — zmierzone na trzech niezależnych drogach). Prawdziwa przeglądarka,
+// zalogowany człowiek, zwykłe łącze — i problem znika u źródła. Ta sama maszyneria zadziała
+// u kolejnych terminali, które też będą się bronić, a API nie każdy da.
+//
+// UWAGA NA CZAS ŻYCIA SERVICE WORKERA (MV3): Chrome usypia go po ~30 s bezczynności, ale KAŻDE
+// wywołanie API rozszerzenia ten czas resetuje. Nasze pętle czekania odpytują stronę przez
+// `chrome.scripting.executeScript` co 1,5 s, więc worker żyje przez cały przebieg. Gdyby ktoś
+// zamienił to na zwykłe `setTimeout` bez wywołań API — przebieg zacząłby ginąć w połowie.
+// ============================================================
+
+import { konto, ustawienia, wywolaj, zaloguj, wyloguj } from "./api.js";
+
+const ALARM = "sprawdzanie";
+const CZEKANIE_NA_POLE_MS = 90_000; // Cloudflare potrafi weryfikować kilkadziesiąt sekund.
+const CZEKANIE_NA_WYNIKI_MS = 60_000;
+const KROK_MS = 1500;
+
+// Jeden przebieg naraz. Dwa (alarm + „Sprawdź teraz" z appki) wpisywałyby numery w to samo pole.
+let trwa = false;
+
+// ---------------------------------------------------------------- narzędzia
+
+const spij = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function paczki(lista, ile) {
+  const out = [];
+  for (let i = 0; i < lista.length; i += ile) out.push(lista.slice(i, i + ile));
+  return out;
+}
+
+/** Błąd, który niesie ze sobą migawkę strony (trafia do `bhub_details` przy zleceniu). */
+function bladZeSzczegolami(komunikat, szczegoly, wymagaCzlowieka = false) {
+  const e = new Error(komunikat);
+  e.szczegoly = szczegoly;
+  e.wymagaCzlowieka = wymagaCzlowieka;
+  return e;
+}
+
+async function zapiszStan(patch) {
+  const { ostatni } = await chrome.storage.local.get("ostatni");
+  const nowy = { ...(ostatni ?? {}), ...patch, kiedy: new Date().toISOString() };
+  await chrome.storage.local.set({ ostatni: nowy });
+  await chrome.action.setBadgeBackgroundColor({ color: patch.blad ? "#b91c1c" : "#15803d" });
+  await chrome.action.setBadgeText({ text: patch.blad ? "!" : "" });
+  return nowy;
+}
+
+function powiadom(tytul, tresc) {
+  chrome.notifications?.create("bhub", {
+    type: "basic",
+    iconUrl: "icon128.png",
+    title: tytul,
+    message: tresc.slice(0, 250),
+    priority: 2,
+  });
+}
+
+// ---------------------------------------------------------------- karta z terminalem
+
+/**
+ * Karta ze stroną terminala. Jedna na całe rozszerzenie: przypięta i nieaktywna, żeby nie
+ * zabierać dyspozytorowi tego, na co właśnie patrzy. Gdy ktoś ją zamknie — otwieramy nową.
+ */
+async function dajKarte(adres) {
+  const { kartaId } = await chrome.storage.local.get("kartaId");
+  if (kartaId) {
+    const karta = await chrome.tabs.get(kartaId).catch(() => null);
+    if (karta) return karta.id;
+  }
+  const karta = await chrome.tabs.create({ url: adres, active: false, pinned: true });
+  await chrome.storage.local.set({ kartaId: karta.id });
+  return karta.id;
+}
+
+/** Kod ze `page.js` wchodzi na stronę przy KAŻDYM wywołaniu — po przeładowaniu strony znika. */
+async function naStronie(kartaId, nazwa, argumenty = []) {
+  await chrome.scripting.executeScript({ target: { tabId: kartaId }, files: ["page.js"] });
+  const [wynik] = await chrome.scripting.executeScript({
+    target: { tabId: kartaId },
+    func: (n, a) => {
+      const api = globalThis.__bhub;
+      if (!api || typeof api[n] !== "function") return { _brakKodu: true };
+      return api[n](...a);
+    },
+    args: [nazwa, argumenty],
+  });
+  const dane = wynik?.result;
+  if (dane?._brakKodu) throw new Error("Nie udało się wstrzyknąć kodu na stronę terminala.");
+  return dane ?? {};
+}
+
+/**
+ * Czeka, aż coś na stronie będzie prawdą. Zwraca ostatni odczyt także przy niepowodzeniu.
+ *
+ * Błąd wstrzyknięcia NIE kończy czekania: w trakcie przeładowania strony (a Cloudflare przeładowuje
+ * ją sam, i to kilka razy) `executeScript` potrafi rzucić „Frame with given id not found". To jest
+ * stan przejściowy, nie awaria — traktujemy go jak „jeszcze nie gotowe" i próbujemy dalej, aż do
+ * końca limitu. Ostatni powód zostaje, żeby było co pokazać, gdy limit jednak minie.
+ */
+async function czekaj(kartaId, nazwa, gotowe, limitMs) {
+  const koniec = Date.now() + limitMs;
+  let stan = {};
+  for (;;) {
+    try {
+      stan = await naStronie(kartaId, nazwa);
+      if (gotowe(stan)) return { ok: true, stan };
+    } catch (e) {
+      stan = { _powod: e.message };
+    }
+    if (Date.now() > koniec) return { ok: false, stan };
+    await spij(KROK_MS);
+  }
+}
+
+/**
+ * Jedna paczka numerów: wejście na stronę, wpisanie, klik, odczytanie wyników.
+ * Zwraca widoczny tekst strony — rozumie go funkcja brzegowa (`parse.ts`), nie rozszerzenie.
+ * Podział jest celowy: reguły odczytu terminala mają być w JEDNYM miejscu, po stronie serwera,
+ * żeby poprawka nie wymagała aktualizacji rozszerzenia na każdym komputerze.
+ */
+async function zapytajTerminal(kartaId, adres, numery) {
+  await chrome.tabs.update(kartaId, { url: adres });
+  // Świeże wejście na stronę przy każdej paczce: formularz bywa jednorazowy, a wyniki
+  // poprzedniej paczki zostawałyby w treści i mieszały się z nową.
+  //
+  // Czekamy na host Z USTAWIEŃ, nie na wpisane na sztywno "baltichub" — adres jest polem w oknie
+  // rozszerzenia właśnie po to, żeby dało się go przestawić przy kolejnym terminalu.
+  const host = new URL(adres).host;
+  await czekaj(kartaId, "stan", (s) => (s.adres ?? "").includes(host), 30_000);
+
+  const gotowa = await czekaj(kartaId, "stan", (s) => s.gotowa, CZEKANIE_NA_POLE_MS);
+  if (!gotowa.ok) {
+    const cloudflare = /just a moment|cierpliwo|verify|weryfik/i.test(`${gotowa.stan.tytul} ${gotowa.stan.tekst}`);
+    throw bladZeSzczegolami(
+      cloudflare
+        ? `Strona Baltic Hub nie przeszła weryfikacji Cloudflare w ciągu 90 s (tytuł: „${gotowa.stan.tytul ?? ""}”). ` +
+            `Otwórz przypiętą kartę i przejdź weryfikację ręcznie — kolejne sprawdzenia pójdą już same.`
+        : `Na stronie Baltic Hub nie pojawiło się pole na numery kontenerów w ciągu 90 s ` +
+            `(tytuł: „${gotowa.stan.tytul ?? ""}”).`,
+      { _etap: "brak pola na numery", ...gotowa.stan },
+      cloudflare,
+    );
+  }
+
+  // Zgoda na ciasteczka przykrywa stronę przezroczystą warstwą, która przechwytuje każde
+  // kliknięcie — bez jej zamknięcia klik w „Sprawdź" nie robi nic, a strona wygląda na sprawną.
+  const okienka = await naStronie(kartaId, "zamknij");
+  await spij(800);
+
+  const wyslane = await naStronie(kartaId, "wyslij", [numery]);
+  if (!wyslane.wyslane) {
+    throw bladZeSzczegolami(
+      `Nie udało się uruchomić wyszukiwania: ${wyslane.powod ?? "nieznany powód"}. Tryb: ${wyslane.tryb ?? "?"}.`,
+      { _etap: "nie udało się uruchomić wyszukiwania", _okienka: JSON.stringify(okienka), ...wyslane },
+    );
+  }
+
+  const wyniki = await czekaj(kartaId, "wyniki", (s) => s.gotowe, CZEKANIE_NA_WYNIKI_MS);
+  if (!wyniki.ok) {
+    const zagadka = wyniki.stan.zagadka?.czekaNaCzlowieka;
+    throw bladZeSzczegolami(
+      zagadka
+        ? "Baltic Hub poprosił o rozwiązanie zagadki (reCAPTCHA). Otwórz przypiętą kartę i kliknij ją — " +
+            "kolejne sprawdzenia pójdą już same."
+        : `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 60 s. ` +
+            `Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}.`,
+      {
+        _etap: "brak wyników",
+        _okienka: JSON.stringify(okienka),
+        _zagadka: JSON.stringify(wyniki.stan.zagadka ?? {}),
+        ...wyslane,
+        ...wyniki.stan,
+      },
+      Boolean(zagadka),
+    );
+  }
+
+  return wyniki.stan.tekst ?? "";
+}
+
+// ---------------------------------------------------------------- przebieg
+
+export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
+  if (trwa) return { ok: false, error: "Sprawdzanie właśnie trwa." };
+  trwa = true;
+  const cfg = await ustawienia();
+  let sprawdzone = 0;
+  const problemy = [];
+
+  try {
+    // Funkcja pilnuje okna godzinowego (dni robocze 6-18) dla przebiegu cyklicznego; przy prośbie
+    // o konkretne zlecenia okno nie obowiązuje — człowiek ma dostać odpowiedź, kiedy pyta.
+    const { items = [], window: wOknie = true, skipped } = await wywolaj("pending", loadIds ? { loadIds } : {});
+    if (items.length === 0) {
+      await wywolaj("heartbeat", { checked: 0 });
+      const stan = await zapiszStan({ blad: null, sprawdzone: 0, powod, uwaga: skipped ?? (wOknie ? "nic do sprawdzenia" : null) });
+      return { ok: true, checked: 0, stan };
+    }
+
+    const kartaId = await dajKarte(cfg.adresTerminala);
+
+    for (const paczka of paczki(items, cfg.rozmiarPaczki)) {
+      const numery = paczka.map((i) => i.container);
+      try {
+        const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
+        await wywolaj("report", {
+          results: paczka.map((i) => ({
+            loadId: i.loadId,
+            container: i.container,
+            text: tekst,
+            details: { _paczka: numery.join(", ") },
+          })),
+        });
+        sprawdzone += paczka.length;
+      } catch (e) {
+        problemy.push(e.message);
+        // Błąd dotyczy CAŁEJ paczki — zapisujemy go przy każdym jej zleceniu. Zlecenie bez
+        // sprawdzenia i bez śladu wygląda jak sprawdzone, a to najgorszy możliwy wynik.
+        await wywolaj("report", {
+          results: paczka.map((i) => ({
+            loadId: i.loadId,
+            container: i.container,
+            error: e.message,
+            details: { ...(e.szczegoly ?? {}), _paczka: numery.join(", ") },
+          })),
+        }).catch(() => undefined);
+
+        if (e.wymagaCzlowieka) {
+          // Cloudflare albo zagadka: dalsze paczki odbiją się tak samo. Prosimy człowieka
+          // i kończymy — reszta zleceń zachowuje stary `bhub_checked_at`, więc w kolejnym
+          // przebiegu stoi pierwsza w kolejce.
+          powiadom("Baltic Hub czeka na Ciebie", e.message);
+          break;
+        }
+      }
+    }
+
+    await wywolaj("heartbeat", { checked: sprawdzone, error: problemy[0] ?? null });
+    const stan = await zapiszStan({ blad: problemy[0] ?? null, sprawdzone, powod });
+    return { ok: problemy.length === 0, checked: sprawdzone, problems: problemy, stan };
+  } catch (e) {
+    // Tu lądują błędy spoza samego odpytywania: brak logowania, wygasła sesja, brak sieci.
+    problemy.push(e.message);
+    await wywolaj("heartbeat", { checked: sprawdzone, error: e.message }).catch(() => undefined);
+    const stan = await zapiszStan({ blad: e.message, sprawdzone, powod });
+    return { ok: false, error: e.message, stan };
+  } finally {
+    trwa = false;
+  }
+}
+
+// ---------------------------------------------------------------- wejścia
+
+async function ustawAlarm() {
+  const { coIleMinut } = await ustawienia();
+  await chrome.alarms.clear(ALARM);
+  await chrome.alarms.create(ALARM, { periodInMinutes: coIleMinut, delayInMinutes: 1 });
+}
+
+chrome.runtime.onInstalled.addListener(ustawAlarm);
+chrome.runtime.onStartup.addListener(ustawAlarm);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === ALARM) przebieg({ powod: "harmonogram" });
+});
+
+chrome.notifications?.onClicked.addListener(async () => {
+  const { kartaId } = await chrome.storage.local.get("kartaId");
+  if (kartaId) chrome.tabs.update(kartaId, { active: true }).catch(() => undefined);
+});
+
+/** Wspólna obsługa wiadomości z okna rozszerzenia (wewnętrzne) i z appki (zewnętrzne). */
+async function obsluz(wiadomosc) {
+  switch (wiadomosc?.typ) {
+    case "stan": {
+      const { ostatni } = await chrome.storage.local.get("ostatni");
+      return { ok: true, wersja: chrome.runtime.getManifest().version, konto: await konto(), trwa, ostatni: ostatni ?? null };
+    }
+    case "sprawdz-teraz":
+      return przebieg({ powod: wiadomosc.powod ?? "na żądanie", loadIds: wiadomosc.loadIds ?? null });
+    case "zaloguj":
+      await zaloguj(wiadomosc.email, wiadomosc.haslo);
+      await ustawAlarm();
+      return { ok: true, konto: await konto() };
+    case "wyloguj":
+      await wyloguj();
+      return { ok: true };
+    case "ustaw":
+      await chrome.storage.local.set(wiadomosc.wartosci ?? {});
+      await ustawAlarm();
+      return { ok: true, ustawienia: await ustawienia() };
+    default:
+      return { ok: false, error: `Nieznana wiadomość: ${wiadomosc?.typ ?? "(brak)"}.` };
+  }
+}
+
+// `sendResponse` po `await` wymaga zwrócenia `true` — inaczej Chrome zamyka kanał, a appka
+// dostaje pustą odpowiedź i wygląda to jak brak rozszerzenia.
+chrome.runtime.onMessage.addListener((wiadomosc, _nadawca, odpowiedz) => {
+  obsluz(wiadomosc).then(odpowiedz, (e) => odpowiedz({ ok: false, error: e.message }));
+  return true;
+});
+
+chrome.runtime.onMessageExternal.addListener((wiadomosc, _nadawca, odpowiedz) => {
+  obsluz(wiadomosc).then(odpowiedz, (e) => odpowiedz({ ok: false, error: e.message }));
+  return true;
+});

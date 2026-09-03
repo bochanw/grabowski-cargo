@@ -979,6 +979,70 @@ tylko kontenery bez statusu ZP"):
 - Funkcja `bhub-status` wdrożona (v10). **Repo jest o jeden commit do przodu** (słownik T-State +
   nazwanie „Page Expired") — do wdrożenia razem z rozwiązaniem transportu.
 
+**KONIEC drogi serwerowej — statusy Baltic Hub odpytuje ROZSZERZENIE DO CHROME** (właściciel:
+„chyba nie przejdziemy tego problemu z weryfikacją, możemy spróbować zrobić to przez przeglądarkę
+dopóki nie rozwiążę problemu z API? inni operatorzy terminali będą również się bronić, a tam API
+nie będzie na bank"; przy okazji wybrał: Bright Datę **usunąć całkiem**):
+
+- **Ostatni błąd starej drogi, dla porządku**: przebieg 2026-09-03 15:25 UTC (64 s) utknął na
+  przejściówce Cloudflare — tytuł „Just a moment…", treść „Performing security verification",
+  zero formularzy, więc nasze 25 s czekania na pole minęło, zanim weryfikacja się skończyła.
+  To etap WCZEŚNIEJSZY niż wszystkie poprzednie błędy: przebieg 22 minuty wcześniej przechodził
+  Cloudflare bez problemu i wykładał się dopiero na braku wyników (stąd wykrycie reCAPTCHY).
+  Czyli nie twarda blokada, tylko loteria — i to ona przesądziła o zmianie drogi.
+- **Uratowany kod, którego NIE BYŁO w repo**: wdrożona wersja `bhub-status` (v31) była nowsza niż
+  HEAD i niosła ustalenia z produkcji, których nie miał żaden commit (`git log --all -S` nic nie
+  znajdowało): solver Bright Daty odpowiadał `solve_finished`, formularza wysyłającego na `/multi`
+  na tej stronie NIE MA (numery wysyła JavaScript), a kolejność korków to Cloudflare → zgoda na
+  ciasteczka → reCAPTCHA → pole i guzik. Ściągnięte z projektu przez MCP i przeniesione do
+  `extension/page.js`. **Wniosek: nie wdrażać z niezacommitowanego drzewa.**
+
+- **Podział pracy** (to jest cała zmiana): rozszerzenie otwiera stronę terminala w prawdziwej
+  przeglądarce dyspozytora, wpisuje numery i czyta wynik; funkcja `bhub-status` mówi tylko, o co
+  pytać (`pending`), rozumie odpowiedź (`parse.ts` bez zmian) i zapisuje ją przez `apply_bhub_check`
+  (`report`) oraz pilnuje, żeby martwy odczyt było widać (`heartbeat`). Reguły odczytu ZOSTAJĄ na
+  serwerze — poprawka nie wymaga wtedy aktualizacji rozszerzenia na każdym komputerze.
+- **Usunięte**: `source.ts`, `browser.ts`, `wsClient.ts`, `src/lib/supabase/checkBhubStatus.ts`,
+  migracja `0017` (cron — nigdy nie zaaplikowana; na serwerze nie ma już czego uruchamiać).
+  Do posprzątania po stronie właściciela: sekrety `BHUB_SOURCE`, `BRIGHTDATA_API_TOKEN`,
+  `BRIGHTDATA_ZONE` (Dashboard → Edge Functions → Secrets) i funkcje próbne `probe-baltichub`,
+  `probe-imap-tcp`, `probe-websocket` (MCP nie kasuje funkcji).
+- `extension/` — gotowe rozszerzenie MV3, **bez budowania i bez zależności** (katalog wgrywany
+  przez „Załaduj rozpakowane"). Stały identyfikator `jaiopbejoakjdggjpkgoambeifcjjffj` bierze się
+  z klucza publicznego w `manifest.json` — dzięki temu appka wie, do kogo mówić, i nie zmienia się
+  to przy ponownym wgraniu. `externally_connectable` wpuszcza WYŁĄCZNIE
+  `grabowski-cargo.fleetprofit.eu` (i adres gałęzi na Netlify). Instrukcja dla dyspozytorów:
+  `extension/README.md`.
+- **Kilku dyspozytorów**: wystarczy JEDEN włączony komputer — wynik jest wspólny (baza + Realtime).
+  Żeby dwie włączone przeglądarki nie pytały terminala o to samo, `pending` pomija kontenery
+  sprawdzone w ciągu ostatnich 10 minut (próg krótszy niż kwadrans odpytywania, więc nie opóźnia
+  cyklu); prośba o KONKRETNE zlecenia ten próg pomija, bo człowiek, który pyta, ma dostać odpowiedź.
+- Migracja **0019** (`bhub_agent_state`, ZAAPLIKOWANA przez MCP + `notify pgrst`): kto i kiedy
+  ostatnio sprawdzał. RLS tylko na SELECT dla `authenticated` — pisze wyłącznie funkcja. W pasku
+  Zestawienia stan świeci na zielono/pomarańczowo/czerwono (`src/lib/bhub/agentStatus.ts`), przy
+  czym **brak rozszerzenia w TEJ przeglądarce nie jest alarmem, jeśli sprawdza ktoś inny** — to
+  rozróżnienie ma osobny test.
+- Zagadki i weryfikacje, których automat nie kliknie, kończą się POWIADOMIENIEM Chrome („Baltic Hub
+  czeka na Ciebie") i przerwaniem przebiegu — reszta zleceń zachowuje stary `bhub_checked_at`, więc
+  w następnym przebiegu stoi pierwsza w kolejce.
+- **Pułapka MV3 do zapamiętania**: service worker usypia po ~30 s bezczynności, ale każde wywołanie
+  API rozszerzenia ten czas resetuje. Pętle czekania odpytują stronę `chrome.scripting` co 1,5 s
+  i dlatego żyją; zamiana tego na samo `setTimeout` zaczęłaby gubić przebiegi w połowie.
+- **Zweryfikowane**: `page.js` w PRAWDZIWYM Chromium na stronie odwzorowującej zmierzone pułapki
+  terminala — 25 sprawdzeń (`scratch-page.test.mjs`, plik tymczasowy): pole bez `name/id/placeholder`
+  i poza formularzem, dwie wyszukiwarki `GET /search`, radio `seacontainer` (nietknięte), nawigacja
+  „Sprawdź kontener online" i nagłówki tabeli jako fałszywe guziki, „Odrzuć wszystkie" NIE klikane,
+  przejściówka Cloudflare rozpoznana jako niegotowa, widoczna reCAPTCHA odróżniona od braku wyników.
+  Całe rozszerzenie wgrane do Chrome — 15 sprawdzeń (`scratch-ext.test.mjs`): manifest się wczytuje,
+  identyfikator wychodzi ten, którego szuka appka, alarm 15-minutowy istnieje, wiadomości chodzą,
+  a przebieg bez logowania wraca z czytelnym powodem (nie wyjątkiem). Stan w pasku — 15 sprawdzeń
+  (`scratch-agent.test.mts`). Do tego `deno check`, `next build`, filtr PostgREST z dwoma `or=`
+  sprawdzony strzałem w REST (HTTP 200). **Rozszerzenia wczytuje tylko NOWY headless Chrome'a
+  (`channel: "chromium"` w Playwrightcie) — stary ignorował je po cichu.**
+- **NIE zweryfikowane na żywym terminalu**: to środowisko nie ma konta ani dostępu do baltichub.com.
+  Pierwsze uruchomienie u właściciela pokaże, czy strona daje się obsłużyć bez zagadki i czy
+  `parse.ts` czyta karty z widocznego tekstu tak samo, jak czytał je z HTML-a Bright Daty.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -997,8 +1061,12 @@ tylko kontenery bez statusu ZP"):
 5. Dla eksportu: domyślna data liczy się dziś od `delivery_date` (jedyna data z szablonu Q4Road, tam
    "Miejsca rozładunku"). Gdy pojawi się zlecenie eksportowe z datą ZAŁADUNKU, upewnić się, że parser
    szablonu wpisuje ją tak, żeby "dzień roboczy przed" liczył się od właściwej daty.
-7. **Baltic Hub — dokończenie** (patrz sekcja wyżej): po wybraniu transportu przez właściciela
-   uzupełnić `source.ts`, wdrożyć `bhub-status`, przejść przez pierwsze prawdziwe sprawdzenie,
-   z `bhub_details` odczytać faktyczne nazwy rubryk i dopisać je do `LABELS` w `parse.ts`, dopiero
-   potem zaaplikować migrację 0017 (cron). Przy okazji dopytać właściciela o znaczenie statusów,
-   których strona pokaże więcej niż pięć ustalonych („z czasem będę Ci tłumaczył").
+7. **Baltic Hub — pierwsze uruchomienie rozszerzenia u właściciela** (patrz sekcja wyżej):
+   zainstalować z `extension/README.md`, zalogować, kliknąć „Sprawdź teraz" i obejrzeć, co wyszło.
+   Gdyby odczyt nie trafił: w `bhub_details` przy zleceniu leży migawka (spis pól, guziki, tekst
+   strony) — poprawiać `page.js` (wybór pola/guzika) albo `LABELS`/etykiety karty w `parse.ts`,
+   nigdy na ślepo. Przy okazji dopytać właściciela o znaczenie statusów, których strona pokaże
+   więcej niż pięć ustalonych („z czasem będę Ci tłumaczył") — dziś nieznane wracają jako surowy
+   tekst bez koloru.
+8. Gdyby Baltic Hub dał jednak API: transport wraca po stronie serwera, ale `pending`/`report`
+   zostają — wtedy dochodzi trzecie źródło obok rozszerzenia, a nie przepisywanie całości.
