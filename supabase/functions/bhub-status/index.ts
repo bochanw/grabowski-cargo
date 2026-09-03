@@ -31,10 +31,30 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Funkcja brzegowa ma ograniczony czas życia, a cron wróci za 15 minut — lepiej dowieźć 25
-// kontenerów w komplecie niż urwać się w połowie stu. Najdawniej sprawdzane idą pierwsze
-// (kolejność z indeksu `loads_bhub_pending_idx`), więc nic nie zostaje pominięte na stałe.
-const MAX_CONTAINERS_PER_RUN = 25;
+// Ile kontenerów na jeden przebieg i ile naraz.
+//
+// Zmierzone na produkcji, nie oszacowane: jedno pobranie strony przez Bright Datę trwa ~25 s
+// (odblokowanie Cloudflare to prawdziwa przeglądarka po ich stronie). Pierwsza wersja szła
+// kontener po kontenerze i funkcja brzegowa wyczerpała czas życia po TRZECIM z pięciu — dwa
+// zlecenia zostały bez sprawdzenia i bez śladu, bo urwanie funkcji nie zapisuje błędu.
+//
+// Stąd pobieranie równoległe z ograniczeniem: pięć naraz mieści pięć kontenerów w ~25 s zamiast
+// ~125 s. Limit na przebieg jest niski świadomie — cron wraca co 15 minut, a najdawniej sprawdzane
+// idą pierwsze (kolejność z indeksu `loads_bhub_pending_idx`), więc nic nie zostaje pominięte na
+// stałe, nawet gdy kontenerów będzie kiedyś więcej niż zdąży jeden przebieg.
+const MAX_CONTAINERS_PER_RUN = 10;
+const CONCURRENCY = 5;
+
+/** Przetwarza `items` równolegle, ale nie więcej niż `size` naraz. */
+async function runPool<T>(items: T[], size: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const runners = Array.from({ length: Math.min(size, items.length) }, async () => {
+    while (next < items.length) {
+      await worker(items[next++]);
+    }
+  });
+  await Promise.all(runners);
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
@@ -119,7 +139,7 @@ Deno.serve(async (req: Request) => {
   let updated = 0;
   const problems: string[] = [];
 
-  for (const load of targets) {
+  await runPool(targets, CONCURRENCY, async (load) => {
     const container = (load.container_number ?? "").trim().toUpperCase();
     try {
       const html = await source.fetchContainerPage(container);
@@ -131,7 +151,7 @@ Deno.serve(async (req: Request) => {
           p_error: `Baltic Hub nie zna kontenera ${container}.`,
           p_details: parsed.details,
         });
-        continue;
+        return;
       }
 
       const { error: rpcError } = await admin.rpc("apply_bhub_check", {
@@ -155,7 +175,7 @@ Deno.serve(async (req: Request) => {
         .rpc("apply_bhub_check", { p_load_id: load.id, p_error: message })
         .then(() => undefined, () => undefined);
     }
-  }
+  });
 
   return json({
     ok: true,

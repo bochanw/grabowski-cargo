@@ -141,6 +141,29 @@ export function parseIsoCode(raw: string | null): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * Migawka diagnostyczna nierozpoznanej strony — wszystko, czego trzeba, żeby ustalić, jak ta strona
+ * przyjmuje numer kontenera i gdzie oddaje wynik. Świadomie NIE jest to całe źródło strony:
+ * interesuje nas formularz, jego pola, skrypty i widoczny tekst, a nie kilkaset kilobajtów CSS-a.
+ */
+function describePage(html: string, text: string): Record<string, string> {
+  const forms = [...html.matchAll(/<form[^>]*>/gi)].map((m) => m[0]);
+  const fields = [...html.matchAll(/<(input|select|textarea|button)\b[^>]*>/gi)]
+    .map((m) => m[0])
+    // Ukryte pola tokenów ASP.NET potrafią mieć ogromne wartości — obcinamy, nazwa wystarczy.
+    .map((tag) => (tag.length > 300 ? `${tag.slice(0, 300)}…` : tag));
+  const scripts = [...html.matchAll(/<script[^>]*\ssrc=["']([^"']+)["']/gi)].map((m) => m[1]);
+  const bodyStart = html.search(/<body\b/i);
+
+  return {
+    _tekst_strony: text.slice(0, 2000),
+    _formularze: forms.join("\n") || "(brak znacznika <form>)",
+    _pola: fields.join("\n").slice(0, 4000) || "(brak pól)",
+    _skrypty: scripts.join("\n").slice(0, 2000),
+    _html_body: (bodyStart >= 0 ? html.slice(bodyStart) : html).slice(0, 30000),
+  };
+}
+
 export function parseContainerPage(html: string, containerNumber: string): ParsedContainer {
   const details = extractPairs(html);
   const text = stripTags(html);
@@ -173,15 +196,12 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
     });
   }
 
-  // Samodiagnoza pierwszego przebiegu: jeśli ze strony nie dało się wyciągnąć praktycznie nic,
-  // dokładamy do migawki jej treść. Bez tego pierwsze uruchomienie na żywym Bright Data
-  // powiedziałoby tylko "nic nie znalazłem" i dalej trzeba by zgadywać, czy zły jest adres strony,
-  // czy słownik etykiet. Limit rozmiaru jest twardy, a gdy etykiety już się rozpoznają, ten
-  // dopisek znika sam.
-  const diagnostics: Record<string, string> =
-    Object.keys(details).length < 3
-      ? { _tekst_strony: text.slice(0, 2000), _html: html.slice(0, 4000) }
-      : {};
+  // Samodiagnoza: jeśli ze strony nie dało się wyciągnąć praktycznie nic, dokładamy do migawki to,
+  // co pozwala ustalić DLACZEGO. Pierwszy przebieg pokazał, że sam adres z numerem w parametrze
+  // zwraca pusty formularz — więc diagnoza musi obejmować sam formularz (jak wysyła dane) i listę
+  // skryptów (gdzie szukać wywołania AJAX), a nie tylko sekcję <head>, która nic nie mówiła.
+  // Gdy etykiety zaczną się rozpoznawać, cały ten dopisek znika sam.
+  const diagnostics = Object.keys(details).length < 3 ? describePage(html, text) : {};
 
   return {
     status,

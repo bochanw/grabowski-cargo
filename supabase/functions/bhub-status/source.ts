@@ -26,18 +26,26 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
 /**
- * Adres strony z wynikiem. DO POTWIERDZENIA na żywej stronie — z tego środowiska nie dało się jej
- * otworzyć (Cloudflare), więc nie wiemy, czy formularz wysyła GET z numerem w adresie, czy POST.
- * Zamiast zgadywać w kodzie, kształt adresu jest zmienną środowiskową `BHUB_CONTAINER_URL`:
- * `{container}` w szablonie zostaje podmienione na numer kontenera. Pierwszy przebieg przez
- * Bright Data pokaże, czy ten domyślny adres jest właściwy — parse.ts dokłada wtedy do
- * `loads.bhub_details` pola `_tekst_strony` i `_html` z tym, co faktycznie przyszło.
+ * Adres strony z wynikiem oraz sposób wysłania zapytania. Formularz Baltic Hub okazał się
+ * ZWYKŁĄ STRONĄ z polem i guzikiem „Sprawdź" (Vehicle Booking System, aplikacja jQuery), a nie
+ * adresem z numerem w parametrze — pierwszy przebieg przez Bright Datę zwrócił pusty formularz.
+ * Dlatego sposób wysyłki jest w całości konfigurowalny, bez zmiany kodu:
+ *
+ *   BHUB_CONTAINER_URL          adres; `{container}` zostaje podmienione na numer kontenera
+ *   BHUB_CONTAINER_METHOD       GET (domyślnie) albo POST
+ *   BHUB_CONTAINER_BODY         treść POST-a, też z `{container}`; ustawienie jej wymusza POST
+ *   BHUB_RENDER                 "true" = Bright Data uruchamia stronę w przeglądarce (drożej,
+ *                               ale konieczne, gdy wynik dorysowuje JavaScript)
+ *   BHUB_COUNTRY                kraj adresu wyjściowego, np. "pl"
  */
-const DEFAULT_URL_TEMPLATE = "https://ebrama.baltichub.com/vbs-check-container?container={container}";
+const DEFAULT_URL_TEMPLATE = "https://ebrama.baltichub.com/vbs-check-container";
+
+function fill(template: string, containerNumber: string, encode: boolean): string {
+  return template.replace("{container}", encode ? encodeURIComponent(containerNumber) : containerNumber);
+}
 
 export function containerUrl(containerNumber: string): string {
-  const template = Deno.env.get("BHUB_CONTAINER_URL") ?? DEFAULT_URL_TEMPLATE;
-  return template.replace("{container}", encodeURIComponent(containerNumber));
+  return fill(Deno.env.get("BHUB_CONTAINER_URL") ?? DEFAULT_URL_TEMPLATE, containerNumber, true);
 }
 
 /** Zwykły fetch — patrz nagłówek pliku: dziś odbija się o Cloudflare. */
@@ -91,10 +99,22 @@ class BrightDataSource implements StatusSource {
       );
     }
 
+    // Pola wg dokumentacji Bright Daty (zone/url/format wymagane; method/body/render/country
+    // opcjonalne). Wysyłamy tylko te, które faktycznie ustawiono — pusty `body` przy GET potrafi
+    // zmienić zachowanie po stronie usługi.
+    const payload: Record<string, string> = { zone, url: containerUrl(containerNumber), format: "raw" };
+    const bodyTemplate = Deno.env.get("BHUB_CONTAINER_BODY");
+    const method = (Deno.env.get("BHUB_CONTAINER_METHOD") ?? (bodyTemplate ? "POST" : "GET")).toUpperCase();
+    if (method !== "GET") payload.method = method;
+    if (bodyTemplate) payload.body = fill(bodyTemplate, containerNumber, true);
+    if (Deno.env.get("BHUB_RENDER") === "true") payload.render = "true";
+    const country = Deno.env.get("BHUB_COUNTRY");
+    if (country) payload.country = country;
+
     const res = await fetch("https://api.brightdata.com/request", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ zone, url: containerUrl(containerNumber), format: "raw" }),
+      body: JSON.stringify(payload),
     });
     const text = await res.text();
 
