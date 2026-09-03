@@ -74,12 +74,9 @@ class CdpSession {
       };
       ws.onerror = () => {
         clearTimeout(timer);
-        reject(
-          new Error(
-            "Zdalna przeglądarka odrzuciła połączenie — sprawdź BRIGHTDATA_BROWSER_USER " +
-              "i BRIGHTDATA_BROWSER_PASSWORD (to dane strefy typu Scraping Browser, inne niż token API)."
-          )
-        );
+        // Bez wskazywania winnego: `onerror` nie wie, czy to hasło, port, czy sam serwer.
+        // Powód dopisuje diagnozujPolaczenie() po tym, jak zapyta serwer wprost.
+        reject(new Error("Nie udało się połączyć ze zdalną przeglądarką."));
       };
     });
   }
@@ -146,7 +143,7 @@ class CdpSession {
   }
 }
 
-function endpoint(): string {
+function daneLogowania(): { user: string; pass: string } {
   const user = Deno.env.get("BRIGHTDATA_BROWSER_USER");
   const pass = Deno.env.get("BRIGHTDATA_BROWSER_PASSWORD");
   if (!user || !pass) {
@@ -155,7 +152,90 @@ function endpoint(): string {
         "i BRIGHTDATA_BROWSER_PASSWORD (Project Settings → Edge Functions → Secrets)."
     );
   }
+  return { user, pass };
+}
+
+/**
+ * Adres z danymi logowania. Sprawdzone doświadczalnie, nie założone: Deno wysyła z takiego adresu
+ * nagłówek `Authorization: Basic`, a `%XX` odkodowuje przed jego zbudowaniem — czyli
+ * `encodeURIComponent` jest tu potrzebne (bez niego hasło ze znakiem `/` w ogóle nie zbuduje URL-a)
+ * i niczego nie psuje.
+ */
+function endpoint(): string {
+  const { user, pass } = daneLogowania();
   return `wss://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${CDP_HOST}`;
+}
+
+/**
+ * DLACZEGO połączenie nie doszło do skutku.
+ *
+ * Wbudowany `WebSocket` jest tu ślepy: `onerror` nie niesie ani kodu odpowiedzi, ani treści, więc
+ * "nie udało się" znaczy jednocześnie "złe hasło", "port nie wychodzi" i "serwer nie odpowiada".
+ * Zgadywanie między nimi kosztowało już rundę, więc przy niepowodzeniu otwieramy zwykłe połączenie
+ * TLS, wysyłamy to samo uzgodnienie ręcznie i CZYTAMY odpowiedź serwera. Robimy to wyłącznie po
+ * błędzie — normalna ścieżka zostaje prosta.
+ */
+async function diagnozujPolaczenie(): Promise<string> {
+  const { user, pass } = daneLogowania();
+  const [hostname, port] = [CDP_HOST.split(":")[0], Number(CDP_HOST.split(":")[1] ?? 443)];
+
+  // Limit czasu na SAMO otwarcie połączenia. Bez niego `connectTls` do zablokowanego portu wisi
+  // bez końca (sprawdzone — trzeba było ubić proces), a zawieszona diagnoza jest gorsza niż jej
+  // brak: funkcja brzegowa ginie z upływem czasu życia i przy zleceniach nie zostaje ŻADEN ślad.
+  let conn: Deno.TlsConn;
+  try {
+    const otwarte = await Promise.race([
+      Deno.connectTls({ hostname, port }),
+      new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
+    ]);
+    if (!otwarte) {
+      return (
+        `połączenie z ${hostname}:${port} nie doszło do skutku w 10 s (bez odmowy, po prostu ` +
+        `cisza) — tak zachowuje się zablokowany port, a nie złe dane logowania.`
+      );
+    }
+    conn = otwarte;
+  } catch (e) {
+    return (
+      `nie udało się w ogóle otworzyć połączenia z ${hostname}:${port} ` +
+      `(${e instanceof Error ? e.message : String(e)}) — to zwykle znaczy, że ruch na ten port ` +
+      `nie wychodzi z Supabase, a nie że dane logowania są złe.`
+    );
+  }
+
+  try {
+    const klucz = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+    const zadanie =
+      `GET / HTTP/1.1\r\n` +
+      `Host: ${CDP_HOST}\r\n` +
+      `Upgrade: websocket\r\n` +
+      `Connection: Upgrade\r\n` +
+      `Sec-WebSocket-Key: ${klucz}\r\n` +
+      `Sec-WebSocket-Version: 13\r\n` +
+      `Authorization: Basic ${btoa(`${user}:${pass}`)}\r\n` +
+      `\r\n`;
+    await conn.write(new TextEncoder().encode(zadanie));
+
+    const bufor = new Uint8Array(2048);
+    const odczyt = await Promise.race([
+      conn.read(bufor),
+      new Promise<null>((r) => setTimeout(() => r(null), 15_000)),
+    ]);
+    if (!odczyt) return "serwer przyjął połączenie, ale nie odpowiedział na uzgodnienie.";
+
+    const odpowiedz = new TextDecoder().decode(bufor.subarray(0, odczyt));
+    const [naglowek, tresc] = odpowiedz.split("\r\n\r\n");
+    const pierwsza = naglowek.split("\r\n")[0] ?? "";
+    if (/\b101\b/.test(pierwsza)) {
+      return `serwer PRZYJĄŁ uzgodnienie (${pierwsza}) — dane logowania są dobre, problem leży dalej.`;
+    }
+    const ogon = (tresc ?? "").trim().slice(0, 200);
+    return `serwer odpowiedział „${pierwsza}"${ogon ? ` — ${ogon}` : ""}.`;
+  } catch (e) {
+    return `uzgodnienie przerwane: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    try { conn.close(); } catch { /* nie szkodzi */ }
+  }
 }
 
 /**
@@ -168,7 +248,17 @@ export async function fetchViaBrowser(
   postUrl: string,
   containers: string[],
 ): Promise<string> {
-  const cdp = await CdpSession.connect(endpoint(), 30_000);
+  let cdp: CdpSession;
+  try {
+    cdp = await CdpSession.connect(endpoint(), 30_000);
+  } catch (e) {
+    // Zamiast domysłu dopisujemy do komunikatu to, co serwer FAKTYCZNIE odpowiedział.
+    const powod = await diagnozujPolaczenie().catch(
+      (d) => `nie udało się ustalić powodu (${d instanceof Error ? d.message : String(d)})`,
+    );
+    throw new Error(`${e instanceof Error ? e.message : String(e)} Sprawdzenie wprost: ${powod}`);
+  }
+
   try {
     const { targetId } = (await cdp.send("Target.createTarget", { url: "about:blank" })) as {
       targetId: string;
