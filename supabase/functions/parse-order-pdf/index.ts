@@ -105,7 +105,8 @@ const EXTRACT_TOOL = {
 
 const SYSTEM_PROMPT = `Jesteś ekstraktorem danych z dokumentów przewozowych (transport kontenerowy, import/eksport morski).
 Dostajesz plik PDF — zlecenie spedycyjne ALBO list przewozowy dla kierowcy do tego samego zlecenia
-(dane kierowcy, pojazdu, terminala podjęcia, towaru). Dokument może być w języku polskim,
+(dane kierowcy, pojazdu, terminala podjęcia, towaru) — ALBO samą treść wiadomości e-mail dotyczącej
+zlecenia. Dokument może być w języku polskim,
 niemieckim albo angielskim, w DOWOLNYM układzie (różni spedytorzy formatują to inaczej). Twoje
 jedyne zadanie to wywołać narzędzie extract_order z polami, które FAKTYCZNIE znajdziesz w tym
 dokumencie — pola z drugiego dokumentu zostaw puste, appka sklei oba po swojej stronie.
@@ -136,7 +137,13 @@ Zasady, których nie wolno złamać:
    czym CZĘŚĆ RUBRYK BYWA PUSTA. Nie przesuwaj wtedy wartości: pustą rubrykę zostaw pustą, nawet
    jeśli w tekście zaraz po jej nagłówku stoi wartość należąca do kolejnej rubryki.
 10. Przy EKSPORCIE kontener jedzie od klienta do portu: u klienta następuje ZAŁADUNEK, a kontener
-   zdawany jest PEŁNY. Przy IMPORCIE odwrotnie: u klienta rozładunek, pusty kontener wraca.`;
+   zdawany jest PEŁNY. Przy IMPORCIE odwrotnie: u klienta rozładunek, pusty kontener wraca.
+11. Gdy dostajesz TREŚĆ MAILA zamiast dokumentu, obowiązują te same zasady, a szczególnie zasada 1:
+   mail często niesie tylko JEDNĄ informację ("kontener przesunięty na piątek", "nowy numer
+   bookingu"). Wypełnij wtedy WYŁĄCZNIE te pola, które mail faktycznie podaje, a całą resztę
+   zostaw pustą — appka scala takie uzupełnienie z istniejącym zleceniem i nadpisanie czegokolwiek
+   zmyśloną wartością byłoby realną szkodą. Podpis, stopka i cytowana korespondencja poniżej to NIE
+   są dane tego zlecenia.`;
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
@@ -152,7 +159,7 @@ Deno.serve(async (req: Request) => {
     return json({ ok: false, reason: 'bad_request', error: 'Nieprawidłowe zapytanie.' }, 400);
   }
   const pdfBase64 = (body.pdfBase64 || '').toString().trim();
-  // Wariant tekstowy dodany dla odczytu maili (`gmail-poll`): klient dosyła zmiany do zlecenia w
+  // Wariant tekstowy dodany dla odczytu maili (`mail-poll`): klient dosyła zmiany do zlecenia w
   // TREŚCI maila, bez żadnego załącznika ("kontener przesunięty na piątek"). Ten sam schemat pól i
   // ten sam prompt co dla PDF-a — inaczej ta sama informacja byłaby czytana dwiema różnymi
   // regułami, zależnie od tego, czy przyszła jako plik czy jako tekst.
