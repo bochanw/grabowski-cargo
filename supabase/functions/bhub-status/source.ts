@@ -16,6 +16,8 @@
 // wzorzec co przy skrzynce (MAIL_SOURCE: graph vs imap).
 // ===============================================================
 
+import { fetchViaBrowser } from "./browser.ts";
+
 export interface StatusSource {
   readonly name: string;
   /**
@@ -47,6 +49,11 @@ const UA =
  *   BHUB_CONTAINER_METHOD  domyślnie POST, gdy jest treść
  *   BHUB_RENDER            "true" = Bright Data uruchamia stronę w przeglądarce
  *   BHUB_COUNTRY           kraj adresu wyjściowego, np. "pl"
+ *
+ * TRYB `browser` (BHUB_SOURCE=browser) nie używa tych zmiennych — patrz browser.ts. Powstał,
+ * bo `/multi` wymaga tokenu CSRF z sesji, a tego przez Web Unlocker nie da się dostarczyć.
+ *   BHUB_PAGE_URL          strona, z której bierzemy sesję i token
+ *   BHUB_POST_PATH         adres zapytania o wyniki, względem tej strony
  */
 const DEFAULT_URL_TEMPLATE = "https://baltichub.com/multi";
 const DEFAULT_BODY_TEMPLATE = "lang=pl&{containers}";
@@ -163,6 +170,28 @@ class BrightDataSource implements StatusSource {
   }
 }
 
+/**
+ * Zdalna przeglądarka — jedyny sposób, w jaki udało się przejść przez token CSRF Baltic Hubu:
+ * wchodzi na stronę (dostaje sesję i token jak zwykły użytkownik) i z jej wnętrza pyta o wyniki.
+ * Szczegóły i uzasadnienie w browser.ts.
+ */
+class BrowserSource implements StatusSource {
+  readonly name = "browser";
+
+  fetchContainersPage(containers: string[]): Promise<string> {
+    const page = Deno.env.get("BHUB_PAGE_URL") ?? "https://baltichub.com/dla-klienta/sprawdz-kontener";
+    const post = Deno.env.get("BHUB_POST_PATH") ?? "/multi";
+    return fetchViaBrowser(page, post, containers);
+  }
+}
+
 export function createStatusSource(): StatusSource {
-  return (Deno.env.get("BHUB_SOURCE") ?? "direct") === "brightdata" ? new BrightDataSource() : new DirectSource();
+  switch (Deno.env.get("BHUB_SOURCE") ?? "direct") {
+    case "browser":
+      return new BrowserSource();
+    case "brightdata":
+      return new BrightDataSource();
+    default:
+      return new DirectSource();
+  }
 }
