@@ -15,19 +15,19 @@ export interface ColumnDef {
   // "bhub_status": jeden z pięciu kodów Baltic Hub — lista rozwijana, bo kolumna ma w bazie CHECK
   // (wpisana ręcznie literówka zostałaby odrzucona przez bazę zamiast się zapisać).
   // "plan_slot": miejsce na zestawie w Planie wspaniałym — też lista, też przez CHECK w bazie.
-  // "direction": import / eksport / krajówka — w bazie kod (I/E/K), w tabeli nazwa; też CHECK.
   // "stops": kolejne miejsca załadunku/rozładunku (jsonb) — w komórce skrót, edycja w osobnym
   // oknie, NIE w edytorze inline: wpisanie tekstu w komórkę skasowałoby całą listę.
-  // "boolean": kolumna logiczna (dziś: ważenie wymagane) — lista Tak/Nie z pustą opcją, bo `null`
-  // znaczy "nie wiadomo" i jest czym innym niż "nie".
-  kind?: "number" | "date" | "contractor" | "bhub_status" | "plan_slot" | "direction" | "stops" | "boolean";
+  // "address": adres RAZEM z kodem pocztowym (patrz src/lib/loads/address.ts) — `postal_code`
+  // wylicza się z wpisanego tekstu, nie jest osobną kolumną.
+  // "weighing": ważenie w jednej kolumnie — miejsce albo samo "Tak"/"Nie" (src/lib/loads/weighing.ts).
+  kind?: "number" | "date" | "contractor" | "bhub_status" | "plan_slot" | "stops" | "address" | "weighing";
 }
 
 export const COLUMNS: ColumnDef[] = [
   { key: "load_date", label: "Data", block: "ladunek", kind: "date" },
-  // Kierunek jest nagłówkiem bloku w dniu, ale musi dać się ZMIENIĆ przy wierszu — inaczej zlecenie
-  // odczytane jako eksport nie dałoby się przestawić na krajówkę bez ponownego importu.
-  { key: "direction", label: "Kierunek", block: "ladunek", kind: "direction" },
+  // Kierunku NIE MA wśród kolumn świadomie (właściciel: „czy to jest import czy eksport widzimy od
+  // razu") — jest nagłówkiem bloku w dniu, więc kolumna powtarzałaby to przy każdym wierszu.
+  // Zmienia się go w oknie zlecenia (guzik „Popraw" przy wierszu).
   { key: "pickup_type", label: "Podjęcie", block: "ladunek" },
   { key: "city", label: "Miejscowość", block: "ladunek" },
   { key: "order_number", label: "Nr zlecenia", block: "ladunek" },
@@ -38,10 +38,9 @@ export const COLUMNS: ColumnDef[] = [
   { key: "bhub_status", label: "Status terminala", block: "ladunek", kind: "bhub_status" },
   { key: "shipping_line", label: "Gestia", block: "ladunek" },
   { key: "company_name", label: "Dane firmy", block: "ladunek" },
-  { key: "address", label: "Adres", block: "ladunek" },
-  // Kod pocztowy dostawy/załadunku — od niego zależy stawka dla kierowcy (cennik `driver_rates`),
-  // więc musi być widoczny i poprawialny wprost w tabeli.
-  { key: "postal_code", label: "Kod pocztowy", block: "ladunek" },
+  // Adres RAZEM z kodem pocztowym: kod nie ma własnej kolumny (właściciel: „kod pocztowy powinien
+  // być w adresie"), tylko wylicza się z wpisanego tekstu — patrz src/lib/loads/address.ts.
+  { key: "address", label: "Adres", block: "ladunek", kind: "address" },
   // Zlecenie bywa wielopunktowe (krajówki szczególnie) — w komórce stoi skrót kolejnych miejsc,
   // kliknięcie otwiera ich edycję.
   { key: "stops", label: "Kolejne miejsca", block: "ladunek", kind: "stops" },
@@ -51,11 +50,11 @@ export const COLUMNS: ColumnDef[] = [
   { key: "container_size", label: "Wielkość", block: "ladunek" },
   { key: "secondary_date", label: "Data (2)", block: "ladunek", kind: "date" },
   { key: "time_of_day", label: "Godz.", block: "ladunek" },
-  // Ważenie — dwie kolumny, bo to dwie różne informacje (migracja 0029). "Czy" jest listą tak/nie
-  // (w bazie boolean, `null` = dokument o tym nie mówi), "gdzie" zostaje kolumną R arkusza
-  // (`weighing_export` — nazwa historyczna, dotyczy obu kierunków).
-  { key: "weighing_required", label: "Ważenie", block: "ladunek", kind: "boolean" },
-  { key: "weighing_export", label: "Ważenie gdzie", block: "ladunek" },
+  // Ważenie w JEDNEJ kolumnie (właściciel: „ważenie już mamy kolumnę ważenie gdzie — to jest to
+  // samo"): w komórce stoi miejsce, a gdy miejsca nie znamy — samo „Tak"/„Nie". Klucz to
+  // `weighing_export` (kolumna R arkusza); `weighing_required` zapisuje się razem z nią, patrz
+  // src/lib/loads/weighing.ts.
+  { key: "weighing_export", label: "Ważenie", block: "ladunek", kind: "weighing" },
   { key: "goods_name", label: "Nazwa towaru", block: "ladunek" },
   { key: "status", label: "Status", block: "ladunek" },
   { key: "pin_booking", label: "PIN/booking", block: "ladunek" },

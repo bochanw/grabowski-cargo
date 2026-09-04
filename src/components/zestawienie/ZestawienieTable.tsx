@@ -9,7 +9,9 @@ import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/flee
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { splitBaf } from "@/lib/invoice/baf";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
-import { DIRECTION_LABELS, DIRECTION_OPTIONS, DIRECTION_ORDER } from "@/lib/loads/direction";
+import { DIRECTION_LABELS, DIRECTION_ORDER } from "@/lib/loads/direction";
+import { addressCellPatch, addressWithPostal } from "@/lib/loads/address";
+import { weighingCellPatch, weighingCellText } from "@/lib/loads/weighing";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { ALARM_PREFIX, bhubCellDecoration, isAlarm } from "@/lib/bhub/cellDecoration";
 import { bezKonfliktu, jestNadpisywana } from "@/lib/bhub/checks";
@@ -80,6 +82,18 @@ function sourcesFromDocuments(documents: LoadDocument[], loadId: string): Source
     }));
 }
 
+/**
+ * Treść komórki. Dwie kolumny liczą się z CAŁEGO rekordu, nie z jednej wartości:
+ *  - "Adres" niesie też kod pocztowy (kod nie ma własnej kolumny),
+ *  - "Ważenie" niesie miejsce ALBO odpowiedź "Tak"/"Nie", gdy miejsca nie znamy.
+ * To samo widać w edytorze inline, więc Enter zapisuje dokładnie to, co dyspozytor przeczytał.
+ */
+function cellText(load: Load, column: ColumnDef, contractorNames: Map<string, string>): string {
+  if (column.kind === "address") return addressWithPostal(load.address, load.postal_code);
+  if (column.kind === "weighing") return weighingCellText(load);
+  return formatCell(load[column.key], column.kind, contractorNames);
+}
+
 function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Map<string, string>): string {
   if (value === null || value === undefined || value === "") return "";
   if (kind === "number" && typeof value === "number") {
@@ -88,13 +102,8 @@ function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Ma
   if (kind === "contractor") return contractorNames.get(String(value)) ?? "(nieznany kontrahent)";
   // W bazie siedzi kod ('tyl'/'przod'), w tabeli ma stać nazwa miejsca — ta sama, co w Planie.
   if (kind === "plan_slot") return PLAN_SLOT_LABELS[value as PlanSlot] ?? String(value);
-  // Tak samo kierunek: w bazie I/E/K, w tabeli "Import"/"Eksport"/"Krajówka".
-  if (kind === "direction") return DIRECTION_LABELS[value as Direction] ?? String(value);
   // Kolejne miejsca: w komórce skrót ("Łódź; Warszawa"), pełna lista w oknie po kliknięciu.
   if (kind === "stops") return summarizeStops(normalizeStops(value));
-  // Kolumna logiczna: pusta komórka znaczy "nie wiadomo" (wartość null nigdy tu nie dojdzie —
-  // odsiewa ją warunek wyżej), więc "Nie" widać tylko tam, gdzie ktoś je świadomie ustawił.
-  if (kind === "boolean") return value === true ? "Tak" : value === false ? "Nie" : String(value);
   return String(value);
 }
 
@@ -174,6 +183,8 @@ interface EditingCell {
 type Dialog =
   | { kind: "import" }
   | { kind: "attach"; load: Load }
+  // Poprawienie pól zapisanego zlecenia (kierunek i inne, których nie ma wśród kolumn).
+  | { kind: "edit"; load: Load }
   | { kind: "contractors" }
   | { kind: "templates" }
   | { kind: "view" }
@@ -649,9 +660,12 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         <LoadDocumentsDialog load={dialog.load} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === "stops" && <LoadStopsDialog load={dialog.load} onClose={() => setDialog(null)} />}
-      {dialog?.kind === "attach" && (
+      {/* „Popraw" to ta sama maszyneria co dopinanie dokumentu, tylko bez ekranu wyboru pliku:
+          droga do pól, których nie ma wśród kolumn — dziś przede wszystkim do KIERUNKU (jest
+          nagłówkiem bloku, więc kolumny nie ma). */}
+      {(dialog?.kind === "attach" || dialog?.kind === "edit") && (
         <ImportOrderDialog
-          mode="attach"
+          mode={dialog.kind === "attach" ? "attach" : "edit"}
           existingLoad={dialog.load}
           // Dokumenty JUŻ zapisane przy zleceniu są źródłem tak samo jak dopinany właśnie plik —
           // poprawiając pola po tygodniu, dyspozytor musi widzieć oryginał, a nie pamiętać go.
@@ -749,6 +763,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 selectedIds={selectedIds}
                 onToggleSelected={toggleSelected}
                 onAttach={(load) => setDialog({ kind: "attach", load })}
+                onEdit={(load) => setDialog({ kind: "edit", load })}
                 onInvoice={(load) => setDialog({ kind: "invoice", loadIds: [load.id] })}
                 onDocuments={(load) => setDialog({ kind: "documents", load })}
                 onStops={(load) => setDialog({ kind: "stops", load })}
@@ -785,6 +800,7 @@ interface RowHandlers {
   onCancelEdit: () => void;
   onCommit: (load: Load, column: ColumnDef, raw: string) => void;
   onAttach: (load: Load) => void;
+  onEdit: (load: Load) => void;
   onInvoice: (load: Load) => void;
   onDocuments: (load: Load) => void;
   onStops: (load: Load) => void;
@@ -851,6 +867,7 @@ function DirectionRows({
   onCancelEdit,
   onCommit,
   onAttach,
+  onEdit,
   onInvoice,
   onDocuments,
   onStops,
@@ -898,7 +915,7 @@ function DirectionRows({
             // Kolor statusu z Baltic Hub, pogrubienie przy zgodnym ISO/gestii, alarm przy
             // niezgodnym — cała reguła siedzi w src/lib/bhub/cellDecoration.ts.
             const decoration = bhubCellDecoration(load, String(column.key));
-            const text = decoration?.text ?? formatCell(load[column.key], column.kind, contractorNames);
+            const text = decoration?.text ?? cellText(load, column, contractorNames);
             const alarm = isAlarm(decoration);
             // Znaczek przy numerze kontenera, gdy trwa sprawdzanie w terminalu.
             const spinning = column.key === "container_number" && checkingIds.has(load.id);
@@ -972,6 +989,14 @@ function DirectionRows({
             </button>
             <button
               type="button"
+              onClick={() => onEdit(load)}
+              title="Popraw pola zlecenia — także te, których nie ma w tabeli (kierunek: import / eksport / krajówka)"
+              className="mr-1 rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:border-zinc-500 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Popraw
+            </button>
+            <button
+              type="button"
               onClick={() => onAttach(load)}
               title="Dopnij brakujący dokument (np. list przewozowy) do tego zlecenia"
               className="mr-1 rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:border-zinc-500 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100"
@@ -1029,7 +1054,11 @@ function CellEditor({
   onCancel: () => void;
   onCommit: (raw: string) => void;
 }) {
-  const initial = load[column.key];
+  // Edytor startuje od tego, CO WIDAĆ w komórce — przy adresie (z kodem pocztowym) i przy ważeniu
+  // (miejsce albo "Tak"/"Nie") jest to coś innego niż surowa wartość jednego pola.
+  const initial = column.kind === "address" || column.kind === "weighing"
+    ? cellText(load, column, new Map())
+    : load[column.key];
   const [draft, setDraft] = useState(initial === null || initial === undefined ? "" : String(initial));
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement | HTMLSelectElement>) {
@@ -1056,7 +1085,7 @@ function CellEditor({
         onBlur={onCancel}
         className={editorClass}
       >
-        {column.key !== "direction" && <option value="">—</option>}
+        <option value="">—</option>
         {selectOptions.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
@@ -1086,19 +1115,9 @@ function selectOptionsFor(
   fleet: Fleet,
   contractors: Contractor[]
 ): { value: string; label: string }[] | null {
-  // Kolumna logiczna nie ma czego wpisywać z klawiatury — Tak/Nie z listy, a pusta opcja (dokładana
-  // w CellEditor) wraca do "nie wiadomo".
-  if (column.kind === "boolean") {
-    return [
-      { value: "true", label: "Tak" },
-      { value: "false", label: "Nie" },
-    ];
-  }
   switch (column.key) {
     case "contractor_id":
       return contractors.map((c) => ({ value: c.id, label: c.name }));
-    case "direction":
-      return DIRECTION_OPTIONS;
     case "pickup_type":
       return withCurrentOption([...PICKUP_LOCATIONS], current);
     // Status z terminala normalnie ustawia bot, ale kolumna jest edytowalna jak każda inna —
@@ -1131,7 +1150,14 @@ function buildPatch(
   rates: DriverRateRow[] = []
 ): Partial<Load> {
   const value = coerceCellValue(column, raw);
-  const patch: Partial<Load> = { [column.key]: value } as Partial<Load>;
+  // Dwie kolumny scalone: jedna komórka zapisuje dwa pola bazy. Adres niesie kod pocztowy (od
+  // niego liczy się stawka), ważenie — miejsce ORAZ odpowiedź "czy". Patrz src/lib/loads/.
+  const patch: Partial<Load> =
+    column.kind === "address"
+      ? addressCellPatch(raw)
+      : column.kind === "weighing"
+        ? weighingCellPatch(raw)
+        : ({ [column.key]: value } as Partial<Load>);
   if (column.key === "driver_name" && typeof value === "string") {
     const driver = fleet.drivers.find((d) => d.name === value);
     if (driver?.docNumber) patch.driver_id_number = driver.docNumber;
@@ -1210,11 +1236,6 @@ function buildPatch(
 
 function coerceCellValue(column: ColumnDef, raw: string): string | number | boolean | null {
   const trimmed = raw.trim();
-  // Pusty wybór w kolumnie logicznej to null ("nie wiadomo"), nie false — inaczej wyczyszczenie
-  // komórki twierdziłoby, że ważenie NIE jest wymagane.
-  if (column.kind === "boolean") {
-    return trimmed === "" ? null : trimmed === "true";
-  }
   if (column.kind === "number") {
     if (trimmed === "") return null;
     const value = Number(trimmed.replace(",", "."));
