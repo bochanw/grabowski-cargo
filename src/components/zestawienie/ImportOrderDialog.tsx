@@ -14,6 +14,7 @@ import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Flee
 import { useContractors } from "@/hooks/useContractors";
 import { useDriverRates } from "@/hooks/useDriverRates";
 import { computeDriverRate } from "@/lib/driverRates/rates";
+import { postalCodeNearCity } from "@/lib/driverRates/postalFromText";
 import { driverRatePatchFromForm, type DriverRatePatch } from "@/lib/driverRates/assign";
 import { findContractorByName, type Contractor } from "@/types/contractor";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
@@ -66,6 +67,21 @@ const EMPTY_PENDING: Omit<PendingOrder, "parsed"> = {
 };
 
 const DEFAULT_CARRIER = "Grabowski Mariusz Sp. z o.o.";
+
+/**
+ * Kod pocztowy z tekstów dokumentów, gdy odczyt go nie oddał. Ta sama reguła co przy wgrywaniu
+ * pliku (kod PRZY miejscowości, nie „gdziekolwiek w dokumencie") — tylko materiał przychodzi
+ * skądinąd: przy zleceniu ze Skrzynki teksty załączników są pobierane z bucketa, żeby appka
+ * mogła się z nich uczyć, więc kod pocztowy da się z nich wziąć bez ponownego czytania pliku.
+ */
+function uzupelnijKodZDokumentow(order: ParsedOrder, docs: LearningDocument[]): ParsedOrder {
+  if (order.postal_code || !order.city) return order;
+  for (const document of docs) {
+    const kod = postalCodeNearCity(document.text, order.city);
+    if (kod) return { ...order, postal_code: kod };
+  }
+  return order;
+}
 
 function formToRow(form: ParsedOrder, carrierName: string, contractorId: string, rate: DriverRatePatch) {
   // BAF: dokument podaje albo stawkę Z dodatkiem ("3 000, w tym BAF 13%"), albo bazę + procent —
@@ -194,7 +210,9 @@ export function ImportOrderDialog({
     // Pola ze Skrzynki wchodzą tą samą drogą co wgrany plik: `mail-poll` zapisuje przy KAŻDYM
     // załączniku surowy odczyt (bez wyliczanej daty), a od kiedy okno bierze pola per załącznik
     // — żeby rozdzielić kilka zleceń z jednego maila — musi te reguły dołożyć samo.
-    return pierwsze ? applyOrderDefaults(mergeParsedOrders(base, pierwsze)) : { order: base, warnings: [] };
+    if (!pierwsze) return { order: base, warnings: [] };
+    const przygotowane = applyOrderDefaults(mergeParsedOrders(base, pierwsze));
+    return { ...przygotowane, order: uzupelnijKodZDokumentow(przygotowane.order, initialLearningDocs) };
   });
   const [form, setForm] = useState<ParsedOrder>(wejscie.order);
   // Zlecenia czekające w kolejce (drugie i dalsze z tej samej paczki dokumentów/maila) oraz licznik
@@ -277,7 +295,9 @@ export function ImportOrderDialog({
     // Domyślna data, brutto z tary i gestia z uwag — jedno miejsce dla wszystkich dróg odczytu
     // (src/lib/loads/prepareOrder.ts; wcześniej reguły siedziały tutaj i gubiły się w innych drogach).
     const przygotowane = applyOrderDefaults(mergeParsedOrders(base, pending.parsed));
-    let merged = przygotowane.order;
+    // Kod pocztowy bywa w dokumencie, choć odczyt go nie oddał (starsze odczyty w ogóle o niego nie
+    // pytały) — bierzemy go z tekstu, jeśli stoi przy miejscowości tego zlecenia.
+    let merged = uzupelnijKodZDokumentow(przygotowane.order, learningDocs);
     const newWarnings = [...pending.warnings, ...przygotowane.warnings];
 
     // ROZPOZNANIE ZLECENIA PO NUMERZE (właściciel: "każde zlecenie jest rozpoznawane do nr
@@ -415,6 +435,17 @@ export function ImportOrderDialog({
                 : `${file.name}: nie rozpoznano znanego szablonu, a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
             );
           }
+        }
+      }
+      // Kod pocztowy: model i szablony oddają zwykle sam adres, a kod stoi w dokumencie tuż przy
+      // miejscowości. Szukamy go PRZY NAZWIE MIASTA, którą już odczytaliśmy — nie „gdziekolwiek
+      // w dokumencie", bo tam stoją też kody spedytora i agencji celnej. Od kodu zależy stawka
+      // wypłacana kierowcy, więc niejednoznaczny wynik zostaje pusty.
+      if (!parsed.postal_code && text) {
+        const kod = postalCodeNearCity(text, parsed.city);
+        if (kod) {
+          parsed = { ...parsed, postal_code: kod };
+          globalWarnings.push(`${file.name}: kod pocztowy ${kod} odczytany z dokumentu przy miejscowości „${parsed.city}" — sprawdź, czy to ten adres.`);
         }
       }
       if (parsed.rate_currency && parsed.rate_currency.toUpperCase() !== "PLN") {

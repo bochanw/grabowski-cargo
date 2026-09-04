@@ -1815,6 +1815,42 @@ przychodzą bez kodu, dyspozytor uzupełnia go w formularzu albo appka wyłuskuj
 `shared/` jest już przegenerowane, więc wystarczy `supabase functions deploy mail-poll
 --project-ref itlgexjhznjsbonzdxyg` (przez MCP trzeba by wklejać cały bundle).
 
+**Skąd biorą się KODY POCZTOWE — bo „przecież są zawsze w zleceniach"** (pytanie właściciela po
+pierwszej wersji stawek; słuszne):
+- **Zmierzona przyczyna, nie domysł: na 115 dokumentów odczytanych przez Claude PRZED tą sesją tylko
+  11 miało kod pocztowy w polu adresu (`email_attachments.parsed`), a w polu miejscowości — zero.**
+  Kod stoi w dokumentach, ale appka o niego NIE PYTAŁA: schemat funkcji nie miał takiego pola, więc
+  model oddawał samą ulicę. Szablon Q4Road kod widzi (jego regex wyłuskuje z niego miejscowość),
+  ale też nie zapisywał go osobno.
+- Stąd trzy drogi, w tej kolejności, wszystkie darmowe poza pierwszą:
+  1. `parse-order-pdf` v25 pyta o `postal_code` wprost (i o kod przy każdym kolejnym miejscu).
+  2. `applyOrderDefaults` wyłuskuje kod z pola adresu („RYDZYNSKA 24F 64-125", „ul. Magazynowa 3,
+     55-080 Kąty Wrocławskie" — obie formy są w danych klienta).
+  3. **`postalCodeNearCity` — kod z SUROWEGO TEKSTU dokumentu, szukany PRZY nazwie miejscowości,
+     którą już znamy z odczytu.** To nie jest „znajdź jakiś kod w PDF-ie": w dokumencie stoją też
+     kody spedytora i agencji celnej. Gdy przy tej samej miejscowości stoją RÓŻNE kody, appka nie
+     wybiera żadnego. Działa przy wgrywaniu pliku ORAZ przy zleceniu ze Skrzynki (teksty załączników
+     i tak są pobierane do nauki szablonów).
+- **Guzik „Uzupełnij kody z dokumentów (N)"** w zakładce Stawki kierowców robi to samo dla zleceń
+  JUŻ ZAPISANYCH: pobiera ich PDF-y ze Storage, wyciąga tekst przez pdf.js i uzupełnia kod razem
+  z przeliczoną stawką. Nie woła modelu, więc nic nie kosztuje.
+- **Przy okazji poprawione: `learningDocsFromStorage` miało wpisany na sztywno próg 300 znaków
+  tekstu** („skan bez warstwy tekstowej"). To reguła NAUKI (kotwice potrzebują sensownego kawałka
+  tekstu), a nie własność pliku — krótkie jednostronicowe zlecenie ma pełnoprawny adres z kodem.
+  Próg jest teraz parametrem; uzupełnianie kodów podaje własny. Złapane testem w przeglądarce:
+  pierwszy przebieg raportował „bez kodu przy miejscowości", choć kod w dokumencie stał.
+- Zweryfikowane: 18 sprawdzeń logiki (`scratch-kody.test.mts`, plik tymczasowy) na formatach
+  WZIĘTYCH Z PRODUKCJI (zapytanie do `email_attachments`), w tym kod w kolejnej linii pod etykietą,
+  dwa różne kody przy tej samej nazwie (= brak odpowiedzi) i nazwa miasta w środku innego słowa
+  („Ujazdowskich" ≠ „Ujazd"). Przeglądarka (Playwright, tymczasowa strona `/test-kody`, skasowana
+  po teście) — 11 sprawdzeń na CAŁEJ drodze: prawdziwy (wygenerowany) PDF z warstwą tekstową
+  podstawiony jako plik ze Storage → pdf.js → kod 44-200 zapisany przy zleceniu → stawka 500 zł
+  przeliczona w tym samym zapisie → guzik znika, bo nie ma już zleceń bez kodu.
+- **Pułapka środowiska sesji** (nie appki): w przeglądarce testowej KAŻDE prawdziwe wyjście w sieć
+  wisi bez błędu (mock obejmuje tylko `/rest/v1/`), więc pobranie ze Storage nie kończyło się ani
+  sukcesem, ani błędem. Stąd podstawienie `/storage/v1/object` w mocku — bez tego test wyglądałby
+  na zawieszenie appki.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

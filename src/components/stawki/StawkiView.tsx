@@ -14,6 +14,9 @@ import {
   BEZ_DATY,
 } from "@/lib/driverRates/monthly";
 import { DIRECTION_SHORT } from "@/lib/loads/direction";
+import { postalCodeNearCity } from "@/lib/driverRates/postalFromText";
+import { learningDocsFromStored } from "@/lib/orderTemplates/fromStored";
+import { useLoadDocuments } from "@/hooks/useLoadDocuments";
 import { CennikPanel } from "./CennikPanel";
 import type { Load } from "@/types/load";
 
@@ -30,9 +33,11 @@ export function StawkiView() {
   const { data: loads = [], isLoading, error } = useLoads();
   const { data: rates = [] } = useDriverRates();
   const updateLoad = useUpdateLoad();
+  const { data: documents = [] } = useLoadDocuments();
   const [rozwiniety, setRozwiniety] = useState<string | null>(null);
   const [komunikat, setKomunikat] = useState<string | null>(null);
   const [przeliczanie, setPrzeliczanie] = useState(false);
+  const [uzupelnianie, setUzupelnianie] = useState(false);
   const [pokazCennik, setPokazCennik] = useState(false);
 
   const miesiace = useMemo(() => availableMonths(loads), [loads]);
@@ -43,6 +48,12 @@ export function StawkiView() {
   const wybrany = miesiac ?? (miesiace.includes(biezacy) ? biezacy : (miesiace[0] ?? biezacy));
 
   const podsumowanie = useMemo(() => summarizeMonth(loads, wybrany), [loads, wybrany]);
+  // Zlecenia tego miesiąca bez kodu pocztowego, ale z miejscowością — tylko takie da się uzupełnić
+  // z dokumentu (kodu szukamy przy nazwie miasta).
+  const doUzupelnienia = useMemo(
+    () => loads.filter((load) => monthKeyOf(load) === wybrany && !load.postal_code && (load.city ?? "").trim() !== ""),
+    [loads, wybrany]
+  );
 
   /**
    * Przelicza stawki zleceń tego miesiąca z cennika. Zlecenia ze stawką wpisaną ręcznie są
@@ -71,6 +82,54 @@ export function StawkiView() {
       `Przeliczono ${formatMonth(wybrany)}: zmienionych ${zmienione}, bez stawki ${pominiete}` +
         (bledy > 0 ? `, błędów zapisu ${bledy}` : "") +
         ". Stawki wpisane ręcznie zostały nietknięte."
+    );
+  }
+
+  /**
+   * Uzupełnia BRAKUJĄCE kody pocztowe z dokumentów leżących już przy zleceniach.
+   *
+   * Po co osobny guzik: zlecenia zapisane PRZED tą zmianą były odczytywane, gdy appka o kod
+   * pocztowy w ogóle nie pytała (na 115 dokumentów tylko 11 miało go w polu adresu) — więc bez
+   * tego trzeba by je otwierać po kolei i przepisywać kody ręcznie. Kod szukany jest PRZY
+   * miejscowości zlecenia, nie „gdziekolwiek w dokumencie", i nic nie kosztuje: tekst wychodzi
+   * z pdf.js w przeglądarce, model nie jest wołany.
+   */
+  async function uzupelnijKody() {
+    setUzupelnianie(true);
+    setKomunikat(null);
+    let uzupelnione = 0;
+    let bezKodu = 0;
+    let bezDokumentow = 0;
+    for (const load of doUzupelnienia) {
+      const moje = documents.filter((document) => document.load_id === load.id);
+      if (moje.length === 0) {
+        bezDokumentow += 1;
+        continue;
+      }
+      // Próg długości tekstu z NAUKI tu nie obowiązuje: krótkie zlecenie (jedna strona, kilka
+      // rubryk) ma pełnoprawny adres z kodem, choć na kotwice szablonu byłoby za ubogie.
+      const { documents: teksty } = await learningDocsFromStored(moje, { minTextLength: 40 });
+      let kod: string | null = null;
+      for (const dokument of teksty) {
+        kod = postalCodeNearCity(dokument.text, load.city);
+        if (kod) break;
+      }
+      if (!kod) {
+        bezKodu += 1;
+        continue;
+      }
+      // Stawka liczy się od razu z nowego kodu — inaczej trzeba by kliknąć „Przelicz" osobno.
+      const zKodem = { ...load, postal_code: kod };
+      const auto = autoDriverRate(zKodem, rates);
+      const error = await updateLoad(load.id, { postal_code: kod, ...(auto.patch ?? {}) });
+      if (!error) uzupelnione += 1;
+    }
+    setUzupelnianie(false);
+    setKomunikat(
+      `Kody pocztowe z dokumentów: uzupełnionych ${uzupelnione}` +
+        (bezKodu > 0 ? `, bez kodu przy miejscowości ${bezKodu}` : "") +
+        (bezDokumentow > 0 ? `, bez załączonych dokumentów ${bezDokumentow}` : "") +
+        "."
     );
   }
 
@@ -118,6 +177,17 @@ export function StawkiView() {
         >
           {przeliczanie ? "Przeliczam…" : "Przelicz stawki z cennika"}
         </button>
+        {doUzupelnienia.length > 0 && (
+          <button
+            type="button"
+            onClick={uzupelnijKody}
+            disabled={uzupelnianie}
+            data-testid="guzik-kody"
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs disabled:opacity-50 dark:border-zinc-700"
+          >
+            {uzupelnianie ? "Czytam dokumenty…" : `Uzupełnij kody z dokumentów (${doUzupelnienia.length})`}
+          </button>
+        )}
         <button
           type="button"
           onClick={pobierzCsv}
