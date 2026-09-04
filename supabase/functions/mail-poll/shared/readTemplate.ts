@@ -104,8 +104,8 @@ export function guessDocKindFromText(text: string): DocKind {
 export const TYPED_PATTERNS: Partial<Record<LearnKind, RegExp>> = {
   date: /\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}|\d{4}-\d{2}-\d{2}/g,
   time: /\b\d{1,2}:\d{2}\b/g,
-  amount: /-?\d[\d\s .]*(?:[.,]\d+)?/g,
-  count: /-?\d[\d\s .]*(?:[.,]\d+)?/g,
+  amount: /-?\d[\d\s\u00A0.]*(?:[.,]\d+)?/g,
+  count: /-?\d[\d\s\u00A0.]*(?:[.,]\d+)?/g,
   // Trzeci typ zlecenia (krajówka) — w dokumentach pisany różnie, stąd oba warianty ortograficzne
   // i „transport krajowy". Kolejność w alternatywie bez znaczenia: dopasowania nie zachodzą na siebie.
   direction: /import|eksport|export|krajówka|krajowka|krajowy/gi,
@@ -133,7 +133,7 @@ export function parseOne(raw: string, kind: LearnKind, format: string): string |
   }
 
   if (kind === "amount" || kind === "count") {
-    const cleaned = value.replace(/[\s ]/g, "");
+    const cleaned = value.replace(/[\s\u00A0]/g, "");
     // "3.296,00" → przecinek dziesiętny; "3296.00" → kropka dziesiętna.
     const normalized = cleaned.includes(",") ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned;
     const num = Number(normalized);

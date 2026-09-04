@@ -1490,6 +1490,57 @@ gubi). `supabase/functions/mail-poll/shared/` jest już przegenerowane, więc wy
 `supabase functions deploy mail-poll --project-ref itlgexjhznjsbonzdxyg` — przez MCP trzeba by
 wklejać cały bundle, a maszynowo wygenerowanego pliku nie przepisuje się ręcznie.
 
+**KILKA ZAŁĄCZNIKÓW = CZASEM KILKA ZLECEŃ + brakujące pola (zgłoszenia właściciela: „czasami mail
+nie ma załączników, a czasami jest ich kilka (kilka zleceń)"; „nie widzę opcji wpisania daty
+złożenia (cut off) oraz zaznaczenia SENT bądź ADR"; „brakuje pola nr telefonu odbiorcy"):**
+- **Największa pułapka: dotąd WSZYSTKIE wgrane naraz dokumenty appka scalała w JEDNO zlecenie** (bo
+  u Q4Road jedno zlecenie = zlecenie spedycyjne + list przewozowy). Przy mailu z dwoma zleceniami
+  scalenie „tylko puste pola" zlepiłoby dwa ładunki w jeden rekord — z numerem i stawką pierwszego,
+  a drugie zniknęłoby bez śladu. `src/lib/loads/documentGroups.ts` rozdziela dokumenty po NUMERZE
+  ZLECENIA (tym samym kryterium, co rozpoznawanie zleceń już zapisanych: forma znormalizowana +
+  klucz z posortowanych członów, więc „KPB / 87" == „87 / KPB").
+- Dokument BEZ numeru (list przewozowy, nieodczytany skan) dołącza do JEDYNEJ grupy — to przypadek
+  Q4Road. Gdy grup jest kilka, appka **nie zgaduje**: robi osobną pozycję i mówi o tym wprost.
+  Zgadnięcie znaczyłoby dopięcie dokumentu do cudzego zlecenia, czego z Zestawienia już nie widać.
+- `ImportOrderDialog` ma teraz KOLEJKĘ zleceń: pasek „Zlecenie 2 z 3", zapis otwiera następne
+  (okno nie zamyka się po pierwszym), jest „Pomiń to zlecenie". Każde zlecenie ma własne dokumenty
+  — `onSaved(loadId, externalIds)` mówi Skrzynce, KTÓRE załączniki maila podpiąć do tego zlecenia
+  (dopięcie wszystkich do każdego byłoby bałaganem nie do odkręcenia).
+- Mail bez załączników działa jak dotąd (jedno zlecenie z treści); załączniki bez własnego odczytu
+  (starszy `mail-poll`, skan) też — `ordersFromAttachments` opisuje wszystkie trzy przypadki.
+  Płatny odczyt zapisuje teraz pola PER ZAŁĄCZNIK (`email_attachments.parsed`) — bez tego nie da
+  się rozdzielić maila na zlecenia.
+- **Cut off był w formularzu, ale przy „Nr plomby"** — właściciel go tam nie znalazł. Przeniesiony
+  do dat („Data złożenia — cut off", obok daty i godziny rozładunku).
+- **ADR / SENT**: dwa checkboxy (`src/lib/loads/adrSent.ts` → jedna kolumna tekstowa `adr_flag`).
+  Reguła: dopisek z dokumentu („ADR kl. 3") NIE ginie przy przełączaniu — checkboxy przestawiają
+  tylko słowa ADR/SENT, reszta zostaje.
+- **Telefon odbiorcy** (`contact_phone`, kolumna była w bazie od 0001, ale nie było jej w
+  formularzu) — pole obok adresu; w schemacie funkcji opisane wprost jako NIE telefon kierowcy.
+- `parse-order-pdf` **wdrożona (v23)**: schemat ma `adr_sent` i `contact_phone`.
+- **`mail-poll` WDROŻONA (v18) — potwierdzone na żywej skrzynce**: przebieg crona po wdrożeniu
+  zakończył się bez błędu, `seen_total` 1098 → 1105, `last_error` puste. Zna teraz krajówkę,
+  kolejne miejsca, ADR/SENT i telefon odbiorcy.
+- **PUŁAPKA WDROŻENIA, złapana od razu: `deploy_edge_function` przez MCP ma `verify_jwt` DOMYŚLNIE
+  `true`.** Pominięcie tego pola przy `mail-poll` (która MUSI mieć `false`, bo cron woła ją bez
+  JWT — tylko z nagłówkiem `x-ingest-secret`) odcięło odczyt skrzynki na kilka minut. Przy KAŻDYM
+  wdrożeniu tej funkcji podawać `verify_jwt: false` wprost.
+- Druga rzecz do zapamiętania: **`Deno.readTextFile(import.meta.url)` NIE działa w Edge Functions**
+  (runtime nie ma źródła na dysku — „path not found: /var/tmp/sb-compile-edge-runtime/source/…"),
+  więc pomysł „funkcja poda odcisk SHA-256 własnego pliku" jako weryfikacja bundla przeniesionego
+  przez MCP odpada. Zostaje weryfikacja po zachowaniu: strzał curl-em (czy odpowiada NASZYM
+  komunikatem) + stan `email_ingest_state` po najbliższym przebiegu crona.
+- Przy okazji: z plików wspólnych zniknęły NIEWIDOCZNE znaki — `\u00A0` w regexach `readTemplate.ts`
+  i typograficzny apostrof w `tare.ts` zapisane jako sekwencje ucieczki. Przy przenoszeniu treści
+  przez MCP takie znaki gubią się bezszelestnie (tak jak wcześniej bajty NUL w `imap.ts`).
+- **Zweryfikowane**: logika — 16 sprawdzeń (`scratch-grupy.test.mts`, plik tymczasowy: rozdzielanie
+  dokumentów, dokument bez numeru przy kilku zleceniach, mail bez załączników, nieodczytany skan,
+  ADR/SENT z dopiskiem). Przeglądarka (Playwright, tymczasowa strona `/test-kolejka`, skasowana po
+  teście) — 12 sprawdzeń: pasek „1 z 2", pola pierwszego zlecenia, cut off przy datach, ADR+SENT
+  bez gubienia „kl. 3", telefon odbiorcy, „Pomiń" wczytuje DRUGIE zlecenie (Radom), pola nie
+  przeciekają między zleceniami, etykiety załadunku przy eksporcie, źródło towarzyszy kolejnemu
+  zleceniu. Do tego `next build`, `deno check`, 26 testów Deno i strzały w obie wdrożone funkcje.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -1518,8 +1569,9 @@ wklejać cały bundle, a maszynowo wygenerowanego pliku nie przepisuje się ręc
    tekst bez koloru.
 8. Gdyby Baltic Hub dał jednak API: transport wraca po stronie serwera, ale `pending`/`report`
    zostają — wtedy dochodzi trzecie źródło obok rozszerzenia, a nie przepisywanie całości.
-9. **Wdrożyć `mail-poll`** (patrz sekcja o krajówce): dopiero wtedy odczyt ze skrzynki zna trzeci
-   kierunek i kolejne miejsca. Do tego czasu propozycje z maili przychodzą bez nich.
+9. Skrzynka: przy pierwszym mailu z DWOMA zleceniami sprawdzić na produkcji całą drogę (rozdzielenie
+   po numerze → zapis pierwszego → wczytanie drugiego → podpięcie właściwych załączników). Logika ma
+   testy, ale na żywym mailu jeszcze nie chodziła.
 10. Wielopunktówka a Plan wspaniały: dziś zlecenie stoi w kolumnie swojej JEDNEJ daty, a kolejne
    miejsca są tylko opisem na kafelku („+ N miejsc"). Gdyby okazało się, że wielopunktowe zlecenie
    ma zajmować auto w kilku dniach, to osobna decyzja z właścicielem — nie zakładać jej z góry.

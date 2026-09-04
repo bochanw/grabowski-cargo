@@ -45,6 +45,12 @@ export interface EmailAttachment {
   mime_type: string | null;
   size_bytes: number | null;
   storage_path: string | null;
+  /**
+   * Pola odczytane z TEGO JEDNEGO dokumentu (zapisuje je `mail-poll` i płatny odczyt przez Claude).
+   * Osobno od `email_messages.parsed`, bo jeden mail bywa KILKOMA zleceniami — rozdzielić je da się
+   * tylko wtedy, gdy wiadomo, co pochodzi z którego załącznika (patrz src/lib/loads/documentGroups.ts).
+   */
+  parsed: ParsedOrder | null;
   parse_source: string | null;
   error: string | null;
 }

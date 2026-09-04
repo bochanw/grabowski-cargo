@@ -27,6 +27,7 @@ export type OdczytResult =
 
 /** Załącznik maila w Storage — tyle, ile trzeba, żeby pobrać plik i nazwać go w komunikacie. */
 interface Zalacznik {
+  id?: string;
   filename: string | null;
   storage_path: string | null;
   bucket?: string | null;
@@ -74,6 +75,15 @@ export async function readEmailWithClaude(mail: EmailMessage, zalaczniki: Zalacz
     merged = mergeParsedOrders(merged, wynik.parsed);
     sources.push(`${plik.name} — odczyt przez Claude`);
     cokolwiek = true;
+    // Wynik zapisujemy TAKŻE przy samym załączniku, nie tylko scalony przy mailu. Powód jest
+    // konkretny: jeden mail bywa KILKOMA zleceniami (właściciel: „czasami jest ich kilka (kilka
+    // zleceń)"), a rozdzielić je da się tylko wtedy, gdy wiadomo, co odczytano z KTÓREGO dokumentu.
+    if (zalacznik.id) {
+      await supabase
+        .from("email_attachments")
+        .update({ parsed: wynik.parsed, parse_source: `${plik.name} — odczyt przez Claude` })
+        .eq("id", zalacznik.id);
+    }
     // Tekst wyciągamy TERAZ, kiedy plik i tak jest pobrany. Skan bez warstwy tekstowej po prostu
     // nie da się nauczyć — nie jest to błąd odczytu (model dostał oryginalny PDF).
     try {

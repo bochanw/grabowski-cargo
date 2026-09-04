@@ -13,7 +13,7 @@ export type ContainerFamily = keyof typeof TARE_KG;
  * odpowiedzi zależy, czy kafelek scala obie kolumny wiersza i czy kontener wolno dać na solówkę.
  */
 export function containerSizeFamily(containerSize: string | null | undefined): ContainerFamily | null {
-  const size = (containerSize ?? "").toUpperCase().replace(/[\s'"’-]/g, "");
+  const size = (containerSize ?? "").toUpperCase().replace(/[\s'"\u2019-]/g, "");
   if (!size) return null;
   if (size.startsWith("45")) return "45";
   if (size.startsWith("40")) return /H[CQ]/.test(size) ? "40HC" : "40";

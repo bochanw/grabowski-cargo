@@ -10,6 +10,8 @@ import type { EmailMessage } from "@/types/emailMessage";
 import type { Load } from "@/types/load";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import type { SourceItem } from "./SourcePreview";
+import { ordersFromAttachments } from "@/lib/loads/documentGroups";
+import { normalizeParsedOrder, type ParsedOrder } from "@/types/parsedOrder";
 import { readEmailWithClaude } from "@/lib/supabase/readEmailWithClaude";
 import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
 
@@ -53,6 +55,8 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
   // poprawiał pola PATRZĄC na dokument. Właściciel: "odczytując zlecenia z maila nie widzę źródła —
   // więc nie jestem w stanie skorygować błędów".
   const [zrodla, setZrodla] = useState<SourceItem[]>([]);
+  // Zlecenia, które niesie otwarty mail — zwykle jedno, ale bywa kilka (osobne załączniki).
+  const [zlecenia, setZlecenia] = useState<{ parsed: ParsedOrder; externalIds: string[] }[]>([]);
   // Podgląd samej treści w liście — bez sieci, więc da się nim rzucić okiem PRZED decyzją
   // o płatnym odczycie.
   const [trescMaila, setTrescMaila] = useState<string | null>(null);
@@ -98,8 +102,20 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
    * wskazanie pliku. Treść maila idzie osobną zakładką: bywa JEDYNYM źródłem (zmiana terminu
    * w treści, bez załącznika).
    */
-  async function zbudujZrodla(mail: EmailMessage): Promise<SourceItem[]> {
+  async function pobierzZalaczniki(mail: EmailMessage): Promise<EmailAttachment[]> {
+    const { data, error } = await supabase
+      .from("email_attachments")
+      .select("*")
+      .eq("email_message_id", mail.id)
+      .order("id", { ascending: true });
+    if (error) setNotice(`Nie udało się wczytać załączników: ${error.message}`);
+    return (data ?? []) as EmailAttachment[];
+  }
+
+  function zbudujZrodla(mail: EmailMessage, zalaczniki: EmailAttachment[]): SourceItem[] {
     const items: SourceItem[] = [];
+    // Mail BEZ załączników to normalna sytuacja (właściciel: „czasami mail nie ma załączników") —
+    // wtedy jedynym źródłem jest treść, i to ona musi być widoczna obok pól.
     if ((mail.body_text ?? "").trim()) {
       items.push({
         id: `mail-${mail.id}`,
@@ -109,12 +125,7 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
         note: [mail.from_name || mail.from_email, mail.subject].filter(Boolean).join(" · "),
       });
     }
-    const { data, error } = await supabase
-      .from("email_attachments")
-      .select("id, filename, storage_path, parse_source, error")
-      .eq("email_message_id", mail.id);
-    if (error) setNotice(`Nie udało się wczytać załączników do podglądu: ${error.message}`);
-    for (const attachment of data ?? []) {
+    for (const attachment of zalaczniki) {
       if (!attachment.storage_path) continue;
       items.push({
         id: `zal-${attachment.id}`,
@@ -128,20 +139,34 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
     return items;
   }
 
+  /**
+   * ILE ZLECEŃ niesie ten mail — rozstrzyga numer zlecenia odczytany z KAŻDEGO załącznika osobno
+   * (`email_attachments.parsed`). Reguły i przypadki brzegowe: src/lib/loads/documentGroups.ts.
+   */
+  function zbudujZlecenia(mail: EmailMessage, zalaczniki: EmailAttachment[]) {
+    return ordersFromAttachments(
+      mail.parsed,
+      zalaczniki.map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        parsed: a.parsed ? normalizeParsedOrder(a.parsed) : null,
+      }))
+    );
+  }
+
   async function otworzMaila(mail: EmailMessage) {
+    const zalaczniki = await pobierzZalaczniki(mail);
     setOpenMail(mail);
-    setZrodla(await zbudujZrodla(mail));
+    setZrodla(zbudujZrodla(mail, zalaczniki));
+    setZlecenia(zbudujZlecenia(mail, zalaczniki));
   }
 
   async function odczytajPrzezClaude(mail: EmailMessage) {
     setCzytany(mail.id);
     setNotice(null);
-    const { data: zalaczniki } = await supabase
-      .from("email_attachments")
-      .select("filename, storage_path")
-      .eq("email_message_id", mail.id);
+    const zalaczniki = await pobierzZalaczniki(mail);
 
-    const wynik = await readEmailWithClaude(mail, zalaczniki ?? []);
+    const wynik = await readEmailWithClaude(mail, zalaczniki);
     setCzytany(null);
     if (!wynik.ok) {
       setNotice(`Nie udało się odczytać: ${wynik.error}`);
@@ -151,8 +176,12 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
     // a nie szukać po panelu. Wynik jest już zapisany przy mailu, więc drugie wejście jest darmowe.
     setMaterialDoNauki(wynik.documents);
     const odczytany = { ...mail, parsed: wynik.parsed, parse_source: wynik.source };
+    // Po odczycie każdy załącznik ma już własne pola — pobieramy je jeszcze raz, bo dopiero teraz
+    // widać, czy ten mail to jedno zlecenie, czy kilka.
+    const poOdczycie = await pobierzZalaczniki(mail);
     setOpenMail(odczytany);
-    setZrodla(await zbudujZrodla(odczytany));
+    setZrodla(zbudujZrodla(odczytany, poOdczycie));
+    setZlecenia(zbudujZlecenia(odczytany, poOdczycie));
   }
 
   async function checkNow() {
@@ -451,6 +480,7 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
           mode={matchedLoad ? "attach" : "import"}
           existingLoad={matchedLoad}
           initialParsed={openMail.parsed ?? undefined}
+          initialOrders={zlecenia.length > 0 ? zlecenia : undefined}
           initialLearningDocs={materialDoNauki}
           initialSources={zrodla}
           recentLoads={loads}
@@ -459,17 +489,23 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
             setOpenMail(null);
             setMaterialDoNauki([]);
             setZrodla([]);
+            setZlecenia([]);
           }}
-          onSaved={async (loadId) => {
+          onSaved={async (loadId, externalIds) => {
             await setStatus(openMail.id, "accepted");
             // Załącznik maila JUŻ leży w Storage (bucket `order-emails`, zapisał go `mail-poll`) —
             // podpinamy istniejący plik do zlecenia zamiast kopiować go drugi raz. Dzięki temu
             // zlecenie z maila ma swoje oryginały tak samo jak zlecenie wgrane ręcznie.
+            //
+            // Podpinamy TYLKO dokumenty tego zlecenia (`externalIds`): przy mailu z kilkoma
+            // zleceniami dopięcie wszystkich załączników do każdego z nich byłoby bałaganem, którego
+            // z Zestawienia już nie da się odkręcić.
             const { data } = await supabase
               .from("email_attachments")
               .select("*")
               .eq("email_message_id", openMail.id);
-            for (const attachment of (data ?? []) as EmailAttachment[]) {
+            const wybrane = (data ?? []).filter((a) => externalIds.length === 0 || externalIds.includes(String(a.id)));
+            for (const attachment of wybrane as EmailAttachment[]) {
               if (!attachment.storage_path) continue;
               const error = await linkDocument({
                 loadId,
@@ -483,8 +519,8 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
               });
               if (error) setNotice(`Zlecenie zapisane, ale nie udało się podpiąć załącznika ${attachment.filename ?? ""}: ${error}`);
             }
-            setOpenMail(null);
-            setZrodla([]);
+            // Nic tu nie czyścimy: przy mailu z kilkoma zleceniami okno zostaje otwarte i wczytuje
+            // następne, a podgląd źródła musi mu dalej towarzyszyć. Sprzątanie robi onClose.
           }}
         />
       )}

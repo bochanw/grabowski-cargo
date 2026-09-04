@@ -28,6 +28,12 @@ export interface ParsedOrder {
   address: string;
   city: string;
   /**
+   * Telefon do ODBIORCY / osoby w miejscu rozładunku (kolumna `loads.contact_phone`) — bywa podany
+   * w zleceniu i jest wtedy jedynym sposobem, żeby kierowca dodzwonił się na miejsce. To NIE jest
+   * telefon kierowcy (`driver_phone`).
+   */
+  contact_phone: string;
+  /**
    * KOLEJNE miejsca załadunku/rozładunku (2., 3., …) — właściciel: "zlecenia krajowe, bądź w sumie
    * jakiekolwiek, mogą mieć więcej niż jeden rozładunek/załadunek". Pierwsze miejsce zostaje
    * w polach wyżej; ta lista trafia do `loads.stops` (migracja 0027).
@@ -53,6 +59,12 @@ export interface ParsedOrder {
   pin_booking: string; // numer wizyty / PIN albo booking
   seal_number: string; // numer plomby założonej na kontener
   goods_name: string;
+  /**
+   * ADR / SENT — oznaczenie ładunku pod nadzorem. Jedno pole tekstowe, bo taka jest kolumna
+   * `loads.adr_flag` w bazie (i tak nazywa to klient: „adr/sent"); formularz pokazuje dwa
+   * checkboxy, tłumaczenie siedzi w src/lib/loads/adrSent.ts.
+   */
+  adr_sent: string;
   net_weight_kg: number | null; // waga towaru z dokumentu ("Waga towaru brutto" na liście przewozowym)
   gross_weight: string; // wyliczane: net_weight_kg + tara kontenera (src/lib/containers/tare.ts); text, bo bywa "według armatora"
   // Kiedy kontener ma być złożony — w dokumentach zwykle "cut off". Text, nie data: bywa podany z
@@ -81,6 +93,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   company_name: "",
   address: "",
   city: "",
+  contact_phone: "",
   extra_stops: [],
   load_date: "",
   delivery_date: "",
@@ -97,6 +110,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   pin_booking: "",
   seal_number: "",
   goods_name: "",
+  adr_sent: "",
   net_weight_kg: null,
   gross_weight: "",
   submitted_when: "",
@@ -181,6 +195,7 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     company_name: text("company_name"),
     address: text("address"),
     city: text("city"),
+    contact_phone: text("contact_phone"),
     // Model potrafi zwrócić listę miejsc w dowolnym kształcie (albo wcale) — `normalizeStops`
     // przycina ją do tego, co appka umie zapisać, i wyrzuca puste wiersze.
     extra_stops: normalizeStops(input.extra_stops),
@@ -199,6 +214,7 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     pin_booking: text("pin_booking"),
     seal_number: text("seal_number"),
     goods_name: text("goods_name"),
+    adr_sent: text("adr_sent"),
     net_weight_kg: num("net_weight_kg"),
     gross_weight: text("gross_weight"),
     // Terminale bywają w dokumentach pełną nazwą ("Gdynia Container Terminal" = GCT — zgłoszenie

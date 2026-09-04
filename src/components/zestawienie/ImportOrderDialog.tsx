@@ -17,8 +17,10 @@ import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { describeBafSplit, splitBaf } from "@/lib/invoice/baf";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
+import { parseAdrSent, withAdrSent } from "@/lib/loads/adrSent";
 import { DIRECTION_OPTIONS, isDirection, isExportSide } from "@/lib/loads/direction";
 import { matchExistingLoad, type LoadMatch } from "@/lib/loads/orderNumber";
+import { groupDocumentsByOrder, type ParsedDocument } from "@/lib/loads/documentGroups";
 import { useUploadLoadDocument } from "@/hooks/useLoadDocuments";
 import { DOCUMENT_KINDS, DOCUMENT_KIND_LABELS, guessDocumentKind, type DocumentKind } from "@/types/loadDocument";
 import { SourcePreview, type SourceItem } from "./SourcePreview";
@@ -35,6 +37,29 @@ interface PendingAttachment {
   /** Czym go odczytano ("szablon Q4Road", "odczyt przez Claude"); null = nie udało się odczytać. */
   parseSource: string | null;
 }
+
+/**
+ * JEDNO zlecenie czekające na zapis. Kilka wgranych naraz dokumentów bywa kilkoma RÓŻNYMI
+ * zleceniami (właściciel: „czasami jest ich kilka (kilka zleceń)"), więc appka rozdziela je po
+ * numerze zlecenia i zapisuje po kolei — zamiast zlepiać dwa ładunki w jeden rekord.
+ */
+interface PendingOrder {
+  parsed: ParsedOrder;
+  attachments: PendingAttachment[];
+  learningDocs: LearningDocument[];
+  /** Załączniki JUŻ leżące w Storage (mail ze Skrzynki) — po zapisie podpina je wołający. */
+  externalIds: string[];
+  warnings: string[];
+  recognized: string[];
+}
+
+const EMPTY_PENDING: Omit<PendingOrder, "parsed"> = {
+  attachments: [],
+  learningDocs: [],
+  externalIds: [],
+  warnings: [],
+  recognized: [],
+};
 
 const DEFAULT_CARRIER = "Grabowski Mariusz Sp. z o.o.";
 
@@ -56,6 +81,7 @@ function loadToForm(load: Load): ParsedOrder {
     company_name: load.company_name ?? "",
     address: load.address ?? "",
     city: load.city ?? "",
+    contact_phone: load.contact_phone ?? "",
     extra_stops: normalizeStops(load.stops),
     load_date: load.load_date ?? "",
     delivery_date: load.secondary_date ?? "",
@@ -74,6 +100,7 @@ function loadToForm(load: Load): ParsedOrder {
     pin_booking: load.pin_booking ?? "",
     seal_number: load.seal_number ?? "",
     goods_name: load.goods_name ?? "",
+    adr_sent: load.adr_flag ?? "",
     net_weight_kg: load.net_weight_kg,
     gross_weight: load.gross_weight ?? "",
     submitted_when: load.submitted_when ?? "",
@@ -102,6 +129,7 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     company_name: form.company_name || null,
     address: form.address || null,
     city: form.city || null,
+    contact_phone: form.contact_phone || null,
     // Kolejne miejsca (2., 3., …) — pierwsze zostaje w polach wyżej, patrz src/types/loadStop.ts.
     stops: form.extra_stops.filter((stop) => !isStopEmpty(stop)),
     load_date: form.load_date || null,
@@ -121,6 +149,7 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     pin_booking: form.pin_booking || null,
     seal_number: form.seal_number || null,
     goods_name: form.goods_name || null,
+    adr_flag: form.adr_sent || null,
     net_weight_kg: form.net_weight_kg,
     gross_weight: form.gross_weight || null,
     submitted_when: form.submitted_when || null,
@@ -143,13 +172,14 @@ export function ImportOrderDialog({
   onLearned,
   initialLearningDocs = [],
   initialSources = [],
+  initialOrders,
 }: {
   onClose: () => void;
   /**
    * Wywoływane PO udanym zapisie, przed zamknięciem — Skrzynka oznacza tak maila jako
    * zaakceptowanego i podpina jego załączniki do zapisanego zlecenia (stąd `loadId`).
    */
-  onSaved?: (loadId: string) => void | Promise<void>;
+  onSaved?: (loadId: string, externalIds: string[]) => void | Promise<void>;
   existingLoad?: Load;
   /**
    * Pola odczytane już wcześniej, poza tym oknem — dziś ze Skrzynki (mail przeczytany serwerowo
@@ -169,6 +199,12 @@ export function ImportOrderDialog({
    */
   initialLearningDocs?: LearningDocument[];
   /**
+   * Zlecenia odczytane POZA tym oknem, gdy w jednym mailu przyszło ICH KILKA (Skrzynka rozdziela
+   * załączniki po numerze zlecenia). Pierwsze wchodzi do formularza, reszta czeka w kolejce i
+   * zapisuje się po kolei — `externalIds` mówi, które załączniki maila należą do którego zlecenia.
+   */
+  initialOrders?: { parsed: ParsedOrder; externalIds: string[] }[];
+  /**
    * ŹRÓDŁO pól, których nikt tu nie wgrywał — treść maila i jego załączniki leżące już w Storage
    * (Skrzynka). Właściciel: "odczytując zlecenia z maila nie widzę źródła, więc nie jestem w stanie
    * skorygować błędów". Pliki wybrane w tym oknie dokładają się do tej listy same.
@@ -179,13 +215,24 @@ export function ImportOrderDialog({
   const fleet: Fleet = fleetData ?? EMPTY_FLEET;
   const { data: contractors = [] } = useContractors();
   // Pola ze Skrzynki są już odczytane, więc ekran wyboru pliku byłby tylko przeszkodą.
-  const [stage, setStage] = useState<Stage>(mode === "edit" || initialParsed ? "review" : "pick");
+  const [stage, setStage] = useState<Stage>(
+    mode === "edit" || initialParsed || (initialOrders?.length ?? 0) > 0 ? "review" : "pick"
+  );
   const [form, setForm] = useState<ParsedOrder>(() => {
     const base = existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER;
     // Te same reguły scalania co przy dopinaniu drugiego dokumentu: dane z maila wypełniają TYLKO
     // puste pola, nigdy nie nadpisują tego, co już stoi na zleceniu.
-    return initialParsed ? mergeParsedOrders(base, initialParsed) : base;
+    const pierwsze = initialOrders?.[0]?.parsed ?? initialParsed;
+    return pierwsze ? mergeParsedOrders(base, pierwsze) : base;
   });
+  // Zlecenia czekające w kolejce (drugie i dalsze z tej samej paczki dokumentów/maila) oraz licznik
+  // już zapisanych — z tego bierze się pasek „Zlecenie 2 z 3".
+  const [queue, setQueue] = useState<PendingOrder[]>(() =>
+    (initialOrders ?? []).slice(1).map((order) => ({ ...EMPTY_PENDING, parsed: order.parsed, externalIds: order.externalIds }))
+  );
+  const [savedInBatch, setSavedInBatch] = useState(0);
+  // Załączniki tego zlecenia leżące już w Storage (mail) — po zapisie podpina je wołający.
+  const [externalIds, setExternalIds] = useState<string[]>(initialOrders?.[0]?.externalIds ?? []);
   const [carrierName, setCarrierName] = useState(existingLoad?.carrier_name ?? DEFAULT_CARRIER);
   const [contractorId, setContractorId] = useState(existingLoad?.contractor_id ?? "");
   const [recognized, setRecognized] = useState<string[]>([]);
@@ -216,106 +263,15 @@ export function ImportOrderDialog({
   // porównał pole z dokumentem, a nie zgadywał, skąd wzięła się wartość.
   const [pokazZrodlo, setPokazZrodlo] = useState(true);
 
-  // Jedno zlecenie to u klienta zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
-  // kierowcy) — można wgrać oba naraz albo dopiąć drugi później (także do już zapisanego zlecenia);
-  // każdy kolejny dokument wypełnia TYLKO puste pola, więc nie nadpisuje ręcznych poprawek.
-  async function handleFiles(fileList: FileList | null) {
-    const files = Array.from(fileList ?? []);
-    if (files.length === 0) return;
-    setStage("parsing");
-    setSaveError(null);
-
-    let merged = form;
-    const newRecognized: string[] = [];
-    const newWarnings: string[] = [];
-
-    // Pola z każdego kolejnego dokumentu wchodzą tą samą drogą, niezależnie od tego, czy przeczytał
-    // go znany szablon czy Claude — te same ostrzeżenia i to samo scalanie "tylko puste pola".
-    function absorb(parsed: ParsedOrder, fileName: string, source: string) {
-      if (merged.order_number && parsed.order_number && merged.order_number !== parsed.order_number) {
-        newWarnings.push(`${fileName}: numer zlecenia ${parsed.order_number} różni się od już wczytanego ${merged.order_number} — sprawdź, czy to to samo zlecenie.`);
-      }
-      if (parsed.rate_currency && parsed.rate_currency.toUpperCase() !== "PLN") {
-        newWarnings.push(`${fileName}: stawka w ${parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
-      }
-      merged = mergeParsedOrders(merged, parsed);
-      newRecognized.push(source);
-    }
-
-    // Oryginały PDF zostają przy zleceniu (właściciel: "po imporcie zleceń oryginalne PDF zostaną
-    // zachowane jako załączniki") — KAŻDY wgrany plik, także ten, którego nie udało się odczytać:
-    // dyspozytor przepisze z niego pola ręcznie, ale sam dokument ma być pod ręką.
-    const newAttachments: PendingAttachment[] = [];
-    const newLearningDocs: LearningDocument[] = [];
-
-    for (const file of files) {
-      setProgress(`Odczytywanie ${file.name}…`);
-      let text = "";
-      let extractError = "";
-      try {
-        text = await extractPdfText(file);
-      } catch (e) {
-        // Nie kończymy na tym: plik bez warstwy tekstowej (skan) i tak może przeczytać Claude,
-        // który dostaje oryginalny PDF, a nie wyciągnięty tekst.
-        extractError = e instanceof Error ? e.message : String(e);
-      }
-
-      // 1. Znane szablony klientów (regex na tekście z pdf.js) — pierwsze, bo są darmowe,
-      //    natychmiastowe i deterministyczne. Do modelu idzie tylko to, czego nie umiemy sami.
-      const match = text ? matchKnownTemplate(text) : null;
-      let source: string | null = null;
-      let usedTemplateId: string | undefined;
-      let templateOutput: ParsedOrder | undefined;
-      if (match) {
-        absorb(match.parsed, file.name, match.name);
-        source = match.name;
-      } else {
-        // 2. Szablon NAUCZONY z wcześniejszych zleceń tego spedytora — też darmowy i
-        //    deterministyczny, więc idzie przed modelem. Wchodzi tylko wtedy, gdy odczytał komplet
-        //    kluczowych pól (decyzja właściciela); niekompletny odczyt oddaje sprawę Claude'owi,
-        //    zamiast zostawiać dziury w zleceniu.
-        const learned = text ? matchLearnedTemplate(text, orderTemplates) : null;
-        if (learned && learned.missing.length === 0) {
-          source = learned.template.label;
-          usedTemplateId = learned.template.id;
-          templateOutput = learned.parsed;
-          absorb(learned.parsed, file.name, source);
-        } else {
-          if (learned) {
-            newWarnings.push(
-              `${file.name}: nauczony szablon „${learned.template.label}" nie odczytał kompletu pól (brakuje: ${learned.missing.join(", ")}) — czytam ten dokument przez Claude.`
-            );
-          }
-          // 3. Fallback: odczyt przez Claude (Edge Function parse-order-pdf). Nierozpoznany dokument
-          //    nadal nie jest błędem — jeśli i to nie zadziała, pola zostają do ręcznego wpisania.
-          setProgress(`${file.name}: nieznany szablon — czytam przez Claude…`);
-          const result = await parseOrderPdf(file);
-          if (result.ok) {
-            source = `${file.name} — odczyt przez Claude`;
-            absorb(result.parsed, file.name, source);
-          } else {
-            newWarnings.push(
-              extractError
-                ? `${file.name}: nie udało się odczytać pliku PDF (${extractError}), a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
-                : `${file.name}: nie rozpoznano znanego szablonu, a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
-            );
-          }
-        }
-      }
-      newAttachments.push({ file, kind: guessDocumentKind(file.name, source), parseSource: source });
-      // Materiał do nauki zbieramy dla KAŻDEGO dokumentu z warstwą tekstową — także wpisanego
-      // ręcznie po nieudanym odczycie: to wtedy dyspozytor podaje appce wzorcowe wartości.
-      if (text) {
-        newLearningDocs.push({
-          text,
-          fileName: file.name,
-          source: source ?? "wpisane ręcznie",
-          usedTemplateId,
-          templateOutput,
-        });
-      }
-    }
-    setProgress("");
+  /**
+   * Wczytuje JEDNO zlecenie do formularza: domyślna data, brutto, gestia z uwag, rozpoznanie
+   * zlecenia już zapisanego, dopasowanie do Panelu floty i kontrahenta. Ta sama droga dla
+   * pierwszego zlecenia z paczki i dla każdego kolejnego z kolejki — inaczej drugie zlecenie z
+   * maila byłoby przygotowane słabiej niż pierwsze.
+   */
+  function wczytajZlecenie(pending: PendingOrder, base: ParsedOrder) {
+    let merged = mergeParsedOrders(base, pending.parsed);
+    const newWarnings = [...pending.warnings];
 
     // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu.
     if (!merged.load_date && merged.delivery_date) {
@@ -345,22 +301,21 @@ export function ImportOrderDialog({
     // Numer bywa w dokumentach poskładany inaczej ("KPB / 87" i "87 / KPB" to u klienta jedno
     // zlecenie), a gdy i to nie trafi, zostaje numer kontenera — ten jednak tylko PODPOWIADA, bo
     // ten sam kontener wraca po tygodniach na inne zlecenie (patrz `auto` w matchExistingLoad).
-    if (!existingLoad && !forceNew && !matchedLoad) {
+    let matched: Load | null = null;
+    let nextSuggested: LoadMatch<Load> | null = null;
+    if (!existingLoad) {
       const match = matchExistingLoad(recentLoads, {
         order_number: merged.order_number,
         container_number: merged.container_number,
       });
       if (match?.auto) {
-        const found = match.load;
-        setMatchedLoad(found);
-        merged = mergeParsedOrders(loadToForm(found), merged);
-        if (found.contractor_id) setContractorId(found.contractor_id);
-        if (found.carrier_name) setCarrierName(found.carrier_name);
+        matched = match.load;
+        merged = mergeParsedOrders(loadToForm(match.load), merged);
         newWarnings.push(
-          `Zlecenie ${found.order_number ?? ""} już jest w Zestawieniu (${match.reason}) — dokument uzupełni w nim brakujące pola zamiast tworzyć drugi rekord. Jeśli to jednak inne zlecenie, kliknij „Utwórz mimo to nowe zlecenie”.`
+          `Zlecenie ${match.load.order_number ?? ""} już jest w Zestawieniu (${match.reason}) — dokument uzupełni w nim brakujące pola zamiast tworzyć drugi rekord. Jeśli to jednak inne zlecenie, kliknij „Utwórz mimo to nowe zlecenie”.`
         );
       } else if (match && !dismissedMatches.includes(match.load.id)) {
-        setSuggested(match);
+        nextSuggested = match;
       }
     }
 
@@ -372,28 +327,165 @@ export function ImportOrderDialog({
     // Kontrahent: spedytor z dokumentu → skonfigurowany kontrahent (po nazwie/aliasach). Jego
     // domyślny termin płatności wchodzi TYLKO, gdy dokument go nie podał. Brak dopasowania to nie
     // problem dyspozytora: kontrahent założy się sam przy zapisie (patrz handleSave).
-    if (!contractorId && order.forwarder) {
+    let nextContractorId = matched?.contractor_id ?? (existingLoad ? contractorId : "");
+    if (!nextContractorId && order.forwarder) {
       const contractor = findContractorByName(contractors, order.forwarder);
       if (contractor) {
-        setContractorId(contractor.id);
+        nextContractorId = contractor.id;
         order = applyContractorDefaults(order, contractor, newWarnings);
       } else {
         newWarnings.push(`Spedytor "${order.forwarder}" nie ma jeszcze kontrahenta — zostanie założony automatycznie przy zapisie (z NIP-em, adresem i terminem płatności z dokumentu). E-mail do faktur uzupełnij potem w "Kontrahenci".`);
       }
     }
 
-    const allRecognized = [...recognized, ...newRecognized];
-    setAttachments((prev) => [...prev, ...newAttachments]);
-    setLearningDocs((prev) => [...prev, ...newLearningDocs]);
     setForm(order);
-    setRecognized(allRecognized);
+    setMatchedLoad(matched);
+    setSuggested(nextSuggested);
+    setContractorId(nextContractorId);
+    if (matched?.carrier_name) setCarrierName(matched.carrier_name);
+    setAttachments(pending.attachments);
+    setLearningDocs(pending.learningDocs);
+    setExternalIds(pending.externalIds);
+    setWarnings(newWarnings);
+    setRecognized(pending.recognized);
     setNotice(
-      allRecognized.length > 0
-        ? `Odczytano: ${allRecognized.join(", ")}. Sprawdź pola przed zapisem.`
+      pending.recognized.length > 0
+        ? `Odczytano: ${pending.recognized.join(", ")}. Sprawdź pola przed zapisem.`
         : "Nie udało się odczytać dokumentu automatycznie — wpisz pola ręcznie poniżej. Zapis działa tak samo jak przy imporcie."
     );
-    setWarnings((prev) => [...prev, ...newWarnings]);
     setStage("review");
+  }
+
+  // Jedno zlecenie to u klienta zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
+  // kierowcy) — można wgrać oba naraz albo dopiąć drugi później (także do już zapisanego zlecenia);
+  // każdy kolejny dokument wypełnia TYLKO puste pola, więc nie nadpisuje ręcznych poprawek.
+  //
+  // ALE kilka dokumentów bywa też kilkoma RÓŻNYMI zleceniami (właściciel: „czasami jest ich kilka
+  // (kilka zleceń)") — wtedy scalanie zlepiłoby dwa ładunki w jeden rekord i drugi zniknąłby bez
+  // śladu. Dlatego dokumenty najpierw idą przez `groupDocumentsByOrder` (rozstrzyga numer
+  // zlecenia), a appka zapisuje powstałe zlecenia PO KOLEI.
+  async function handleFiles(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []);
+    if (files.length === 0) return;
+    setStage("parsing");
+    setSaveError(null);
+
+    const documents: ParsedDocument<{ attachment: PendingAttachment; learningDoc: LearningDocument | null }>[] = [];
+    const globalWarnings: string[] = [];
+
+    for (const file of files) {
+      setProgress(`Odczytywanie ${file.name}…`);
+      let text = "";
+      let extractError = "";
+      try {
+        text = await extractPdfText(file);
+      } catch (e) {
+        // Nie kończymy na tym: plik bez warstwy tekstowej (skan) i tak może przeczytać Claude,
+        // który dostaje oryginalny PDF, a nie wyciągnięty tekst.
+        extractError = e instanceof Error ? e.message : String(e);
+      }
+
+      let parsed: ParsedOrder = EMPTY_PARSED_ORDER;
+      let source: string | null = null;
+      let usedTemplateId: string | undefined;
+      let templateOutput: ParsedOrder | undefined;
+
+      // 1. Znane szablony klientów (regex na tekście z pdf.js) — pierwsze, bo są darmowe,
+      //    natychmiastowe i deterministyczne. Do modelu idzie tylko to, czego nie umiemy sami.
+      const match = text ? matchKnownTemplate(text) : null;
+      if (match) {
+        parsed = match.parsed;
+        source = match.name;
+      } else {
+        // 2. Szablon NAUCZONY z wcześniejszych zleceń tego spedytora — też darmowy i
+        //    deterministyczny, więc idzie przed modelem. Wchodzi tylko wtedy, gdy odczytał komplet
+        //    kluczowych pól (decyzja właściciela); niekompletny odczyt oddaje sprawę Claude'owi,
+        //    zamiast zostawiać dziury w zleceniu.
+        const learned = text ? matchLearnedTemplate(text, orderTemplates) : null;
+        if (learned && learned.missing.length === 0) {
+          parsed = learned.parsed;
+          source = learned.template.label;
+          usedTemplateId = learned.template.id;
+          templateOutput = learned.parsed;
+        } else {
+          if (learned) {
+            globalWarnings.push(
+              `${file.name}: nauczony szablon „${learned.template.label}" nie odczytał kompletu pól (brakuje: ${learned.missing.join(", ")}) — czytam ten dokument przez Claude.`
+            );
+          }
+          // 3. Fallback: odczyt przez Claude (Edge Function parse-order-pdf). Nierozpoznany dokument
+          //    nadal nie jest błędem — jeśli i to nie zadziała, pola zostają do ręcznego wpisania.
+          setProgress(`${file.name}: nieznany szablon — czytam przez Claude…`);
+          const result = await parseOrderPdf(file);
+          if (result.ok) {
+            parsed = result.parsed;
+            source = `${file.name} — odczyt przez Claude`;
+          } else {
+            globalWarnings.push(
+              extractError
+                ? `${file.name}: nie udało się odczytać pliku PDF (${extractError}), a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
+                : `${file.name}: nie rozpoznano znanego szablonu, a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
+            );
+          }
+        }
+      }
+      if (parsed.rate_currency && parsed.rate_currency.toUpperCase() !== "PLN") {
+        globalWarnings.push(`${file.name}: stawka w ${parsed.rate_currency}, appka dziś zakłada PLN — sprawdź kwotę.`);
+      }
+
+      documents.push({
+        parsed,
+        fileName: file.name,
+        payload: {
+          // Oryginały PDF zostają przy zleceniu (właściciel: "po imporcie zleceń oryginalne PDF
+          // zostaną zachowane jako załączniki") — KAŻDY wgrany plik, także nieodczytany.
+          attachment: { file, kind: guessDocumentKind(file.name, source), parseSource: source },
+          // Materiał do nauki zbieramy dla KAŻDEGO dokumentu z warstwą tekstową — także wpisanego
+          // ręcznie po nieudanym odczycie: to wtedy dyspozytor podaje appce wzorcowe wartości.
+          learningDoc: text ? { text, fileName: file.name, source: source ?? "wpisane ręcznie", usedTemplateId, templateOutput } : null,
+        },
+      });
+    }
+    setProgress("");
+
+    // Przy dopinaniu dokumentu do KONKRETNEGO zlecenia rozdzielanie nie ma sensu — wszystko idzie
+    // do tego jednego rekordu (rozbieżny numer i tak zobaczy dyspozytor w ostrzeżeniu).
+    const groups = existingLoad
+      ? [{ parsed: documents.reduce((acc, d) => mergeParsedOrders(acc, d.parsed), EMPTY_PARSED_ORDER), documents, orderNumber: "", unmatched: false }]
+      : groupDocumentsByOrder(documents);
+
+    const pendings: PendingOrder[] = groups.map((group) => ({
+      parsed: group.parsed,
+      attachments: group.documents.map((d) => d.payload.attachment),
+      learningDocs: group.documents.map((d) => d.payload.learningDoc).filter((d): d is LearningDocument => d !== null),
+      externalIds: [],
+      warnings: group.unmatched
+        ? [`Dokument ${group.documents.map((d) => d.fileName).join(", ")} nie podaje numeru zlecenia, a wgrane pliki dotyczą kilku zleceń — nie zgaduję, do którego należy. Sprawdź go i zapisz osobno albo dopnij ręcznie przy właściwym wierszu.`]
+        : [],
+      recognized: group.documents.map((d) => d.payload.attachment.parseSource).filter((s): s is string => Boolean(s)),
+    }));
+
+    if (pendings.length > 1) {
+      globalWarnings.push(
+        `Wgrane dokumenty dotyczą ${pendings.length} różnych zleceń (${pendings.map((p) => p.parsed.order_number || "bez numeru").join(", ")}) — zapiszesz je po kolei, jedno po drugim.`
+      );
+    }
+
+    const [pierwsze, ...reszta] = pendings.length > 0 ? pendings : [{ ...EMPTY_PENDING, parsed: EMPTY_PARSED_ORDER }];
+    // Pierwsze zlecenie DOKŁADA się do tego, co już jest w oknie (ręcznie wpisane pola, wcześniej
+    // dopięty dokument); kolejne czekają w kolejce i wejdą po zapisie tego.
+    wczytajZlecenie(
+      {
+        ...pierwsze,
+        attachments: [...attachments, ...pierwsze.attachments],
+        learningDocs: [...learningDocs, ...pierwsze.learningDocs],
+        externalIds: [...externalIds, ...pierwsze.externalIds],
+        warnings: [...warnings, ...globalWarnings, ...pierwsze.warnings],
+        recognized: [...recognized, ...pierwsze.recognized],
+      },
+      form
+    );
+    if (reszta.length > 0) setQueue((prev) => [...prev, ...reszta]);
   }
 
   // Ręczne wpisanie zlecenia bez żadnego dokumentu — właściciel wprost o to poprosił: dyspozytor
@@ -571,8 +663,35 @@ export function ImportOrderDialog({
     if (notes.length > 0) onLearned?.(notes);
 
     // Dopiero po UDANYM zapisie — mail w Skrzynce ma zostać do przejrzenia, jeśli zapis padł.
-    await onSaved?.(loadId);
+    // `externalIds` mówi, KTÓRE załączniki maila należą do tego zlecenia: przy mailu z kilkoma
+    // zleceniami podpięcie wszystkich do każdego byłoby bałaganem nie do odkręcenia.
+    await onSaved?.(loadId, externalIds);
+
+    // Kilka zleceń z jednej paczki dokumentów zapisujemy PO KOLEI — okno zostaje otwarte i wczytuje
+    // następne zamiast zamykać się po pierwszym (właściciel: „czasami jest ich kilka (kilka zleceń)").
+    if (queue.length > 0) {
+      const [next, ...rest] = queue;
+      setQueue(rest);
+      setSavedInBatch((n) => n + 1);
+      setSaveError(null);
+      setForceNew(false);
+      setCarrierName(DEFAULT_CARRIER);
+      wczytajZlecenie(next, EMPTY_PARSED_ORDER);
+      return;
+    }
     onClose();
+  }
+
+  /** „Nie zapisuj tego zlecenia" — np. duplikat w paczce. Przechodzi do następnego z kolejki. */
+  function pominZlecenie() {
+    const [next, ...rest] = queue;
+    if (!next) return;
+    setQueue(rest);
+    setSavedInBatch((n) => n + 1);
+    setSaveError(null);
+    setForceNew(false);
+    setCarrierName(DEFAULT_CARRIER);
+    wczytajZlecenie(next, EMPTY_PARSED_ORDER);
   }
 
   const pickupOptions = withCurrentOption([...PICKUP_LOCATIONS], form.pickup_type);
@@ -614,6 +733,7 @@ export function ImportOrderDialog({
   ];
   const zrodloWidoczne = pokazZrodlo && sources.length > 0;
 
+  const adrSent = parseAdrSent(form.adr_sent);
   const isExport = isExportSide(form.direction);
   const stopLabel = isExport ? "załadunek" : "rozładunek";
   const stopGenitive = isExport ? "załadunku" : "rozładunku";
@@ -712,6 +832,27 @@ export function ImportOrderDialog({
                 <p className="rounded border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
                   {notice}
                 </p>
+              )}
+              {(queue.length > 0 || savedInBatch > 0) && (
+                <div
+                  data-testid="pasek-kolejki"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded border border-violet-300 bg-violet-50 px-3 py-2 text-xs text-violet-900 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-200"
+                >
+                  <span>
+                    Zlecenie <strong>{savedInBatch + 1} z {savedInBatch + 1 + queue.length}</strong> z tej paczki
+                    dokumentów{queue.length > 0 ? ` — po zapisie otworzy się następne (${queue.map((q) => q.parsed.order_number || "bez numeru").join(", ")}).` : " — to ostatnie."}
+                  </span>
+                  {queue.length > 0 && (
+                    <button
+                      type="button"
+                      data-testid="pomin-zlecenie"
+                      onClick={pominZlecenie}
+                      className="rounded border border-violet-400 px-2 py-1 font-medium hover:bg-violet-100 dark:border-violet-700 dark:hover:bg-violet-900"
+                    >
+                      Pomiń to zlecenie
+                    </button>
+                  )}
+                </div>
               )}
               {warnings.map((warning) => (
                 <p
@@ -887,22 +1028,13 @@ export function ImportOrderDialog({
                 <Field label="Nr plomby">
                   <input className={inputClass} value={form.seal_number} onChange={(e) => updateField("seal_number", e.target.value)} />
                 </Field>
-                <Field label="Data złożenia (cut off)">
-                  <input
-                    className={inputClass}
-                    value={form.submitted_when}
-                    onChange={(e) => updateField("submitted_when", e.target.value)}
-                    placeholder="np. 2026-09-12 albo „cut off 12.09, 14:00”"
-                  />
-                </Field>
-
                 <Field label="Wielkość kontenera">
                   <input className={inputClass} value={form.container_size} onChange={(e) => updateField("container_size", e.target.value)} placeholder="np. 20DV" />
                 </Field>
+
                 <Field label="Gestia / linia">
                   <input className={inputClass} value={form.shipping_line} onChange={(e) => updateField("shipping_line", e.target.value)} placeholder="np. ONE" />
                 </Field>
-
                 <Field label={`Firma (${stopLabel})`}>
                   <input className={inputClass} value={form.company_name} onChange={(e) => updateField("company_name", e.target.value)} />
                 </Field>
@@ -910,8 +1042,18 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.city} onChange={(e) => updateField("city", e.target.value)} />
                 </Field>
 
-                <Field label="Adres" full>
+                <Field label="Adres">
                   <input className={inputClass} value={form.address} onChange={(e) => updateField("address", e.target.value)} />
+                </Field>
+                {/* Telefon ODBIORCY (nie kierowcy) — bywa w zleceniu i wtedy jest jedynym sposobem,
+                    żeby kierowca dodzwonił się na miejsce rozładunku. */}
+                <Field label="Telefon odbiorcy / kontakt na miejscu">
+                  <input
+                    data-testid="pole-telefon-odbiorcy"
+                    className={inputClass}
+                    value={form.contact_phone}
+                    onChange={(e) => updateField("contact_phone", e.target.value)}
+                  />
                 </Field>
 
                 {/* Kolejne miejsca: jedno zlecenie bywa wielopunktowe (właściciel: "zlecenia
@@ -937,13 +1079,57 @@ export function ImportOrderDialog({
                 <Field label={`Godzina ${stopGenitive}`}>
                   <input className={inputClass} value={form.delivery_time} onChange={(e) => updateField("delivery_time", e.target.value)} placeholder="np. 07:00" />
                 </Field>
-                <Field label="Miejsce/status odprawy celnej">
+                {/* Cut off stoi przy DATACH, nie przy plombie — właściciel go tam nie znalazł, a to
+                    data, po której planuje się dzień. Zwykły tekst, bo bywa podany z godziną albo
+                    warunkiem („cut off wg armatora"). */}
+                <Field label="Data złożenia — cut off">
+                  <input
+                    data-testid="pole-cutoff"
+                    className={inputClass}
+                    value={form.submitted_when}
+                    onChange={(e) => updateField("submitted_when", e.target.value)}
+                    placeholder="np. 2026-09-12 12:00 albo „cut off wg armatora”"
+                  />
+                </Field>
+
+                <Field label="Miejsce/status odprawy celnej" full>
                   <input className={inputClass} value={form.customs_location_or_status} onChange={(e) => updateField("customs_location_or_status", e.target.value)} />
                 </Field>
 
                 <Field label="Nazwa towaru" full>
                   <input className={inputClass} value={form.goods_name} onChange={(e) => updateField("goods_name", e.target.value)} />
                 </Field>
+
+                {/* ADR / SENT — ładunek pod nadzorem (właściciel: „zaznaczenia SENT bądź ADR (bądź
+                    oba)"). W bazie to JEDNA kolumna tekstowa `adr_flag`, więc checkboxy tłumaczą się
+                    na tekst przez adrSent.ts — z zachowaniem dopisku z dokumentu („ADR kl. 3"). */}
+                <div className="col-span-2 flex flex-wrap items-center gap-4 rounded border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800">
+                  <span className="font-medium text-zinc-700 dark:text-zinc-300">Oznaczenie ładunku</span>
+                  <label className="flex items-center gap-1.5 text-zinc-700 dark:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      data-testid="pole-adr"
+                      checked={adrSent.adr}
+                      onChange={(e) => updateField("adr_sent", withAdrSent(form.adr_sent, { ...adrSent, adr: e.target.checked }))}
+                    />
+                    ADR (towar niebezpieczny)
+                  </label>
+                  <label className="flex items-center gap-1.5 text-zinc-700 dark:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      data-testid="pole-sent"
+                      checked={adrSent.sent}
+                      onChange={(e) => updateField("adr_sent", withAdrSent(form.adr_sent, { ...adrSent, sent: e.target.checked }))}
+                    />
+                    SENT (zgłoszenie przewozu)
+                  </label>
+                  <input
+                    className={`${inputClass} min-w-40 flex-1`}
+                    value={form.adr_sent}
+                    onChange={(e) => updateField("adr_sent", e.target.value)}
+                    placeholder="dopisek z dokumentu, np. „ADR kl. 3”"
+                  />
+                </div>
                 <Field label="Waga netto — towar (kg)">
                   <input
                     type="number"
@@ -1065,7 +1251,9 @@ export function ImportOrderDialog({
                 ? progress || "Zapisywanie…"
                 : existingLoad || matchedLoad
                   ? `Uzupełnij zlecenie ${(existingLoad ?? matchedLoad)?.order_number ?? ""}`.trim()
-                  : "Zapisz zlecenie"}
+                  : queue.length > 0
+                    ? `Zapisz i przejdź do następnego (${queue.length} w kolejce)`
+                    : "Zapisz zlecenie"}
             </button>
           </div>
         )}
