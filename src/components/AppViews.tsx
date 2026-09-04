@@ -3,19 +3,22 @@
 import { useState } from "react";
 import { ZestawienieView } from "@/components/zestawienie/ZestawienieView";
 import { PlanView } from "@/components/plan/PlanView";
+import { StawkiView } from "@/components/stawki/StawkiView";
 
-type Widok = "zestawienie" | "plan";
+type Widok = "zestawienie" | "plan" | "stawki";
 
 const ZAKLADKI: { key: Widok; label: string }[] = [
   { key: "zestawienie", label: "Zestawienie" },
   { key: "plan", label: "Plan wspaniały" },
+  // Miesięczne rozliczenie stawek kierowców — trzeci widok na te same `loads`.
+  { key: "stawki", label: "Stawki kierowców" },
 ];
 
 /**
- * Dwa widoki na TE SAME dane (`loads`): Zestawienie to tabela zleceń, Plan wspaniały to te same
- * zlecenia rozstawione na pojazdach. Zmiana w jednym widać w drugim od razu — obydwa czytają
- * ten sam cache TanStack Query odświeżany przez Realtime, więc nie ma tu żadnej synchronizacji
- * do napisania.
+ * Trzy widoki na TE SAME dane (`loads`): Zestawienie to tabela zleceń, Plan wspaniały to te same
+ * zlecenia rozstawione na pojazdach, Stawki kierowców to one same zsumowane po miesiącu i kierowcy.
+ * Zmiana w jednym widać w pozostałych od razu — wszystkie czytają ten sam cache TanStack Query
+ * odświeżany przez Realtime, więc nie ma tu żadnej synchronizacji do napisania.
  */
 export function AppViews() {
   const [widok, setWidok] = useState<Widok>("zestawienie");
@@ -40,7 +43,7 @@ export function AppViews() {
         ))}
       </nav>
       <div className="flex min-h-0 flex-1 flex-col">
-        {widok === "zestawienie" ? <ZestawienieView /> : <PlanView />}
+        {widok === "zestawienie" ? <ZestawienieView /> : widok === "plan" ? <PlanView /> : <StawkiView />}
       </div>
     </div>
   );

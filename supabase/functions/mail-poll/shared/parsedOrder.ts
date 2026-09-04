@@ -31,6 +31,12 @@ export interface ParsedOrder {
   address: string;
   city: string;
   /**
+   * Kod pocztowy miejsca dostawy/załadunku. Wygląda jak drobiazg, ale to od niego zależy stawka
+   * dla kierowcy (cennik `driver_rates`, migracja 0030) — dlatego jest osobnym polem, a nie
+   * kawałkiem `address`: adres z dokumentu bywa jednym ciągiem, a bywa bez kodu w ogóle.
+   */
+  postal_code: string;
+  /**
    * Telefon do ODBIORCY / osoby w miejscu rozładunku (kolumna `loads.contact_phone`) — bywa podany
    * w zleceniu i jest wtedy jedynym sposobem, żeby kierowca dodzwonił się na miejsce. To NIE jest
    * telefon kierowcy (`driver_phone`).
@@ -90,6 +96,12 @@ export interface ParsedOrder {
   vehicle_plate: string;
   trailer_plate: string;
   driver_phone: string;
+  /**
+   * Stawka dla kierowcy. NIE pochodzi z dokumentu (to koszt własny firmy, nie treść zlecenia) —
+   * appka wylicza ją z cennika po kodzie pocztowym i tonażu, a dyspozytor może ją nadpisać
+   * w formularzu. Jest w tym kształcie, bo formularz zlecenia to `ParsedOrder`.
+   */
+  driver_rate: number | null;
 }
 
 export const EMPTY_PARSED_ORDER: ParsedOrder = {
@@ -106,6 +118,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   company_name: "",
   address: "",
   city: "",
+  postal_code: "",
   contact_phone: "",
   extra_stops: [],
   load_date: "",
@@ -135,6 +148,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   vehicle_plate: "",
   trailer_plate: "",
   driver_phone: "",
+  driver_rate: null,
 };
 
 // `false` (np. "stawka NIE zawiera BAF-u") jest wartością, nie brakiem — puste jest tylko null i "".
@@ -210,6 +224,7 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     company_name: text("company_name"),
     address: text("address"),
     city: text("city"),
+    postal_code: text("postal_code"),
     contact_phone: text("contact_phone"),
     // Model potrafi zwrócić listę miejsc w dowolnym kształcie (albo wcale) — `normalizeStops`
     // przycina ją do tego, co appka umie zapisać, i wyrzuca puste wiersze.
@@ -248,6 +263,9 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     vehicle_plate: text("vehicle_plate"),
     trailer_plate: text("trailer_plate"),
     driver_phone: text("driver_phone"),
+    // Model o stawce dla kierowcy nic nie wie i nie ma jej w schemacie narzędzia — czytamy ją tu
+    // tylko po to, żeby przejście przez normalizację nie gubiło wartości wyliczonej wcześniej.
+    driver_rate: num("driver_rate"),
   };
 }
 

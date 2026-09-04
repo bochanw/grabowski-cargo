@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { extractPdfText } from "@/lib/pdf/extractPdfText";
 import { parseOrderPdf } from "@/lib/supabase/parseOrderPdf";
@@ -12,6 +12,9 @@ import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { applyOrderDefaults } from "@/lib/loads/prepareOrder";
 import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { useContractors } from "@/hooks/useContractors";
+import { useDriverRates } from "@/hooks/useDriverRates";
+import { computeDriverRate } from "@/lib/driverRates/rates";
+import { driverRatePatchFromForm, type DriverRatePatch } from "@/lib/driverRates/assign";
 import { findContractorByName, type Contractor } from "@/types/contractor";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
@@ -64,7 +67,7 @@ const EMPTY_PENDING: Omit<PendingOrder, "parsed"> = {
 
 const DEFAULT_CARRIER = "Grabowski Mariusz Sp. z o.o.";
 
-function formToRow(form: ParsedOrder, carrierName: string, contractorId: string) {
+function formToRow(form: ParsedOrder, carrierName: string, contractorId: string, rate: DriverRatePatch) {
   // BAF: dokument podaje albo stawkę Z dodatkiem ("3 000, w tym BAF 13%"), albo bazę + procent —
   // do bazy idzie zawsze rozbicie, żeby faktura mogła pokazać BAF osobną pozycją, gdy kontrahent
   // tak ma ustawione. `invoice_amount` (kwota do zafakturowania) zostaje kwotą RAZEM.
@@ -80,6 +83,7 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     company_name: form.company_name || null,
     address: form.address || null,
     city: form.city || null,
+    postal_code: form.postal_code || null,
     contact_phone: form.contact_phone || null,
     // Kolejne miejsca (2., 3., …) — pierwsze zostaje w polach wyżej, patrz src/types/loadStop.ts.
     stops: form.extra_stops.filter((stop) => !isStopEmpty(stop)),
@@ -115,6 +119,9 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     vehicle_plate: form.vehicle_plate || null,
     trailer_plate: form.trailer_plate || null,
     driver_phone: form.driver_phone || null,
+    // Stawka dla kierowcy razem z tym, SKĄD się wzięła: 'auto' wolno appce przeliczyć przy zmianie
+    // wagi czy kodu, 'manual' nie wolno nigdy (patrz src/lib/driverRates/assign.ts).
+    ...rate,
   };
 }
 
@@ -170,6 +177,7 @@ export function ImportOrderDialog({
   const { data: fleetData } = useFleet();
   const fleet: Fleet = fleetData ?? EMPTY_FLEET;
   const { data: contractors = [] } = useContractors();
+  const { data: rates = [] } = useDriverRates();
   // Pola ze Skrzynki są już odczytane, więc ekran wyboru pliku byłby tylko przeszkodą.
   const [stage, setStage] = useState<Stage>(
     mode === "edit" || initialParsed || (initialOrders?.length ?? 0) > 0 ? "review" : "pick"
@@ -231,6 +239,33 @@ export function ImportOrderDialog({
   // Podgląd źródła jest OTWARTY od razu, gdy jest co pokazać: to jedyny sposób, żeby dyspozytor
   // porównał pole z dokumentem, a nie zgadywał, skąd wzięła się wartość.
   const [pokazZrodlo, setPokazZrodlo] = useState(true);
+
+  // Stawka dla kierowcy z cennika — liczona NA ŻYWO z pól formularza, nie raz przy wczytaniu:
+  // dyspozytor poprawia kod pocztowy albo wagę i musi od razu widzieć, jak zmienia się kwota.
+  // Waga z terminala (Baltic Hub) jest przy tym nadrzędna, ale zna ją tylko zapisane zlecenie —
+  // przy nowym zleceniu jej po prostu nie ma.
+  const stawkaZCennika = useMemo(
+    () =>
+      computeDriverRate(
+        {
+          postal_code: form.postal_code,
+          address: form.address,
+          city: form.city,
+          stops: form.extra_stops,
+          bhub_gross_weight_kg: (existingLoad ?? matchedLoad)?.bhub_gross_weight_kg ?? null,
+          gross_weight: form.gross_weight,
+          net_weight_kg: form.net_weight_kg,
+          container_size: form.container_size,
+        },
+        rates
+      ),
+    [form, rates, existingLoad, matchedLoad]
+  );
+  // Zlecenie, przy którym dyspozytor ŚWIADOMIE wyczyścił stawkę ('manual' + brak kwoty), nie
+  // dostaje podpowiedzi z powrotem — inaczej edycja czegokolwiek innego cicho by ją wskrzesiła.
+  const stawkaSkasowanaRecznie =
+    (existingLoad ?? matchedLoad)?.driver_rate_source === "manual" && (existingLoad ?? matchedLoad)?.driver_rate === null;
+  const sugestiaStawki = stawkaSkasowanaRecznie ? null : stawkaZCennika.suggestion;
 
   /**
    * Wczytuje JEDNO zlecenie do formularza: domyślna data, brutto, gestia z uwag, rozpoznanie
@@ -567,7 +602,10 @@ export function ImportOrderDialog({
     }
     if (ensured.id && ensured.id !== contractorId) setContractorId(ensured.id);
 
-    const row = formToRow(form, carrierName, ensured.id);
+    // Kwota pokazana w pustym polu (podpowiedź z cennika) jest tym, co dyspozytor widział przed
+    // kliknięciem "Zapisz" — więc to ona idzie do bazy, a nie null.
+    const ratePatch = driverRatePatchFromForm(form.driver_rate ?? sugestiaStawki?.amount ?? null, stawkaZCennika.suggestion);
+    const row = formToRow(form, carrierName, ensured.id, ratePatch);
     let loadId = target?.id ?? "";
     if (target) {
       const { error } = await supabase.from("loads").update(row).eq("id", target.id);
@@ -998,6 +1036,17 @@ export function ImportOrderDialog({
                 <Field label="Adres">
                   <input className={inputClass} value={form.address} onChange={(e) => updateField("address", e.target.value)} />
                 </Field>
+                {/* Kod pocztowy stoi przy adresie, bo stamtąd się bierze — ale jest osobnym polem,
+                    bo to on decyduje o stawce dla kierowcy (cennik `driver_rates`). */}
+                <Field label={`Kod pocztowy (${stopLabel})`}>
+                  <input
+                    data-testid="pole-kod-pocztowy"
+                    className={inputClass}
+                    value={form.postal_code}
+                    onChange={(e) => updateField("postal_code", e.target.value)}
+                    placeholder="np. 05-500"
+                  />
+                </Field>
                 {/* Telefon ODBIORCY (nie kierowcy) — bywa w zleceniu i wtedy jest jedynym sposobem,
                     żeby kierowca dodzwonił się na miejsce rozładunku. */}
                 <Field label="Telefon odbiorcy / kontakt na miejscu">
@@ -1094,6 +1143,30 @@ export function ImportOrderDialog({
                 </Field>
                 <Field label="Waga brutto (towar + tara kontenera)">
                   <input className={inputClass} value={form.gross_weight} onChange={(e) => updateField("gross_weight", e.target.value)} placeholder="liczone z typu kontenera" />
+                </Field>
+
+                {/* Stawka dla kierowcy: appka podpowiada ją z cennika (kod pocztowy + tonaż), ale
+                    pole zostaje zwykłym inputem — kwota wpisana ręcznie wygrywa i nie jest już
+                    przez appkę przeliczana (patrz src/lib/driverRates/assign.ts). Puste pole
+                    pokazuje podpowiedź, więc dyspozytor widzi kwotę PRZED zapisem, a nie dopiero
+                    w tabeli. */}
+                <Field label="Stawka dla kierowcy (zł)">
+                  <input
+                    data-testid="pole-stawka-kierowcy"
+                    type="number"
+                    step="any"
+                    className={inputClass}
+                    value={form.driver_rate ?? sugestiaStawki?.amount ?? ""}
+                    onChange={(e) => updateField("driver_rate", e.target.value === "" ? null : Number(e.target.value))}
+                    placeholder={rates.length === 0 ? "cennik nie wczytany" : "z cennika"}
+                  />
+                  <p className="mt-0.5 text-[11px] leading-snug text-zinc-500" data-testid="opis-stawki-kierowcy">
+                    {sugestiaStawki
+                      ? `Z cennika: ${sugestiaStawki.amount} zł — ${sugestiaStawki.explanation}`
+                      : stawkaSkasowanaRecznie
+                        ? "Stawka była wyczyszczona ręcznie — appka jej nie podpowiada."
+                        : (stawkaZCennika.reason ?? "")}
+                  </p>
                 </Field>
 
                 {/* Ważenie (właściciel: „brakuje opcji zaciągania / dopisania gdzie i czy wymagane

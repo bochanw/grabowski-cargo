@@ -75,9 +75,21 @@ export function StopsEditor({
                 Firma
                 <input className={stopInputClass} value={stop.company_name} onChange={(e) => update(index, { company_name: e.target.value })} />
               </label>
-              <label className="col-span-3 flex flex-col gap-0.5 text-[11px] text-zinc-600 dark:text-zinc-400">
+              <label className="col-span-2 flex flex-col gap-0.5 text-[11px] text-zinc-600 dark:text-zinc-400">
                 Adres
                 <input className={stopInputClass} value={stop.address} onChange={(e) => update(index, { address: e.target.value })} />
+              </label>
+              {/* Kod pocztowy kolejnego miejsca potrafi zdecydować o stawce dla kierowcy: przy
+                  zleceniu wielopunktowym liczy się NAJWYŻSZA stawka ze wszystkich miejsc. */}
+              <label className="flex flex-col gap-0.5 text-[11px] text-zinc-600 dark:text-zinc-400">
+                Kod pocztowy
+                <input
+                  data-testid="miejsce-kod-pocztowy"
+                  className={stopInputClass}
+                  value={stop.postal_code}
+                  onChange={(e) => update(index, { postal_code: e.target.value })}
+                  placeholder="np. 26-600"
+                />
               </label>
               <label className="flex flex-col gap-0.5 text-[11px] text-zinc-600 dark:text-zinc-400">
                 Data

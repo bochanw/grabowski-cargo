@@ -39,6 +39,9 @@ export const COLUMNS: ColumnDef[] = [
   { key: "shipping_line", label: "Gestia", block: "ladunek" },
   { key: "company_name", label: "Dane firmy", block: "ladunek" },
   { key: "address", label: "Adres", block: "ladunek" },
+  // Kod pocztowy dostawy/załadunku — od niego zależy stawka dla kierowcy (cennik `driver_rates`),
+  // więc musi być widoczny i poprawialny wprost w tabeli.
+  { key: "postal_code", label: "Kod pocztowy", block: "ladunek" },
   // Zlecenie bywa wielopunktowe (krajówki szczególnie) — w komórce stoi skrót kolejnych miejsc,
   // kliknięcie otwiera ich edycję.
   { key: "stops", label: "Kolejne miejsca", block: "ladunek", kind: "stops" },
@@ -60,7 +63,9 @@ export const COLUMNS: ColumnDef[] = [
   { key: "reference_number", label: "Nr ref.", block: "ladunek" },
   { key: "net_weight_kg", label: "Waga netto", block: "ladunek", align: "right", kind: "number" },
   { key: "gross_weight", label: "Waga brutto", block: "ladunek" },
-  { key: "driver_rate", label: "Stawka kierowcy", block: "ladunek" },
+  // Stawka dla kierowcy jest LICZBĄ od migracji 0030 (miesięczne zestawienie ją sumuje). Wpisanie
+  // własnej kwoty oznacza ją jako ręczną — appka przestaje ją wtedy przeliczać.
+  { key: "driver_rate", label: "Stawka kierowcy", block: "ladunek", align: "right", kind: "number" },
   // "Data złożenia" (dawniej "Złożone kiedy") — w dokumentach zwykle "cut off". Zwykły tekst, nie
   // kolumna typu data: cut off bywa z godziną albo warunkiem ("wg armatora"), a to jest informacja,
   // po której dyspozytor planuje dzień.

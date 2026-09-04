@@ -1706,6 +1706,115 @@ kolumna na to"):**
   szablonów jest zero. `shared/parsedOrder.ts` jest już przegenerowane, więc przy najbliższym
   wdrożeniu tej funkcji z innego powodu pola wejdą same.
 
+**STAWKI DLA KIEROWCÓW — cennik po kodzie pocztowym i tonażu + miesięczne rozliczenie** (właściciel
+przysłał arkusz „Zeszyt1.xlsx": Arkusz 1 to 283 wiersze `Kod / Miejscowość / do 15t / pow. 15t /
+pow. 22t`; „potrzebuję żebyś dobudował funkcjonalność która automatycznie przypisze stawkę dla
+kierowcy w zależności od zlecenia (kodu pocztowego/wagi) i potem pozwoli łatwo w skali miesiąca
+pokazać stawki kierowcy w zestawieniu"). **Arkusze 2 i 3 świadomie nietknięte — właściciel:
+„na razie nie zaglądaj, to z czasem wytłumaczę".**
+
+**Decyzje właściciela (AskUserQuestion, ta sesja):**
+- **O progu tonażu decyduje waga Z TERMINALA (Baltic Hub), gdy jest**, a gdy jej nie ma — waga
+  z dokumentu. Kolejność w `weightForRate`: `bhub_gross_weight_kg` → liczbowa „Waga brutto" → towar
+  + tara wg typu kontenera → sama waga towaru (ta ostatnia zaniża wagę o 2,2-4,8 t, więc jest
+  ostrzeżeniem przy stawce, nie cichym założeniem).
+- **Zlecenie wielopunktowe: liczy się NAJWYŻSZA stawka ze wszystkich miejsc** („kierowca jedzie
+  najdalej"). Miejsce bez stawki w cenniku nie kasuje kwoty — dokłada ostrzeżenie.
+- **Osobna zakładka „Stawki kierowców"** obok Zestawienia i Planu wspaniałego.
+
+**Migracja 0030 (ZAAPLIKOWANA przez MCP w dwóch krokach — schemat i cennik — + `notify pgrst`):**
+- `driver_rates`: `prefix` to SAME CYFRY, 2 albo 3 („06" i „061"), bo dopasowanie do kodu pocztowego
+  zlecenia jest porównaniem prefiksu („80-299" → „80299" → próbuj „802", potem „80"). Zapis z arkusza
+  („06-1") odtwarza UI (`formatRatePrefix`). Sprawdzone po zaaplikowaniu zapytaniem: 283 wiersze,
+  220 trzycyfrowych, polskie znaki całe.
+- **Cennik w BAZIE, nie w kodzie**: stawki się zmieniają (paliwo, nowa umowa), a wtedy zmiana ma być
+  kliknięciem w appce, nie wdrożeniem — to samo rozstrzygnięcie co przy `contractors`
+  i `order_templates`. RLS „wymaga logowania", Realtime włączony (dwóch dyspozytorów, jedna prawda).
+- `loads.postal_code` — appka NIE MIAŁA gdzie trzymać kodu pocztowego (adres to wolny tekst, a w
+  danych produkcyjnych nie było ani jednego kodu), a to on decyduje o stawce.
+- **`loads.driver_rate` (kolumna Y arkusza) zmieniła TYP z text na numeric**, nie nazwę — nazwa siedzi
+  w `activity_log` i w zapisanych ustawieniach widoku każdego użytkownika (ta sama zasada co przy
+  „Złożone kiedy" i „Ważenie gdzie"). Konwersja bezpieczna: sprawdzone zapytaniem, że na produkcji
+  nie było ani jednej wypełnionej wartości. Do tego `driver_rate_code` (z którego wiersza cennika)
+  i `driver_rate_source` (`auto`/`manual`).
+
+**Reguły dopasowania (`src/lib/driverRates/rates.ts`) — appka NIGDY nie zgaduje:**
+- Bardziej szczegółowy wiersz wygrywa: najpierw 3 cyfry („06-1" Pułtusk), potem 2 („06" Mława).
+  Arkusz ma sześć prefiksów z jednym i drugim naraz, więc to nie jest teoria.
+- **Kod spoza cennika = BRAK stawki + powód wypisany wprost**, nigdy stawka sąsiada. Arkusz ma
+  08-1…08-5 i NIE ma ogólnego „08", a prefiksu 79 nie ma w ogóle — podstawienie sąsiedniego wiersza
+  byłoby kwotą do wypłaty wziętą z sufitu.
+- Kod pocztowy wyłuskiwany z adresu, gdy nie ma go w polu („Słoneczna 42 A, 05-500 Piaseczno") —
+  w `prepareOrder.ts`, czyli w tym jednym lejku, przez który przechodzi każde wejście pól do
+  formularza. Wymagany PEŁNY kształt NN-NNN: „Sygnały 62" nie jest kodem.
+- **Nazwa miejscowości to ostatnia deska ratunku i tylko wtedy, gdy WSZYSTKIE trafione wiersze mają
+  identyczne stawki** (Warszawa 00-04 i Łódź 90-94 — tak; miasto rozstrzelone po różnych stawkach —
+  nie). Kolumna „Miejscowość" jest opisem prefiksu, nie adresem („Mława/Przasnysz", „Okolice
+  Warszawy"), więc każde inne użycie byłoby zgadywaniem. Wynik jest oznaczony jako słabsze
+  dopasowanie i pisze wprost, żeby wpisać kod.
+- Progi: „do 15t" obejmuje RÓWNE 15 t, „pow. 22t" to dopiero > 22 t. W arkuszu pierwsze dwie kolumny
+  są często równe, więc pomyłka na tej granicy byłaby długo niewidoczna — stąd osobne testy.
+
+**Kiedy appce wolno ruszyć stawkę (`assign.ts`)** — jedno miejsce na tę granicę: tylko gdy
+`driver_rate_source` NIE jest `manual`. Kwota wpisana ręcznie w tabeli albo w formularzu jest
+nietykalna, a **świadome wyczyszczenie pola też jest decyzją człowieka** i nie wraca (formularz
+wtedy nie podpowiada). Źródło rozstrzyga porównanie z wyliczeniem: kwota równa podpowiedzi to
+`auto`, każda inna `manual` — dzięki temu nie ma osobnego pola „czy to ja wpisałem", którego
+dyspozytor musiałby pilnować.
+
+**Gdzie siedzi reguła — i dlaczego NIE w `prepareOrder.ts`.** Wszystkie trzy drogi (podpowiedź
+w oknie zlecenia, edycja inline w tabeli, przeliczanie zbiorcze) wołają `computeDriverRate`.
+Kuszące było dołożyć stawkę do `applyOrderDefaults` (tam siedzą domyślna data, brutto z tary
+i gestia z uwag), ale cennik przychodzi z bazy ASYNCHRONICZNIE, a `applyOrderDefaults` bywa wołane
+w inicjalizatorze stanu okna — czyli czasem zanim cennik dojedzie, i stawka wychodziłaby raz tak,
+raz tak. Okno liczy ją więc na żywo (`useMemo`), co przy okazji pokazuje kwotę od razu po poprawce
+kodu czy wagi. W `prepareOrder.ts` stoi komentarz, żeby nikt tego nie „naprawił".
+
+**Co się dzieje samo:** import/ręczne zlecenie podpowiada stawkę w formularzu (z jednym zdaniem
+„skąd ta kwota"), a zapis niesie ją razem z kodem cennika i źródłem. Edycja inline kodu pocztowego,
+wagi netto, brutto, typu kontenera albo kolejnych miejsc przelicza stawkę W TYM SAMYM zapisie —
+dokładnie tak, jak zmiana wagi przelicza brutto.
+
+**Zakładka „Stawki kierowców"** (`src/components/stawki/`): wybór miesiąca (po kolumnie „Data",
+bo to dzień, na który zlecenie jest zaplanowane; zlecenia bez daty mają własną szufladę „Bez daty"),
+wiersz per kierowca z sumą i licznikiem „bez stawki"/„ręcznie", po rozwinięciu jego zlecenia
+z wyjaśnieniem przy każdym. Do tego „Przelicz stawki z cennika" (pomija ręczne i mówi o tym wprost),
+„Pobierz CSV" (średnik + przecinek dziesiętny + BOM, żeby polski Excel otworzył to bez rozsypanych
+ogonków) i boczny „Cennik stawek" — podgląd, poprawianie kwot i dopisanie kodu bez wdrożenia.
+
+**`parse-order-pdf` wdrożona (v25)**: schemat ma `postal_code` (i to samo pole przy każdym kolejnym
+miejscu w `extra_stops`), a zasada 13 promptu mówi wprost, żeby brać kod z adresu DOSTAWY, nie
+z nagłówka zleceniodawcy, i nie zgadywać go z nazwy miasta. Wdrożenie sprawdzone: `get_edge_function`
+zwraca wysłaną treść, a strzały curl-em dają NASZE komunikaty (405, `not_a_user`) z całymi polskimi
+znakami.
+
+**Dwa błędy złapane testem w przeglądarce, nie przy pisaniu:**
+1. Filtr cennika po nazwie miasta nie zawężał NICZEGO: warunek `prefix.startsWith(szukaj bez cyfr)`
+   przy zapytaniu „Rybnik" sprowadzał się do `startsWith("")`, czyli „pasuje każdy wiersz". Cyfry
+   porównujemy teraz tylko wtedy, gdy zapytanie w ogóle jakieś ma.
+2. Zlecenie bez stawki, dla której cennik MA odpowiedź, pokazywało pustą rubrykę „skąd" — czyli
+   dyspozytor nie miał skąd wiedzieć, że wystarczy kliknąć „Przelicz". Teraz pisze wprost, ile by
+   wyszło.
+
+**Zweryfikowane:** logika — 61 sprawdzeń (`scratch-stawki.test.mts`, plik tymczasowy), przy czym
+**cennik do testów czytany jest z migracji 0030**, czyli z tych samych 283 wierszy arkusza, które
+poszły na produkcję (test na trzech wymyślonych wierszach potwierdzałby wyłącznie sam siebie).
+Przeglądarka (Playwright, `next dev`, tymczasowa strona `/test-stawki`, skasowana po teście) —
+33 sprawdzenia NA PRAWDZIWEJ ŚCIEŻCE (podstawiony wyłącznie `fetch`, bo środowisko sesji nie ma
+konta): obie nowe kolumny w Zestawieniu, edycja kodu i wagi przeliczająca stawkę w jednym PATCH-u,
+ręczna kwota oznaczona jako `manual`, formularz nowego zlecenia podpowiadający 550 zł i zapisujący
+je razem z kodem `44-2`, przeliczanie miesiąca dotykające dokładnie jednego zlecenia (ręcznego nie
+tknęło), sumy per kierowca i per miesiąc, cennik z filtrowaniem. Baza — REST widzi nowe kolumny
+(brak PGRST204), zapis bez sesji odbity przez RLS.
+**NIE zweryfikowane na żywym koncie** (środowisko sesji nie ma konta): zapis stawki z przeglądarki
+na produkcji oraz to, czy model faktycznie zwraca `postal_code` z prawdziwego dokumentu — pierwsze
+zlecenie u właściciela to pokaże. Sześć zleceń, które są dziś w bazie, nie ma kodów pocztowych;
+część z nich złapie się po nazwie miasta (Rybnik, Łódź, Jasło), reszta czeka na wpisanie kodu.
+**`mail-poll` NIE przewdrożona** (wdrożona v18 nie zna `postal_code`) — propozycje ze skrzynki
+przychodzą bez kodu, dyspozytor uzupełnia go w formularzu albo appka wyłuskuje go z adresu.
+`shared/` jest już przegenerowane, więc wystarczy `supabase functions deploy mail-poll
+--project-ref itlgexjhznjsbonzdxyg` (przez MCP trzeba by wklejać cały bundle).
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -1744,6 +1853,11 @@ kolumna na to"):**
    do rozważenia z właścicielem, czy ma tam stać (dziś widać je tylko w Zestawieniu i w oknie
    zlecenia). Szablon Q4Road (`q4road.ts`) też nie czyta ważenia — do dopisania, gdy pojawi się ich
    zlecenie z taką rubryką (nie zgadywać regexa bez dokumentu, patrz pułapka z kotwicą `$`).
+13. Stawki kierowców: Arkusz 2 i 3 przysłanego pliku czekają na wyjaśnienie właściciela („z czasem
+   wytłumaczę") — NIE otwierać ich bez tego. Do dopytania przy pierwszym rozliczeniu miesiąca: czy
+   ktoś ma dostawać dodatek za ważenie/wielopunktówkę (dziś stawka zależy wyłącznie od kodu i wagi)
+   i czy cennik ma mieć wersje (od kiedy obowiązuje) — dziś poprawka stawki działa wstecz na
+   przeliczane zlecenia, a zapisane kwoty zostają.
 11. Krajówka na fakturze: trasa to dziś same miejscowości (`buildRoute`), bo zlecenie nie ma pola
    „miejsce załadunku" osobno od miejsca rozładunku. Jeśli właściciel będzie chciał pełną trasę
    „skąd — dokąd", potrzebne będzie to pole (albo pierwsze miejsce z listy jako załadunek).

@@ -26,6 +26,7 @@ export function loadToForm(load: Load): ParsedOrder {
     company_name: load.company_name ?? "",
     address: load.address ?? "",
     city: load.city ?? "",
+    postal_code: load.postal_code ?? "",
     contact_phone: load.contact_phone ?? "",
     extra_stops: normalizeStops(load.stops),
     load_date: load.load_date ?? "",
@@ -57,5 +58,6 @@ export function loadToForm(load: Load): ParsedOrder {
     vehicle_plate: load.vehicle_plate ?? "",
     trailer_plate: load.trailer_plate ?? "",
     driver_phone: load.driver_phone ?? "",
+    driver_rate: load.driver_rate,
   };
 }

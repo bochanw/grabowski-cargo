@@ -78,6 +78,7 @@ const EXTRACT_TOOL = {
       company_name: { type: 'string', description: 'Nazwa firmy/miejsca, DO KTÓREGO jedzie samochód (magazyn, zakład, odbiorca), jeśli podana osobno od adresu. Pusty string, jeśli nie ma.' },
       address: { type: 'string', description: 'Adres z rubryki MIEJSCE ZAŁADUNKU / ROZŁADUNKU — czyli tam, gdzie faktycznie jedzie samochód. To zwykle NIE jest adres rejestrowy firmy z nagłówka dokumentu (zakład/magazyn bywa w innym mieście niż siedziba) — nigdy nie podstawiaj adresu z nagłówka, gdy dokument podaje osobne miejsce załadunku/rozładunku. Pusty string, jeśli nieznany.' },
       city: { type: 'string', description: 'Sama nazwa miejscowości z TEGO SAMEGO miejsca co pole address (załadunek/rozładunek), bez reszty adresu i bez siedziby firmy z nagłówka. Pusty string, jeśli nieznana.' },
+      postal_code: { type: 'string', description: 'Kod pocztowy TEGO SAMEGO miejsca co address/city (miejsce dostawy albo załadunku), w zapisie NN-NNN. To NIE jest kod pocztowy zleceniodawcy z nagłówka (od tego jest forwarder_postal_code). Pusty string, jeśli dokument go nie podaje — nie zgaduj kodu z nazwy miasta.' },
       contact_phone: { type: 'string', description: 'Telefon KONTAKTOWY do miejsca załadunku/rozładunku (osoba u klienta, magazyn, odbiorca) — jeśli dokument go podaje. To NIE jest telefon kierowcy (driver_phone) ani telefon spedytora wystawiającego zlecenie. Pusty string, jeśli nie podano.' },
       extra_stops: {
         type: 'array',
@@ -87,13 +88,14 @@ const EXTRACT_TOOL = {
           properties: {
             kind: { type: 'string', enum: ['', 'load', 'unload'], description: '"load" = załadunek, "unload" = rozładunek. Pusty string, jeśli dokument tego nie nazywa.' },
             company_name: { type: 'string', description: 'Nazwa firmy/miejsca. Pusty string, jeśli nie ma.' },
-            address: { type: 'string', description: 'Ulica z numerem (i kod pocztowy, jeśli podany). Pusty string, jeśli nie ma.' },
+            address: { type: 'string', description: 'Ulica z numerem. Pusty string, jeśli nie ma.' },
             city: { type: 'string', description: 'Sama miejscowość. Pusty string, jeśli nie ma.' },
+            postal_code: { type: 'string', description: 'Kod pocztowy tego miejsca (NN-NNN). Pusty string, jeśli dokument go nie podaje.' },
             date: { type: 'string', description: 'Data tego miejsca w formacie RRRR-MM-DD. Pusty string, jeśli dokument jej nie podaje osobno.' },
             time: { type: 'string', description: 'Godzina/okno czasowe tego miejsca (np. "08:30", "8-16"). Pusty string, jeśli nie ma.' },
             notes: { type: 'string', description: 'Uwaga dotycząca TEGO miejsca (np. numer awizacji, "wjazd od tyłu"). Pusty string, jeśli nie ma.' },
           },
-          required: ['kind', 'company_name', 'address', 'city', 'date', 'time', 'notes'],
+          required: ['kind', 'company_name', 'address', 'city', 'postal_code', 'date', 'time', 'notes'],
         },
       },
       load_date: { type: 'string', description: 'Data ZAŁADUNKU/podjęcia w formacie RRRR-MM-DD, TYLKO jeśli dokument podaje ją osobno od daty rozładunku. Pusty string, jeśli nieznana — NIGDY nie zgaduj roku ani dnia.' },
@@ -126,7 +128,7 @@ const EXTRACT_TOOL = {
       trailer_plate: { type: 'string', description: 'Numer rejestracyjny NACZEPY/przyczepy. Pusty string, jeśli nie podano.' },
       driver_phone: { type: 'string', description: 'Telefon kierowcy. Pusty string, jeśli nie podano.' },
     },
-    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'contact_phone', 'extra_stops', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'seal_number', 'goods_name', 'adr_sent', 'weighing_required', 'weighing_place', 'net_weight_kg', 'submitted_when', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
+    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'postal_code', 'contact_phone', 'extra_stops', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'seal_number', 'goods_name', 'adr_sent', 'weighing_required', 'weighing_place', 'net_weight_kg', 'submitted_when', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
   },
 };
 
@@ -183,7 +185,12 @@ Zasady, których nie wolno złamać:
    "VGM po stronie przewoźnika"). Rozbij je na dwa pola: weighing_required (czy w ogóle) i
    weighing_place (gdzie). Wskazanie miejsca samo w sobie znaczy, że ważenie jest wymagane. Nie myl
    ważenia z wagą towaru (net_weight_kg) ani z miejscem podjęcia/zdania kontenera.
-13. Gdy dostajesz TREŚĆ MAILA zamiast dokumentu, obowiązują te same zasady, a szczególnie zasada 1:
+13. KOD POCZTOWY miejsca dostawy/załadunku (postal_code) przepisz dokładnie tak, jak stoi przy
+   TYM adresie, do którego jedzie samochód — nie z nagłówka zleceniodawcy i nie z pieczątki.
+   Jeśli dokument kodu nie podaje, zostaw puste: appka woli brak kodu niż kod zgadnięty z nazwy
+   miasta (od kodu zależy u niej stawka wypłacana kierowcy). Tak samo przy kolejnych miejscach
+   w extra_stops.
+14. Gdy dostajesz TREŚĆ MAILA zamiast dokumentu, obowiązują te same zasady, a szczególnie zasada 1:
    mail często niesie tylko JEDNĄ informację ("kontener przesunięty na piątek", "nowy numer
    bookingu"). Wypełnij wtedy WYŁĄCZNIE te pola, które mail faktycznie podaje, a całą resztę
    zostaw pustą — appka scala takie uzupełnienie z istniejącym zleceniem i nadpisanie czegokolwiek

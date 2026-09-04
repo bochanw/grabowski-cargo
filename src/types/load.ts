@@ -42,7 +42,20 @@ export interface Load {
   reference_number: string | null;
   net_weight_kg: number | null;
   gross_weight: string | null;
-  driver_rate: string | null;
+  /**
+   * Kod pocztowy miejsca dostawy (import) / załadunku (eksport, krajówka) — migracja 0030.
+   * Decyduje o stawce dla kierowcy, patrz src/lib/driverRates/rates.ts.
+   */
+  postal_code: string | null;
+  /**
+   * Stawka dla kierowcy w złotych (kolumna Y arkusza). Od migracji 0030 LICZBA, nie tekst
+   * "[500 zł]": miesięczne zestawienie stawek musi ją sumować. `driver_rate_code` mówi, z którego
+   * wiersza cennika wyszła, a `driver_rate_source` — czy wolno ją appce przeliczyć ('auto') czy
+   * wpisał ją człowiek ('manual', nigdy nie nadpisujemy).
+   */
+  driver_rate: number | null;
+  driver_rate_code: string | null;
+  driver_rate_source: "auto" | "manual" | null;
   submitted_when: string | null;
   submitted_where: string | null;
   driver_initials: string | null;

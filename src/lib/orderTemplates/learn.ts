@@ -72,6 +72,7 @@ const LEARNABLE: Partial<Record<LearnedField, LearnKind>> = {
   company_name: "text",
   address: "text",
   city: "text",
+  postal_code: "text",
   delivery_date: "date",
   delivery_time: "time",
   customs_location_or_status: "text",
