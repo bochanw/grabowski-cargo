@@ -1608,6 +1608,48 @@ oznaczać, a nie z góry wywalać"):
 - Zweryfikowane: 18 sprawdzeń logiki (`scratch-grupy.test.mts` — w tym oba nowe przypadki: treść
   dochodzi do jedynego zlecenia, a przy kilku zleceniach nie dochodzi, ale zostawia ostrzeżenie).
 
+**NAUKA Z DOKUMENTÓW JUŻ LEŻĄCYCH W STORAGE + naprawiona dziura w Skrzynce** (właściciel: „jak
+recznie dzisiaj poprawiam babole to program sie uczy?" → nie; „jak mam dopiac pdf skoro na biezaco
+sa one odczytywane z maila? nie mozemy zrobic jakiegos obejscia na czas nauki"):
+- **Odpowiedź na pytanie wyjściowe: poprawka wpisana w KOMÓRCE TABELI nie uczy niczego.** Nauka
+  siedzi w `handleSave` okna zlecenia i potrzebuje naraz tekstu dokumentu i pól zatwierdzonych przez
+  człowieka; edycja inline nie ma dokumentu, więc nie ma gdzie szukać kotwic.
+- **ZNALEZIONA DZIURA, prawdopodobna przyczyna zera szablonów mimo 6 zapisanych zleceń z PDF-ami**:
+  `SkrzynkaPanel.otworzMaila` NIE ustawiał `materialDoNauki` — appka uczyła się WYŁĄCZNIE przy
+  świeżym kliknięciu „Odczytaj przez Claude". Mail odczytany wcześniej (wynik zapisany przy
+  wiadomości, drugie wejście darmowe) otwierał się bez tekstu dokumentów i zapisane z niego zlecenie
+  nie zostawiało po sobie nic. Teraz tekst załączników wyciągany jest z bucketa przy otwarciu maila
+  — **przed** `setOpenMail`, bo `ImportOrderDialog` bierze `initialLearningDocs` tylko przy
+  montowaniu (dostarczone chwilę później nie trafiłoby do zapisu).
+- `src/lib/orderTemplates/fromStored.ts` — pliki z Storage → `LearningDocument[]` (pobranie,
+  opakowanie w `File`, ten sam `extractPdfText` co w oknie importu). `learningDocsFromStorage`
+  (dowolny bucket: `order-emails` przy mailu, `load-documents` przy zleceniu) + `learningDocsFromStored`
+  (dokumenty jednego zlecenia). POD/CMR pomijane — z nich szablon nigdy nie odtworzy kompletu
+  kluczowych pól, więc zakładałyby tylko wieczne „kandydaty". Skan bez warstwy tekstowej to nie błąd,
+  tylko granica metody — wraca jako komunikat, nie jako cisza.
+- **Obejście na czas rozruchu — „Naucz z zapisanych zleceń (N)"** w oknie „Szablony": bierze PDF-y
+  podpięte do zapisanych zleceń i uczy się z pól, które są przy tych zleceniach ZAPISANE (czyli
+  także z poprawek wpisanych w tabeli). Zlecenia idą PO KOLEI, od najstarszych — o aktywacji
+  szablonu decyduje para dokumentów tego samego układu, więc drugi musi zobaczyć wzorzec zapisany
+  przez pierwszy; równolegle powstałyby dwa wiersze na ten sam układ. Zatrzymanie przez `ref`, nie
+  przez stan (pętla czyta to w trakcie biegu). Nic nie zmienia w zleceniach i nie woła modelu.
+- To samo dla JEDNEGO zlecenia: guzik **„Naucz appkę z tych dokumentów"** w oknie „Dokumenty".
+- `loadToForm` wyjęte z `ImportOrderDialog` do `src/lib/loads/loadToForm.ts` — nauka wsteczna
+  potrzebuje dokładnie tego samego przeliczenia rekordu na pola formularza.
+- Świadomie BEZ `usedTemplateId`/`templateOutput` przy nauce wstecznej: dokument był czytany kiedyś
+  i czymś innym, więc liczenie „poprawek dyspozytora" byłoby liczeniem cudzych pomyłek.
+- **Zweryfikowane w przeglądarce** (Playwright, `next dev`, tymczasowa strona `/test-nauka`,
+  skasowana po teście) na PRAWDZIWYM PDF-ie Q4Road, z podstawionym wyłącznie transportem
+  (`supabase.storage.from().download()` → `fetch` pliku), resztą prawdziwego kodu: 2 dokumenty
+  wczytane, JPEG i brakujący plik odbite z powodem, tekst 6089 znaków (**dokładnie tyle samo, co
+  mierzone wcześniej przy odczycie tego pliku z dysku** — Blob nic nie gubi), pierwszy dokument →
+  `kandydat` z 12 etykietami, drugi (te same rubryki, inne wartości) → **`aktywny`, 5 reguł**.
+  **Pułapka testu, nie kodu**: pierwszy przebieg dał tylko 4 reguły i status `kandydat`, bo do
+  „zatwierdzonych" wpisałem zmyśloną datę rozładunku — wartości, której w dokumencie nie ma, nauka
+  nie zakotwiczy. Data odczytana z tekstu (03.07.2026) domknęła komplet.
+- **NIE zweryfikowane na żywym koncie**: samo pobranie z prywatnego bucketa (środowisko sesji nie ma
+  konta) — pierwsze kliknięcie właściciela pokaże, czy podpis do `order-emails` przechodzi.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

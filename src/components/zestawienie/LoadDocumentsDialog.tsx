@@ -16,6 +16,7 @@ import {
   type DocumentKind,
   type LoadDocument,
 } from "@/types/loadDocument";
+import { useLearnFromStoredDocuments } from "@/hooks/useOrderTemplates";
 import type { Load } from "@/types/load";
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
@@ -39,6 +40,7 @@ export function LoadDocumentsDialog({ load, onClose }: { load: Load; onClose: ()
   const uploadDocument = useUploadLoadDocument();
   const updateDocument = useUpdateLoadDocument();
   const deleteDocument = useDeleteLoadDocument();
+  const learnFromStored = useLearnFromStoredDocuments();
   const [kind, setKind] = useState<DocumentKind>("pod_cmr");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -73,6 +75,24 @@ export function LoadDocumentsDialog({ load, onClose }: { load: Load; onClose: ()
       return;
     }
     window.open(result.url, "_blank", "noopener");
+  }
+
+  /**
+   * Nauka z dokumentów TEGO zlecenia — po ręcznym poprawieniu pól w Zestawieniu. Zwykła auto-nauka
+   * rusza przy zapisie w oknie zlecenia, a poprawka w komórce tabeli tamtędy nie przechodzi; tu
+   * appka bierze zapisany rekord jako wartości zatwierdzone i szuka ich w tekście dokumentów.
+   */
+  async function teach() {
+    setBusy(true);
+    setMessage("Czytam dokumenty…");
+    const result = await learnFromStored([{ load, documents }]);
+    setBusy(false);
+    setMessage(
+      [
+        result.notes.length > 0 ? result.notes.join(" ") : "Z tych dokumentów nic nowego nie wynikło.",
+        ...result.problems,
+      ].join(" ")
+    );
   }
 
   async function remove(document: LoadDocument) {
@@ -187,7 +207,18 @@ export function LoadDocumentsDialog({ load, onClose }: { load: Load; onClose: ()
           </div>
         </div>
 
-        <div className="flex justify-end border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          {documents.some((d) => d.kind !== "pod_cmr") && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void teach()}
+              title="Poprawiłeś pola tego zlecenia w tabeli? Appka dopasuje je do tekstu dokumentów i zapamięta układ — bez płatnego odczytu."
+              className="mr-auto rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+            >
+              Naucz appkę z tych dokumentów
+            </button>
+          )}
           <button type="button" onClick={onClose} className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
             Zamknij
           </button>

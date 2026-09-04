@@ -15,6 +15,7 @@ import { matchExistingLoad } from "@/lib/loads/orderNumber";
 import { normalizeParsedOrder, type ParsedOrder } from "@/types/parsedOrder";
 import { readEmailWithClaude } from "@/lib/supabase/readEmailWithClaude";
 import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
+import { learningDocsFromStorage } from "@/lib/orderTemplates/fromStored";
 
 const TIME_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
   day: "2-digit",
@@ -155,8 +156,34 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
     );
   }
 
+  /**
+   * Materiał do auto-nauki z załączników LEŻĄCYCH JUŻ w buckecie maili.
+   *
+   * Bez tego appka uczyła się WYŁĄCZNIE przy świeżym płatnym odczycie: mail odczytany wcześniej
+   * (wynik zapisany przy wiadomości, więc drugie wejście jest darmowe) otwierał się bez tekstu
+   * dokumentów, a zapisane z niego zlecenie nie zostawiało po sobie żadnego szablonu.
+   * Wyciągnięcie tekstu jest lokalne (pdf.js) i nic nie kosztuje.
+   */
+  async function materialZZalacznikow(zalaczniki: EmailAttachment[]) {
+    const pliki = zalaczniki
+      .filter((a) => a.storage_path)
+      .map((a) => ({
+        bucket: "order-emails",
+        path: a.storage_path as string,
+        fileName: a.filename ?? "załącznik.pdf",
+        mimeType: a.mime_type,
+        parseSource: a.parse_source ?? "załącznik z maila",
+      }));
+    if (pliki.length === 0) return [];
+    const { documents } = await learningDocsFromStorage(pliki);
+    return documents;
+  }
+
   async function otworzMaila(mail: EmailMessage) {
     const zalaczniki = await pobierzZalaczniki(mail);
+    // Materiał do nauki PRZED otwarciem okna: `ImportOrderDialog` bierze go tylko przy montowaniu,
+    // więc dostarczony chwilę później nie trafiłby już do zapisu.
+    setMaterialDoNauki(await materialZZalacznikow(zalaczniki));
     setOpenMail(mail);
     setZrodla(zbudujZrodla(mail, zalaczniki));
     setZlecenia(zbudujZlecenia(mail, zalaczniki));

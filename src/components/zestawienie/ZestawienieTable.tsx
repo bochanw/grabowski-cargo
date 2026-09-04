@@ -619,7 +619,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         />
       )}
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
-      {dialog?.kind === "templates" && <OrderTemplatesDialog onClose={() => setDialog(null)} />}
+      {dialog?.kind === "templates" && <OrderTemplatesDialog loads={loads} onClose={() => setDialog(null)} />}
       {dialog?.kind === "extension" && <ExtensionDialog extension={extension} onClose={() => setDialog(null)} />}
       {dialog?.kind === "view" && (
         <ViewSettingsDialog measureColumnWidths={measureColumnWidths} onClose={() => setDialog(null)} />

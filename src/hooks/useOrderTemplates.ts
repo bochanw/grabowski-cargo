@@ -4,8 +4,12 @@ import { useEffect, useId } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase/client";
 import { planLearning, type LearningDocument } from "@/lib/orderTemplates/autoLearn";
+import { learningDocsFromStored } from "@/lib/orderTemplates/fromStored";
+import { loadToForm } from "@/lib/loads/loadToForm";
 import type { OrderTemplate } from "@/types/orderTemplate";
 import type { ParsedOrder } from "@/types/parsedOrder";
+import type { LoadDocument } from "@/types/loadDocument";
+import type { Load } from "@/types/load";
 
 export const ORDER_TEMPLATES_QUERY_KEY = ["order-templates"] as const;
 
@@ -114,6 +118,53 @@ export function useLearnFromDocuments() {
     }
     queryClient.invalidateQueries({ queryKey: ORDER_TEMPLATES_QUERY_KEY });
     return notes;
+  };
+}
+
+export interface StoredLearningResult {
+  /** Ile zleceń faktycznie coś wniosło do szablonów. */
+  taught: number;
+  /** Ile zleceń appka przejrzała, zanim skończyła (albo została zatrzymana). */
+  seen: number;
+  notes: string[];
+  problems: string[];
+}
+
+/**
+ * Nauka WSTECZ — z dokumentów leżących już przy zapisanych zleceniach.
+ *
+ * Ta sama nauka co przy zapisie zlecenia, tylko materiał pobierany z Storage zamiast z okna
+ * (patrz src/lib/orderTemplates/fromStored.ts). Zlecenia przechodzą PO KOLEI, bo o tym, czy szablon
+ * stanie się aktywny, decyduje para dokumentów tego samego układu: drugi musi zobaczyć wzorzec
+ * zapisany przez pierwszy. Równolegle założyłyby dwa wiersze na ten sam układ.
+ */
+export function useLearnFromStoredDocuments() {
+  const learnFromDocuments = useLearnFromDocuments();
+
+  return async function run(
+    items: { load: Load; documents: LoadDocument[] }[],
+    onProgress?: (progress: { done: number; total: number; label: string }) => void,
+    shouldStop?: () => boolean
+  ): Promise<StoredLearningResult> {
+    const result: StoredLearningResult = { taught: 0, seen: 0, notes: [], problems: [] };
+
+    for (const item of items) {
+      if (shouldStop?.()) break;
+      const label = item.load.order_number ?? item.load.container_number ?? "zlecenie bez numeru";
+      result.seen += 1;
+      onProgress?.({ done: result.seen, total: items.length, label });
+
+      const material = await learningDocsFromStored(item.documents);
+      result.problems.push(...material.problems.map((p) => `${label}: ${p}`));
+      if (material.documents.length === 0) continue;
+
+      const notes = await learnFromDocuments(material.documents, loadToForm(item.load));
+      if (notes.length === 0) continue;
+      result.taught += 1;
+      result.notes.push(`${label}: ${notes.join(" ")}`);
+    }
+
+    return result;
   };
 }
 

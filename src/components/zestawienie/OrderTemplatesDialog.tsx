@@ -1,8 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import { useDeleteTemplate, useOrderTemplates, useSetTemplateStatus } from "@/hooks/useOrderTemplates";
+import { useMemo, useRef, useState } from "react";
+import {
+  useDeleteTemplate,
+  useLearnFromStoredDocuments,
+  useOrderTemplates,
+  useSetTemplateStatus,
+} from "@/hooks/useOrderTemplates";
+import { useLoadDocuments } from "@/hooks/useLoadDocuments";
 import { DOC_KIND_LABELS, TEMPLATE_STATUS_LABELS, type OrderTemplate } from "@/types/orderTemplate";
+import type { LoadDocument } from "@/types/loadDocument";
+import type { Load } from "@/types/load";
 import { COLUMNS } from "./columns";
 
 // Nauczone szablony — układy dokumentów, których appka nauczyła się sama z zapisanych zleceń
@@ -27,12 +35,58 @@ function formatDate(value: string | null): string {
   return value ? new Date(value).toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" }) : "—";
 }
 
-export function OrderTemplatesDialog({ onClose }: { onClose: () => void }) {
+export function OrderTemplatesDialog({ loads = [], onClose }: { loads?: Load[]; onClose: () => void }) {
   const { data: templates = [], isLoading, isError, error } = useOrderTemplates();
+  const { data: allDocuments = [] } = useLoadDocuments();
   const setStatus = useSetTemplateStatus();
   const deleteTemplate = useDeleteTemplate();
+  const learnFromStored = useLearnFromStoredDocuments();
   const [message, setMessage] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [log, setLog] = useState<string[]>([]);
+  // Zatrzymanie przez ref, nie przez stan: pętla nauki czyta to W TRAKCIE swojego biegu, a wartość
+  // ze stanu byłaby w niej zamrożona z chwili kliknięcia „Naucz".
+  const stopRef = useRef(false);
+
+  /**
+   * Zlecenia, z których jest się czego uczyć: mają podpięty dokument inny niż POD/CMR. Od
+   * NAJSTARSZYCH, bo szablon staje się aktywny dopiero, gdy drugi dokument tego układu potwierdzi
+   * kotwice — kolejność chronologiczna odtwarza to, co działoby się na bieżąco.
+   */
+  const candidates = useMemo(() => {
+    const byLoad = new Map<string, LoadDocument[]>();
+    for (const document of allDocuments) {
+      if (document.kind === "pod_cmr") continue;
+      const list = byLoad.get(document.load_id);
+      if (list) list.push(document);
+      else byLoad.set(document.load_id, [document]);
+    }
+    return loads
+      .filter((load) => byLoad.has(load.id))
+      .map((load) => ({ load, documents: byLoad.get(load.id) ?? [] }))
+      .sort((a, b) => String(a.load.created_at ?? "").localeCompare(String(b.load.created_at ?? "")));
+  }, [loads, allDocuments]);
+
+  async function relearn() {
+    setRunning(true);
+    setLog([]);
+    setMessage(null);
+    stopRef.current = false;
+    const result = await learnFromStored(
+      candidates,
+      ({ done, total, label }) => setProgress(`Czytam dokumenty zlecenia ${done} z ${total}: ${label}…`),
+      () => stopRef.current
+    );
+    setProgress("");
+    setRunning(false);
+    setLog([...result.notes, ...result.problems]);
+    setMessage(
+      `Przejrzane zlecenia: ${result.seen} z ${candidates.length}. Nauka ruszyła przy ${result.taught}.` +
+        (result.problems.length > 0 ? ` Pominięte dokumenty: ${result.problems.length}.` : "")
+    );
+  }
 
   async function toggle(template: OrderTemplate) {
     const next = template.status === "wycofany" ? "kandydat" : "wycofany";
@@ -66,6 +120,41 @@ export function OrderTemplatesDialog({ onClose }: { onClose: () => void }) {
           Pierwsze zlecenie od nowego spedytora czyta Claude (płatnie). Appka zapamiętuje wtedy układ
           dokumentu, a przy drugim takim dokumencie uczy się go czytać sama — od tej chwili kolejne
           zlecenia tego spedytora są odczytywane za darmo.
+        </div>
+
+        {/* Obejście na czas rozruchu: zlecenia odczytane wcześniej przez Claude są już zapisane,
+            a ich PDF-y leżą w Storage — nie ma po co wgrywać ich drugi raz z dysku tylko po to,
+            żeby nauka je zobaczyła. */}
+        <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="max-w-2xl">
+              <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">Nauka z zapisanych zleceń</p>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                Appka przeczyta PDF-y podpięte do zapisanych zleceń ({candidates.length}) i nauczy się
+                układów z pól, które są przy tych zleceniach ZAPISANE — popraw więc babole w
+                Zestawieniu, zanim to uruchomisz. Nic nie zmienia w zleceniach i nic nie kosztuje
+                (żadnego odczytu przez Claude).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={running ? () => (stopRef.current = true) : relearn}
+              disabled={!running && candidates.length === 0}
+              className="shrink-0 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+            >
+              {running ? "Zatrzymaj" : `Naucz z zapisanych zleceń (${candidates.length})`}
+            </button>
+          </div>
+          {progress && <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">{progress}</p>}
+          {log.length > 0 && (
+            <ul className="mt-2 max-h-32 overflow-auto rounded bg-zinc-50 p-2 dark:bg-zinc-900">
+              {log.map((line, index) => (
+                <li key={index} className="text-xs text-zinc-600 dark:text-zinc-300">
+                  {line}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto p-3">
