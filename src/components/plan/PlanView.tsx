@@ -17,6 +17,7 @@ import {
 } from "@/lib/plan/planBoard";
 import { PLAN_SLOTS, PLAN_SLOT_LABELS, type PlanSlot } from "@/lib/plan/slots";
 import { assignRefusal, assignmentPatch, unassignPatch } from "@/lib/plan/assign";
+import { DIRECTION_SHORT } from "@/lib/loads/direction";
 import { nextWorkingDay, previousWorkingDay, todayIso, isWorkingDay } from "@/lib/dates/workingDays";
 import { PlanCarryTile, PlanTile } from "./PlanTile";
 import { PlanRowSettingsDialog } from "./PlanRowSettingsDialog";
@@ -322,7 +323,7 @@ export function PlanView() {
                   colSpan={2}
                   className="border-b border-r-2 border-zinc-300 bg-emerald-50 px-2 py-1 text-center font-semibold text-emerald-900 dark:border-zinc-700 dark:bg-emerald-950 dark:text-emerald-100"
                 >
-                  EKSPORT
+                  EKSPORT / KRAJÓWKA
                 </th>
                 <th
                   colSpan={2}
@@ -482,14 +483,19 @@ export function PlanView() {
                 }`}
               >
                 <div className="flex items-center gap-1">
+                  {/* Trzy kierunki, trzy kolory: krajówka trafia do kolumn eksportu, ale nie jest
+                      eksportem — dyspozytor musi to widzieć jeszcze przed położeniem jej na aucie. */}
                   <span
+                    data-testid="kierunek"
                     className={`rounded px-1 text-[10px] font-semibold ${
-                      load.direction === "E"
-                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-100"
-                        : "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-100"
+                      load.direction === "K"
+                        ? "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-100"
+                        : load.direction === "E"
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-100"
+                          : "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-100"
                     }`}
                   >
-                    {load.direction === "E" ? "EKS" : "IMP"}
+                    {DIRECTION_SHORT[load.direction]}
                   </span>
                   <span className="font-semibold">{load.container_number || load.order_number || "(bez numeru)"}</span>
                   {load.load_date ? (

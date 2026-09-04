@@ -4,6 +4,8 @@ import type { Load } from "@/types/load";
 import { containerSizeFamily } from "@/lib/containers/tare";
 import { EMPTY_DROP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { withCurrentOption } from "@/lib/fleet/fleetStore";
+import { isDomestic } from "@/lib/loads/direction";
+import { describeStop, normalizeStops, summarizeStops } from "@/types/loadStop";
 
 /**
  * Kafelek jednego kontenera na zestawie.
@@ -113,6 +115,7 @@ export function PlanTile({
   const odprawa = isImport ? (load.customs_status ?? "").trim() : "";
   const spedycja = isImport ? (load.forwarder ?? "").trim() : "";
   const gdzie = [load.city, load.company_name].map((v) => (v ?? "").trim()).filter(Boolean).join(", ");
+  const stops = normalizeStops(load.stops);
   const drugaLinia = [load.container_number, load.container_size, load.shipping_line]
     .map((v) => (v ?? "").trim())
     .filter(Boolean)
@@ -170,6 +173,17 @@ export function PlanTile({
             {load.container_size}
           </span>
         )}
+        {/* Krajówka stoi w kolumnach eksportu, więc bez plakietki wyglądałaby jak zwykły eksport —
+            a to inny rodzaj roboty (transport krajowy, bez portu). */}
+        {isDomestic(load.direction) && (
+          <span
+            data-testid="plakietka-krajowka"
+            title="Krajówka — transport krajowy; w planie jedzie po stronie eksportu"
+            className="shrink-0 rounded bg-violet-200 px-1 text-[10px] font-semibold text-violet-900 dark:bg-violet-900 dark:text-violet-100"
+          >
+            KRAJ
+          </span>
+        )}
         <span className="font-semibold text-zinc-900 dark:text-zinc-100">{gdzie || "(bez miejscowości)"}</span>
         {isImport && adr && (
           <span
@@ -181,6 +195,18 @@ export function PlanTile({
           </span>
         )}
       </div>
+
+      {/* Wielopunktówka musi być widoczna W PLANIE, a nie dopiero po otwarciu zlecenia — od liczby
+          miejsc zależy, czy auto zdąży tego dnia z czymkolwiek innym. */}
+      {stops.length > 0 && (
+        <div
+          data-testid="kolejne-miejsca"
+          title={stops.map(describeStop).join("\n")}
+          className="truncate text-[10px] font-medium text-violet-700 dark:text-violet-300"
+        >
+          + {stops.length} {stops.length === 1 ? "kolejne miejsce" : "kolejne miejsca"}: {summarizeStops(stops)}
+        </div>
+      )}
 
       {drugaLinia && <div className="truncate text-zinc-700 dark:text-zinc-300">{drugaLinia}</div>}
       {trzeciaLinia && <div className="truncate text-zinc-500 dark:text-zinc-500">{trzeciaLinia}</div>}

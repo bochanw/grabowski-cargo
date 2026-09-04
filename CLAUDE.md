@@ -1408,6 +1408,88 @@ pojazdach):
   pól na kafelku (dziś: wielkość, miejscowość + firma, nr kontenera · wielkość · gestia, podjęcie ·
   godzina · nr zlecenia) jest propozycją, nie ustaleniem.
 
+**PODGLĄD ŹRÓDŁA przy poprawianiu pól — ZROBIONY** (właściciel: „odczytując zlecenia z maila nie
+widzę źródła — więc nie jestem w stanie skorygować błędów"):
+- `src/components/zestawienie/SourcePreview.tsx` — panel OBOK formularza (nie osobne okno: dokument
+  i pola muszą być widoczne JEDNOCZEŚNIE, inaczej poprawianie sprowadza się do przepisywania
+  z pamięci). Zakładki: treść maila + każdy dokument; PDF w ramce, do tego „Otwórz w nowej karcie"
+  (ramka bywa za mała, a część przeglądarek ma wyłączony wbudowany czytnik PDF).
+- Jedno źródło URL-a na dwa pochodzenia pliku: wybrany w oknie (`URL.createObjectURL`, zwalniany
+  przy przełączeniu — inaczej każda zmiana zakładki zostawiałaby w pamięci kopię PDF-a) i leżący
+  w Storage (`signedStorageUrl`, `src/lib/supabase/storageUrl.ts` — oba buckety są PRYWATNE, więc
+  bez podpisu nie pokaże się nic; `signedDocumentUrl` korzysta teraz z tego samego helpera).
+- Skąd biorą się źródła: **Skrzynka** (treść maila + załączniki z bucketa `order-emails`),
+  **import** (każdy wybrany plik, także nieodczytany — to z niego dyspozytor przepisze pola) oraz
+  **„Dopnij PDF"** przy wierszu (dokumenty już zapisane przy zleceniu, `load-documents`).
+- W samej Skrzynce doszedł guzik **„Treść maila"** — podgląd bez sieci i bez kosztu, do oceny
+  „czy to w ogóle zlecenie", ZANIM ktoś kliknie płatny odczyt przez Claude.
+- Okno zlecenia rozszerza się do `max-w-[92rem]`, gdy źródło jest otwarte; da się je schować
+  („Ukryj źródło"). Panel jest ukryty poniżej `lg` — na wąskim ekranie nie ma go gdzie postawić.
+
+**KRAJÓWKA — trzeci typ zlecenia** (właściciel: „musimy dodać trzeci typ zlecenia — krajówka,
+zaliczamy do exportów ale są one zawsze nadrzędne (nad nimi) w zestawieniu, w planie wspaniałym też
+to będzie podpięte pod export"):
+- Migracja **0026** (ZAAPLIKOWANA przez MCP, CHECK sprawdzony zapytaniem): `direction in ('I','E','K')`.
+  Trzecia WARTOŚĆ, nie flaga przy eksporcie — w Zestawieniu krajówka ma własny blok, który STOI NAD
+  eksportem, a grupowanie idzie po `direction`.
+- **Cała wiedza o kierunkach w jednym pliku**: `src/lib/loads/direction.ts` — kolejność bloków
+  (`K` → `E` → `I`), etykiety, skróty (KRAJ/EKS/IMP), opcje list i **`isExportSide()`**. Reguła
+  „krajówka zachowuje się jak eksport" (kolumny Planu, etykiety „załadunek", trasa na fakturze)
+  siedzi WYŁĄCZNIE tam: rozsypana po kilkunastu `=== "E"` pierwszym przeoczeniem wysłałaby krajówkę
+  do kolumn importu. **Nie porównywać `direction === "E"` poza tym plikiem** (wyjątki są dwa i oba
+  są opisane w kodzie: strona kolumny w Planie i wybór „Poimport / z Depotu" na fakturze).
+- Zestawienie: nowa kolumna **„Kierunek"** (lista I/E/K, w komórce nazwa, nie kod) — bez niej nie
+  dałoby się przestawić zlecenia na krajówkę bez ponownego importu, bo kierunek był tylko nagłówkiem
+  bloku. Wyszukiwarka zna słowo „krajówka" (kod `K` sam w sobie nic nie mówi).
+- Plan wspaniały: krajówka wchodzi w kolumny EKSPORTU tego samego dnia, kolumna importu ją odrzuca
+  (`assignRefusal` porównuje STRONĘ, nie literę). Kafelek i boczna lista mają fioletową plakietkę
+  KRAJ — bez niej wyglądałaby jak zwykły eksport, a to inna robota.
+- Faktura: krajówka nie ma portu po żadnej stronie, więc trasa to same miejscowości, a zlecenie bez
+  kontenera nazywa się „Transport krajowy…", nie „Transport kontenera ?".
+- `parse-order-pdf` **wdrożona (v22)**: enum kierunku ma `K`, a zasada 3 promptu mówi wprost, że
+  „oba adresy w Polsce" NIE wystarcza (przewóz kontenera z portu do magazynu też jest krajowy, a to
+  import). Nauczone szablony też umieją krajówkę (`parseOne`, warianty zapisu w `learn.ts`).
+
+**WIĘCEJ NIŻ JEDNO MIEJSCE ZAŁADUNKU/ROZŁADUNKU** (właściciel: „zlecenia krajowe, bądź w sumie
+jakiekolwiek, mogą mieć więcej niż jeden rozładunek/załadunek"):
+- Migracja **0027** (ZAAPLIKOWANA + `notify pgrst`): `loads.stops jsonb not null default '[]'`
+  z CHECK-iem „to ma być lista". Trzyma miejsca **DRUGIE I DALSZE** — pierwsze zostaje w kolumnach
+  z 0001 (`company_name`/`address`/`city`/`secondary_date`/`time_of_day`), bo czyta je cała reszta
+  appki; przepisanie go do listy dałoby dwie kopie tej samej prawdy. Kształt elementu zna wyłącznie
+  appka (`src/types/loadStop.ts`), stąd `normalizeStops()` na KAŻDYM odczycie.
+- Bez osobnej tabeli `load_stops`: miejsca czyta się i zapisuje zawsze razem ze zleceniem (jeden
+  UPDATE, jeden wpis w dzienniku), więc tabela dokładałaby join, RLS i kanał Realtime, nie
+  obsługując żadnego zapytania, którego dziś nie da się zrobić.
+- UI: `StopsEditor` (ten sam komponent w oknie importu i w oknie przy wierszu), kolumna **„Kolejne
+  miejsca"** ze skrótem („Warszawa; Radom"). **Kliknięcie tej komórki otwiera OKNO, nie edytor
+  inline** — edytor zapisuje tekst, więc Enter skasowałby całą listę. Kafelek Planu pokazuje
+  „+ N kolejnych miejsc" (od liczby miejsc zależy, czy auto zdąży tego dnia z czymkolwiek innym),
+  a trasa na fakturze wymienia wszystkie miejscowości.
+- `ParsedOrder.extra_stops` scala się jak reszta pól — **`isEmpty` musiał nauczyć się tablic**: bez
+  tego pusta lista uchodziłaby za wartość i drugi dokument nigdy nie dołożyłby miejsc.
+  `loadSearchText` rozkłada listę na wartości (inaczej `String()` dałby „[object Object]", czyli
+  miasto drugiego rozładunku byłoby NIE DO WYSZUKANIA).
+- `parse-order-pdf` (v22): schemat ma `extra_stops`, a zasada 6 promptu — dotąd „wybierz PIERWSZE
+  miejsce, resztę doda dyspozytor" — mówi teraz, jak rozłożyć miejsca na pola i listę.
+
+**Zweryfikowane w tej sesji:** logika — 23 sprawdzenia (`scratch-krajowka.test.mts`, plik
+tymczasowy: kolejność bloków, `isExportSide`, odczyt „krajówka"/„K", plan i odmowy, trasy faktur,
+normalizacja i scalanie miejsc, wyszukiwarka). Przeglądarka (Playwright, `next dev`, tymczasowa
+strona `/test-krajowka`, skasowana po teście) — 15 sprawdzeń: bloki dnia w kolejności Krajówka →
+Eksport → Import, kolumna „Kierunek" z nazwą, skrót miejsc w komórce, klik otwierający OKNO (a nie
+edytor inline), dodanie/usunięcie miejsca, panel Źródło z zakładkami, treść maila i PDF w ramce
+(`blob:`), dokument i pola widoczne obok siebie, chowanie i przywracanie źródła. Baza — insert
+zlecenia `K` z dwoma miejscami NA ŻYWEJ bazie w transakcji cofniętej wyjątkiem: CHECK przeszedł,
+dziennik zapisał diff `stops` i nie został po tym ani jeden wiersz. Do tego `next build`, `deno
+check` i 26 testów Deno.
+**NIE zweryfikowane na żywym koncie** (środowisko sesji nie ma konta): zapis krajówki i miejsc
+z przeglądarki oraz podgląd załącznika maila podpisanym URL-em.
+**`mail-poll` NIE zostało przewdrożone** — wdrożona wersja (v16) nie zna ani `K`, ani `extra_stops`,
+więc propozycje ze skrzynki przychodzą bez nich (dyspozytor ustawia je w formularzu; nic się nie
+gubi). `supabase/functions/mail-poll/shared/` jest już przegenerowane, więc wystarczy
+`supabase functions deploy mail-poll --project-ref itlgexjhznjsbonzdxyg` — przez MCP trzeba by
+wklejać cały bundle, a maszynowo wygenerowanego pliku nie przepisuje się ręcznie.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -1436,3 +1518,11 @@ pojazdach):
    tekst bez koloru.
 8. Gdyby Baltic Hub dał jednak API: transport wraca po stronie serwera, ale `pending`/`report`
    zostają — wtedy dochodzi trzecie źródło obok rozszerzenia, a nie przepisywanie całości.
+9. **Wdrożyć `mail-poll`** (patrz sekcja o krajówce): dopiero wtedy odczyt ze skrzynki zna trzeci
+   kierunek i kolejne miejsca. Do tego czasu propozycje z maili przychodzą bez nich.
+10. Wielopunktówka a Plan wspaniały: dziś zlecenie stoi w kolumnie swojej JEDNEJ daty, a kolejne
+   miejsca są tylko opisem na kafelku („+ N miejsc"). Gdyby okazało się, że wielopunktowe zlecenie
+   ma zajmować auto w kilku dniach, to osobna decyzja z właścicielem — nie zakładać jej z góry.
+11. Krajówka na fakturze: trasa to dziś same miejscowości (`buildRoute`), bo zlecenie nie ma pola
+   „miejsce załadunku" osobno od miejsca rozładunku. Jeśli właściciel będzie chciał pełną trasę
+   „skąd — dokąd", potrzebne będzie to pole (albo pierwsze miejsce z listy jako załadunek).

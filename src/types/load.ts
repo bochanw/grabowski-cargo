@@ -1,6 +1,11 @@
+import type { LoadStop } from "./loadStop";
+
 // Odwzorowanie tabeli public.loads — patrz supabase/migrations/0001_loads_schema_rls.sql
 // dla mapowania na oryginalne kolumny arkusza klienta (litery Excela w komentarzach SQL).
-export type Direction = "I" | "E";
+// I = import, E = eksport, K = krajówka (migracja 0026). Krajówka liczy się do eksportów, ale ma
+// w Zestawieniu własny blok STOJĄCY NAD nimi — reguły „co znaczy który kierunek" siedzą w jednym
+// miejscu: src/lib/loads/direction.ts (m.in. `isExportSide`).
+export type Direction = "I" | "E" | "K";
 
 export interface Load {
   id: string;
@@ -13,6 +18,11 @@ export interface Load {
   shipping_line: string | null;
   company_name: string | null;
   address: string | null;
+  /**
+   * KOLEJNE (2., 3., …) miejsca załadunku/rozładunku — migracja 0027. Pierwsze miejsce siedzi
+   * w `company_name`/`address`/`city`/`secondary_date`/`time_of_day`, patrz src/types/loadStop.ts.
+   */
+  stops: LoadStop[];
   contact_phone: string | null;
   customs_status: string | null;
   notes: string | null;

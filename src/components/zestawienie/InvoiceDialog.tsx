@@ -39,6 +39,9 @@ function initialPositions(loads: Load[], mode: BafInvoiceMode): PositionState[] 
       loadId: load.id,
       titleTouched: false,
       origin: "poimport" as ExportOrigin,
+      // Świadomie "E", nie `isExportSide`: to steruje wyborem "Poimport / z Depotu", czyli skąd
+      // wzięto PUSTY KONTENER pod eksport. Krajówka nie jedzie z portu, więc ten wybór jej nie
+      // dotyczy (jej trasa to sama miejscowość — patrz buildRoute).
       isExport: load.direction === "E",
       orderNumber: load.order_number ?? "",
     };

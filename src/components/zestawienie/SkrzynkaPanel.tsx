@@ -9,6 +9,7 @@ import type { EmailAttachment } from "@/types/emailMessage";
 import type { EmailMessage } from "@/types/emailMessage";
 import type { Load } from "@/types/load";
 import { ImportOrderDialog } from "./ImportOrderDialog";
+import type { SourceItem } from "./SourcePreview";
 import { readEmailWithClaude } from "@/lib/supabase/readEmailWithClaude";
 import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
 
@@ -48,6 +49,13 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
   const setStatus = useSetEmailStatus();
   const linkDocument = useLinkExistingDocument();
   const [openMail, setOpenMail] = useState<EmailMessage | null>(null);
+  // ŹRÓDŁO otwartego maila (treść + załączniki w Storage) — wędruje do formularza, żeby dyspozytor
+  // poprawiał pola PATRZĄC na dokument. Właściciel: "odczytując zlecenia z maila nie widzę źródła —
+  // więc nie jestem w stanie skorygować błędów".
+  const [zrodla, setZrodla] = useState<SourceItem[]>([]);
+  // Podgląd samej treści w liście — bez sieci, więc da się nim rzucić okiem PRZED decyzją
+  // o płatnym odczycie.
+  const [trescMaila, setTrescMaila] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   // Który mail jest właśnie odczytywany przez Claude. PŁATNE, więc wyłącznie na kliknięcie —
@@ -84,6 +92,47 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
     );
   }
 
+  /**
+   * Załączniki maila leżą w prywatnym buckecie `order-emails` (zapisał je `mail-poll`), więc do
+   * podglądu potrzebny jest podpisany URL — buduje go dopiero SourcePreview, tutaj wystarczy
+   * wskazanie pliku. Treść maila idzie osobną zakładką: bywa JEDYNYM źródłem (zmiana terminu
+   * w treści, bez załącznika).
+   */
+  async function zbudujZrodla(mail: EmailMessage): Promise<SourceItem[]> {
+    const items: SourceItem[] = [];
+    if ((mail.body_text ?? "").trim()) {
+      items.push({
+        id: `mail-${mail.id}`,
+        label: "Treść maila",
+        kind: "text",
+        text: mail.body_text ?? "",
+        note: [mail.from_name || mail.from_email, mail.subject].filter(Boolean).join(" · "),
+      });
+    }
+    const { data, error } = await supabase
+      .from("email_attachments")
+      .select("id, filename, storage_path, parse_source, error")
+      .eq("email_message_id", mail.id);
+    if (error) setNotice(`Nie udało się wczytać załączników do podglądu: ${error.message}`);
+    for (const attachment of data ?? []) {
+      if (!attachment.storage_path) continue;
+      items.push({
+        id: `zal-${attachment.id}`,
+        label: attachment.filename ?? "załącznik.pdf",
+        kind: "pdf",
+        bucket: "order-emails",
+        path: attachment.storage_path,
+        note: attachment.parse_source ? `Odczytano: ${attachment.parse_source}` : attachment.error || undefined,
+      });
+    }
+    return items;
+  }
+
+  async function otworzMaila(mail: EmailMessage) {
+    setOpenMail(mail);
+    setZrodla(await zbudujZrodla(mail));
+  }
+
   async function odczytajPrzezClaude(mail: EmailMessage) {
     setCzytany(mail.id);
     setNotice(null);
@@ -101,7 +150,9 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
     // Otwieramy formularz od razu — dyspozytor zapłacił za ten odczyt, więc ma go zobaczyć,
     // a nie szukać po panelu. Wynik jest już zapisany przy mailu, więc drugie wejście jest darmowe.
     setMaterialDoNauki(wynik.documents);
-    setOpenMail({ ...mail, parsed: wynik.parsed, parse_source: wynik.source });
+    const odczytany = { ...mail, parsed: wynik.parsed, parse_source: wynik.source };
+    setOpenMail(odczytany);
+    setZrodla(await zbudujZrodla(odczytany));
   }
 
   async function checkNow() {
@@ -348,11 +399,24 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
                   )}
                   <button
                     type="button"
-                    onClick={() => setOpenMail(mail)}
+                    onClick={() => void otworzMaila(mail)}
                     className="rounded bg-zinc-900 px-2 py-1 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                   >
                     {linkedLoad ? `Dopnij do ${linkedLoad.order_number ?? "zlecenia"}` : "Utwórz zlecenie"}
                   </button>
+                  {/* Sam tekst maila, bez sieci i bez kosztu — tyle wystarczy, żeby ocenić, czy to
+                      w ogóle zlecenie, zanim ruszy się płatny odczyt. Dokumenty (PDF) widać
+                      w oknie zlecenia, obok pól. */}
+                  {(mail.body_text ?? "").trim() && (
+                    <button
+                      type="button"
+                      data-testid="pokaz-tresc"
+                      onClick={() => setTrescMaila((current) => (current === mail.id ? null : mail.id))}
+                      className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                    >
+                      {trescMaila === mail.id ? "Ukryj treść" : "Treść maila"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => reject(mail)}
@@ -361,6 +425,15 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
                     Odrzuć
                   </button>
                 </div>
+
+                {trescMaila === mail.id && (
+                  <pre
+                    data-testid="tresc-maila"
+                    className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-50 p-2 text-[11px] leading-snug text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+                  >
+                    {mail.body_text}
+                  </pre>
+                )}
               </div>
             );
           })}
@@ -379,11 +452,13 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
           existingLoad={matchedLoad}
           initialParsed={openMail.parsed ?? undefined}
           initialLearningDocs={materialDoNauki}
+          initialSources={zrodla}
           recentLoads={loads}
           onLearned={(notes) => setNotice(notes.join(" "))}
           onClose={() => {
             setOpenMail(null);
             setMaterialDoNauki([]);
+            setZrodla([]);
           }}
           onSaved={async (loadId) => {
             await setStatus(openMail.id, "accepted");
@@ -409,6 +484,7 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
               if (error) setNotice(`Zlecenie zapisane, ale nie udało się podpiąć załącznika ${attachment.filename ?? ""}: ${error}`);
             }
             setOpenMail(null);
+            setZrodla([]);
           }}
         />
       )}

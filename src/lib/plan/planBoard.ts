@@ -22,6 +22,7 @@ import type { FleetDriver, FleetVehicle } from "@/lib/fleet/fleetStore";
 import { normalizePlate, normalizeName } from "@/lib/fleet/fleetStore";
 import { nextWorkingDay, previousWorkingDay } from "@/lib/dates/workingDays";
 import { PLAN_SLOTS, isPlanSlot, isSolowka, loadOccupiesWholeSet, type PlanSlot } from "./slots";
+import { isExportSide } from "@/lib/loads/direction";
 
 export interface PlanCell {
   slot: PlanSlot;
@@ -336,8 +337,10 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
   const planByPlate = new Map(input.planVehicles.map((pv) => [normalizePlate(pv.vehicle_plate), pv]));
   const driverByName = new Map(input.fleetDrivers.map((d) => [normalizeName(d.name), d]));
 
+  // Krajówka stoi po stronie eksportu (właściciel: "w planie wspaniałym też to będzie podpięte pod
+  // export") — stąd `isExportSide`, nie porównanie z "E".
   const belongsTo = (load: Load, day: PlanDay): boolean =>
-    (load.direction === "E" && load.load_date === day.dayExport) ||
+    (isExportSide(load.direction) && load.load_date === day.dayExport) ||
     (load.direction === "I" && load.load_date === day.dayImport);
 
   const relevant = input.loads.filter((load) => days.some((day) => belongsTo(load, day)));
@@ -388,7 +391,7 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
 
     const blocks: PlanRowBlock[] = days.map((day) => {
       const tego = mine.filter((load) => belongsTo(load, day));
-      const eksport = layoutSide(tego.filter((l) => l.direction === "E"), input.loads, key, true);
+      const eksport = layoutSide(tego.filter((l) => isExportSide(l.direction)), input.loads, key, true);
       // Importy z TEGO SAMEGO dnia co eksport — ich kontenery zostają na zestawie i idą dalej
       // jako eksport. Rozkładamy je tą samą funkcją, żeby miejsca (tył/przód) się zgadzały.
       const importyTegoDnia = layoutSide(

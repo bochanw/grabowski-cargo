@@ -3,6 +3,7 @@
 import { useEffect, useId } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase/client";
+import { signedStorageUrl } from "@/lib/supabase/storageUrl";
 import type { DocumentKind, LoadDocument } from "@/types/loadDocument";
 
 export const LOAD_DOCUMENTS_QUERY_KEY = ["load_documents"] as const;
@@ -183,11 +184,7 @@ export function useDeleteLoadDocument() {
 
 /** Podpisany URL do otwarcia pliku w nowej karcie (bucket jest prywatny). */
 export async function signedDocumentUrl(document: LoadDocument): Promise<{ url: string } | { error: string }> {
-  const { data, error } = await supabase.storage
-    .from(document.bucket)
-    .createSignedUrl(document.storage_path, SIGNED_URL_SECONDS);
-  if (error || !data) return { error: error?.message ?? "Nie udało się otworzyć pliku." };
-  return { url: data.signedUrl };
+  return signedStorageUrl(document.bucket, document.storage_path, SIGNED_URL_SECONDS);
 }
 
 /**

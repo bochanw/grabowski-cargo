@@ -103,7 +103,9 @@ export const TYPED_PATTERNS: Partial<Record<LearnKind, RegExp>> = {
   time: /\b\d{1,2}:\d{2}\b/g,
   amount: /-?\d[\d\s .]*(?:[.,]\d+)?/g,
   count: /-?\d[\d\s .]*(?:[.,]\d+)?/g,
-  direction: /import|eksport|export/gi,
+  // Trzeci typ zlecenia (krajówka) — w dokumentach pisany różnie, stąd oba warianty ortograficzne
+  // i „transport krajowy". Kolejność w alternatywie bez znaczenia: dopasowania nie zachodzą na siebie.
+  direction: /import|eksport|export|krajówka|krajowka|krajowy/gi,
   container: /\b[A-Za-z]{4}\s?\d{7}\b/g,
 };
 
@@ -115,6 +117,7 @@ export function parseOne(raw: string, kind: LearnKind, format: string): string |
   if (kind === "direction") {
     if (/^import/i.test(value)) return "I";
     if (/^(eksport|export)/i.test(value)) return "E";
+    if (/^(krajówka|krajowka|krajow)/i.test(value)) return "K";
     return null;
   }
 

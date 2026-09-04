@@ -1,4 +1,6 @@
 import type { Load } from "../../types/load";
+import { DIRECTION_LABELS } from "../loads/direction";
+import { normalizeStops } from "../../types/loadStop";
 
 // Wyszukiwarka dynamiczna po WSZYSTKIM (właściciel: "od terminala, kierowcy, kontenera, klienta").
 // Filtr w pamięci nad danymi z TanStack Query — świadoma decyzja z CLAUDE.md dla małego zbioru
@@ -24,9 +26,20 @@ export function loadSearchText(load: Load, contractorName?: string): string {
   for (const [key, value] of Object.entries(load)) {
     if (key === "id" || key === "contractor_id" || key === "created_at" || key === "updated_at") continue;
     if (value === null || value === undefined || value === "") continue;
+    // Kolejne miejsca to lista obiektów — String() zrobiłby z niej "[object Object]", czyli
+    // miasto drugiego rozładunku byłoby NIE DO WYSZUKANIA. Rozkładamy je na wartości.
+    if (key === "stops") {
+      for (const stop of normalizeStops(value)) {
+        parts.push(stop.city, stop.company_name, stop.address, stop.date, stop.time, stop.notes);
+      }
+      continue;
+    }
     parts.push(String(value));
   }
   if (contractorName) parts.push(contractorName);
+  // Kierunek siedzi w rekordzie jako kod (I/E/K) — bez nazwy nie dałoby się wyszukać "krajówka"
+  // ani "eksport", a to pierwsze, czego dyspozytor szuka po dodaniu trzeciego typu zlecenia.
+  parts.push(DIRECTION_LABELS[load.direction] ?? "");
   // Tablice bez spacji/myślników, żeby "GPULY42" trafiało "GPU LY42" i odwrotnie.
   for (const plate of [load.vehicle_plate, load.trailer_plate]) {
     if (plate) parts.push(plate.replace(/[\s-]/g, ""));

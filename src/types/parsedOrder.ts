@@ -7,6 +7,7 @@
 // Jedno zlecenie u klienta to zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
 // kierowcy) — każdy parser wypełnia tylko to, co ma, a `mergeParsedOrders` skleja je w jeden rekord.
 import { matchPickupLocation, normalizeTerminalName } from "../lib/orderTemplates/pickupLocations";
+import { normalizeStops, type LoadStop } from "./loadStop";
 
 export interface ParsedOrder {
   order_number: string;
@@ -17,13 +18,21 @@ export interface ParsedOrder {
   forwarder_address: string;
   forwarder_postal_code: string;
   forwarder_city: string;
-  direction: "" | "I" | "E";
+  // "K" = krajówka (transport krajowy) — trzeci typ zlecenia obok importu i eksportu, patrz
+  // src/lib/loads/direction.ts. Puste = dokument nie powiedział, dyspozytor wybiera w formularzu.
+  direction: "" | "I" | "E" | "K";
   container_number: string;
   container_size: string;
   shipping_line: string;
   company_name: string;
   address: string;
   city: string;
+  /**
+   * KOLEJNE miejsca załadunku/rozładunku (2., 3., …) — właściciel: "zlecenia krajowe, bądź w sumie
+   * jakiekolwiek, mogą mieć więcej niż jeden rozładunek/załadunek". Pierwsze miejsce zostaje
+   * w polach wyżej; ta lista trafia do `loads.stops` (migracja 0027).
+   */
+  extra_stops: LoadStop[];
   load_date: string;
   delivery_date: string;
   delivery_time: string;
@@ -72,6 +81,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   company_name: "",
   address: "",
   city: "",
+  extra_stops: [],
   load_date: "",
   delivery_date: "",
   delivery_time: "",
@@ -99,7 +109,11 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
 };
 
 // `false` (np. "stawka NIE zawiera BAF-u") jest wartością, nie brakiem — puste jest tylko null i "".
-function isEmpty(value: string | number | boolean | null): boolean {
+// Lista kolejnych miejsc jest pusta, gdy nie ma w niej ani jednego miejsca: bez tego warunku
+// `mergeParsedOrders` NIGDY nie wpisałby miejsc z drugiego dokumentu (pusta tablica nie jest ani
+// null, ani "", więc uchodziłaby za wartość).
+function isEmpty(value: string | number | boolean | null | unknown[]): boolean {
+  if (Array.isArray(value)) return value.length === 0;
   return value === null || value === "";
 }
 
@@ -140,7 +154,18 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     return null;
   };
 
-  const direction = text("direction").toUpperCase();
+  // Kierunek bywa podany słowem ("Import", "krajówka"), nie samym kodem — model dostaje enum
+  // I/E/K, ale nauczony szablon albo ręczna poprawka w bazie mogą przynieść cokolwiek. Sprawdzenie
+  // jest tu, a nie przez `isDirection` z src/lib/loads/direction.ts, bo ten plik jedzie w kopii do
+  // Deno (scripts/build-edge-shared.mjs) i ma nie ciągnąć za sobą kolejnych modułów.
+  const rawDirection = text("direction").toUpperCase();
+  const direction = rawDirection.startsWith("KRAJ")
+    ? "K"
+    : rawDirection.startsWith("IMPORT")
+      ? "I"
+      : rawDirection.startsWith("EKSPORT") || rawDirection.startsWith("EXPORT")
+        ? "E"
+        : rawDirection;
   return {
     ...EMPTY_PARSED_ORDER,
     order_number: text("order_number"),
@@ -149,13 +174,16 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     forwarder_address: text("forwarder_address"),
     forwarder_postal_code: text("forwarder_postal_code"),
     forwarder_city: text("forwarder_city"),
-    direction: direction === "I" || direction === "E" ? direction : "",
+    direction: direction === "I" || direction === "E" || direction === "K" ? direction : "",
     container_number: text("container_number"),
     container_size: text("container_size"),
     shipping_line: text("shipping_line"),
     company_name: text("company_name"),
     address: text("address"),
     city: text("city"),
+    // Model potrafi zwrócić listę miejsc w dowolnym kształcie (albo wcale) — `normalizeStops`
+    // przycina ją do tego, co appka umie zapisać, i wyrzuca puste wiersze.
+    extra_stops: normalizeStops(input.extra_stops),
     load_date: text("load_date"),
     delivery_date: text("delivery_date"),
     delivery_time: text("delivery_time"),
@@ -196,7 +224,7 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
 export function mergeParsedOrders(base: ParsedOrder, incoming: ParsedOrder): ParsedOrder {
   const merged = { ...base };
   for (const key of Object.keys(incoming) as (keyof ParsedOrder)[]) {
-    if (isEmpty(merged[key] as string | number | boolean | null) && !isEmpty(incoming[key] as string | number | boolean | null)) {
+    if (isEmpty(merged[key] as string | number | boolean | null | unknown[]) && !isEmpty(incoming[key] as string | number | boolean | null | unknown[])) {
       (merged as Record<keyof ParsedOrder, ParsedOrder[keyof ParsedOrder]>)[key] = incoming[key];
     }
   }

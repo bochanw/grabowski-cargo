@@ -15,11 +15,17 @@ export interface ColumnDef {
   // "bhub_status": jeden z pięciu kodów Baltic Hub — lista rozwijana, bo kolumna ma w bazie CHECK
   // (wpisana ręcznie literówka zostałaby odrzucona przez bazę zamiast się zapisać).
   // "plan_slot": miejsce na zestawie w Planie wspaniałym — też lista, też przez CHECK w bazie.
-  kind?: "number" | "date" | "contractor" | "bhub_status" | "plan_slot";
+  // "direction": import / eksport / krajówka — w bazie kod (I/E/K), w tabeli nazwa; też CHECK.
+  // "stops": kolejne miejsca załadunku/rozładunku (jsonb) — w komórce skrót, edycja w osobnym
+  // oknie, NIE w edytorze inline: wpisanie tekstu w komórkę skasowałoby całą listę.
+  kind?: "number" | "date" | "contractor" | "bhub_status" | "plan_slot" | "direction" | "stops";
 }
 
 export const COLUMNS: ColumnDef[] = [
   { key: "load_date", label: "Data", block: "ladunek", kind: "date" },
+  // Kierunek jest nagłówkiem bloku w dniu, ale musi dać się ZMIENIĆ przy wierszu — inaczej zlecenie
+  // odczytane jako eksport nie dałoby się przestawić na krajówkę bez ponownego importu.
+  { key: "direction", label: "Kierunek", block: "ladunek", kind: "direction" },
   { key: "pickup_type", label: "Podjęcie", block: "ladunek" },
   { key: "city", label: "Miejscowość", block: "ladunek" },
   { key: "order_number", label: "Nr zlecenia", block: "ladunek" },
@@ -31,6 +37,9 @@ export const COLUMNS: ColumnDef[] = [
   { key: "shipping_line", label: "Gestia", block: "ladunek" },
   { key: "company_name", label: "Dane firmy", block: "ladunek" },
   { key: "address", label: "Adres", block: "ladunek" },
+  // Zlecenie bywa wielopunktowe (krajówki szczególnie) — w komórce stoi skrót kolejnych miejsc,
+  // kliknięcie otwiera ich edycję.
+  { key: "stops", label: "Kolejne miejsca", block: "ladunek", kind: "stops" },
   { key: "contact_phone", label: "Telefon", block: "ladunek" },
   { key: "customs_status", label: "Odprawa", block: "ladunek" },
   { key: "notes", label: "Uwagi", block: "ladunek" },

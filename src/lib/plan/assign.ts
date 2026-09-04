@@ -7,6 +7,7 @@
 
 import type { Load } from "@/types/load";
 import { normalizePlanSlot, refusalReason, type PlanSlot } from "./slots";
+import { isExportSide } from "@/lib/loads/direction";
 import type { PlanRow } from "./planBoard";
 
 export interface AssignTarget {
@@ -26,9 +27,11 @@ export type DriverDocLookup = (driverName: string) => string;
  * Reguła (a) właściciela: kontenera 40/45 nie zabierze solówka.
  */
 export function assignRefusal(load: Load, target: AssignTarget): string | null {
-  if (load.direction !== target.direction) {
+  // Kolumny są dwie (eksport / import), a kierunki trzy — krajówka jedzie po stronie eksportu,
+  // więc porównujemy STRONĘ, nie literę kierunku.
+  if (isExportSide(load.direction) !== isExportSide(target.direction)) {
     return target.direction === "E"
-      ? "W kolumnach eksportu stoją tylko zlecenia eksportowe."
+      ? "W kolumnach eksportu stoją tylko zlecenia eksportowe i krajówki."
       : "W kolumnach importu stoją tylko zlecenia importowe.";
   }
   return refusalReason(load.container_size, target.row.vehicleType);

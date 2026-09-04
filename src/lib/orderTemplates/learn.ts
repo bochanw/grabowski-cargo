@@ -118,9 +118,23 @@ function candidates(value: unknown, kind: LearnKind): Candidate[] {
   if (value === null || value === undefined || value === "") return [];
 
   if (kind === "direction") {
-    return value === "I"
-      ? [{ text: "Import", format: "Import" }, { text: "IMPORT", format: "Import" }, { text: "import", format: "Import" }]
-      : [
+    if (value === "I") {
+      return [{ text: "Import", format: "Import" }, { text: "IMPORT", format: "Import" }, { text: "import", format: "Import" }];
+    }
+    // Krajówka MUSI mieć własne warianty — bez tego wpadałaby do gałęzi eksportu i szablon
+    // kotwiczyłby się na słowie "Eksport", którego w dokumencie krajówki nie ma (albo, gorzej,
+    // stoi tam przy czymś innym).
+    if (value === "K") {
+      return [
+        { text: "Krajówka", format: "Krajówka" },
+        { text: "KRAJÓWKA", format: "Krajówka" },
+        { text: "krajówka", format: "Krajówka" },
+        { text: "Krajowka", format: "Krajówka" },
+        { text: "krajowy", format: "Krajówka" },
+        { text: "Transport krajowy", format: "Krajówka" },
+      ];
+    }
+    return [
           { text: "Eksport", format: "Eksport" },
           { text: "EKSPORT", format: "Eksport" },
           { text: "Export", format: "Eksport" },

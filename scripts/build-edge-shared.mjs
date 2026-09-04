@@ -25,6 +25,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGETS = {
   "mail-poll": {
     "src/types/parsedOrder.ts": "parsedOrder.ts",
+    // Kolejne miejsca załadunku/rozładunku — kształt listy i jej normalizacja (ParsedOrder ją
+    // importuje, więc bez tego pliku bundle się nie zbuduje).
+    "src/types/loadStop.ts": "loadStop.ts",
     "src/lib/containers/tare.ts": "tare.ts",
     "src/lib/orderTemplates/pickupLocations.ts": "pickupLocations.ts",
     "src/lib/orderTemplates/q4road.ts": "q4road.ts",
@@ -55,6 +58,7 @@ const REWRITES = [
   [/from "\.\.\/containers\/tare"/g, 'from "./tare.ts"'],
   [/from "\.\.\/lib\/orderTemplates\/pickupLocations"/g, 'from "./pickupLocations.ts"'],
   [/from "\.\/pickupLocations"/g, 'from "./pickupLocations.ts"'],
+  [/from "\.\/loadStop"/g, 'from "./loadStop.ts"'],
   [/from "\.\/q4road"/g, 'from "./q4road.ts"'],
   [/from "\.\.\/dates\/workingDays"/g, 'from "./workingDays.ts"'],
   [/from "\.\/status"/g, 'from "./status.ts"'],

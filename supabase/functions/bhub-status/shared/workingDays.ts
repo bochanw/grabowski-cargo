@@ -77,3 +77,30 @@ export function previousWorkingDay(iso: string): string {
   } while (!isWorkingDay(toIso(date)));
   return toIso(date);
 }
+
+/**
+ * Najbliższy dzień roboczy PO podanej dacie (nigdy ta sama data). Pusty string dla złej daty.
+ * Używany przez Plan wspaniały: kolumny importu pokazują "import z następnego dnia roboczego"
+ * względem dnia, na którym stoi plan.
+ */
+export function nextWorkingDay(iso: string): string {
+  let date = toUtcDate(iso);
+  if (!date) return "";
+  do {
+    date = addDays(date, 1);
+  } while (!isWorkingDay(toIso(date)));
+  return toIso(date);
+}
+
+/** Dziś w formacie ISO (data lokalna, nie UTC — dyspozytor planuje wg swojego kalendarza). */
+export function todayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+/** Ta sama data przesunięta o N dni kalendarzowych (strzałki „‹ ›" nad planem). */
+export function shiftDays(iso: string, days: number): string {
+  const date = toUtcDate(iso);
+  if (!date) return "";
+  return toIso(addDays(date, days));
+}

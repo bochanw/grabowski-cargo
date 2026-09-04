@@ -17,9 +17,13 @@ import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { describeBafSplit, splitBaf } from "@/lib/invoice/baf";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
+import { DIRECTION_OPTIONS, isDirection, isExportSide } from "@/lib/loads/direction";
 import { matchExistingLoad, type LoadMatch } from "@/lib/loads/orderNumber";
 import { useUploadLoadDocument } from "@/hooks/useLoadDocuments";
 import { DOCUMENT_KINDS, DOCUMENT_KIND_LABELS, guessDocumentKind, type DocumentKind } from "@/types/loadDocument";
+import { SourcePreview, type SourceItem } from "./SourcePreview";
+import { isStopEmpty, normalizeStops } from "@/types/loadStop";
+import { StopsEditor } from "./StopsEditor";
 import type { Direction, Load } from "@/types/load";
 
 type Stage = "pick" | "parsing" | "review" | "saving";
@@ -52,6 +56,7 @@ function loadToForm(load: Load): ParsedOrder {
     company_name: load.company_name ?? "",
     address: load.address ?? "",
     city: load.city ?? "",
+    extra_stops: normalizeStops(load.stops),
     load_date: load.load_date ?? "",
     delivery_date: load.secondary_date ?? "",
     delivery_time: load.time_of_day ?? "",
@@ -97,6 +102,8 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     company_name: form.company_name || null,
     address: form.address || null,
     city: form.city || null,
+    // Kolejne miejsca (2., 3., …) — pierwsze zostaje w polach wyżej, patrz src/types/loadStop.ts.
+    stops: form.extra_stops.filter((stop) => !isStopEmpty(stop)),
     load_date: form.load_date || null,
     secondary_date: form.delivery_date || null,
     time_of_day: form.delivery_time || null,
@@ -135,6 +142,7 @@ export function ImportOrderDialog({
   recentLoads = [],
   onLearned,
   initialLearningDocs = [],
+  initialSources = [],
 }: {
   onClose: () => void;
   /**
@@ -160,6 +168,12 @@ export function ImportOrderDialog({
    * tak samo jak wgrane ręcznie. Bez tego nauka pomijałaby najczęstszą drogę zleceń.
    */
   initialLearningDocs?: LearningDocument[];
+  /**
+   * ŹRÓDŁO pól, których nikt tu nie wgrywał — treść maila i jego załączniki leżące już w Storage
+   * (Skrzynka). Właściciel: "odczytując zlecenia z maila nie widzę źródła, więc nie jestem w stanie
+   * skorygować błędów". Pliki wybrane w tym oknie dokładają się do tej listy same.
+   */
+  initialSources?: SourceItem[];
 }) {
   const { data: fleetData } = useFleet();
   const fleet: Fleet = fleetData ?? EMPTY_FLEET;
@@ -198,6 +212,9 @@ export function ImportOrderDialog({
   // Teksty wgranych dokumentów — appka uczy się z nich DOPIERO po udanym zapisie, kiedy wiadomo,
   // co dyspozytor faktycznie zatwierdził (patrz src/lib/orderTemplates/autoLearn.ts).
   const [learningDocs, setLearningDocs] = useState<LearningDocument[]>(initialLearningDocs);
+  // Podgląd źródła jest OTWARTY od razu, gdy jest co pokazać: to jedyny sposób, żeby dyspozytor
+  // porównał pole z dokumentem, a nie zgadywał, skąd wzięła się wartość.
+  const [pokazZrodlo, setPokazZrodlo] = useState(true);
 
   // Jedno zlecenie to u klienta zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
   // kierowcy) — można wgrać oba naraz albo dopiąć drugi później (także do już zapisanego zlecenia);
@@ -461,7 +478,8 @@ export function ImportOrderDialog({
   }
 
   async function handleSave() {
-    if (form.direction !== "I" && form.direction !== "E") return;
+    // Kierunek jest w bazie NOT NULL z CHECK-iem (I/E/K) — bez wyboru zapis odbiłby się błędem.
+    if (!isDirection(form.direction)) return;
     setStage("saving");
     setSaveError(null);
 
@@ -580,7 +598,23 @@ export function ImportOrderDialog({
     form.baf_percentage
   );
 
-  const isExport = form.direction === "E";
+  // Krajówka jest po stronie eksportu (właściciel: "zaliczamy do exportów"), więc etykiety
+  // "załadunek" obowiązują też ją — stąd `isExportSide`, a nie porównanie z "E".
+  // Źródło: to, co przyszło z zewnątrz (mail), plus KAŻDY plik wybrany w tym oknie — także ten,
+  // którego nie udało się odczytać, bo właśnie z niego dyspozytor będzie przepisywał pola ręcznie.
+  const sources: SourceItem[] = [
+    ...initialSources,
+    ...attachments.map((attachment, index) => ({
+      id: `plik-${index}-${attachment.file.name}`,
+      label: attachment.file.name,
+      kind: "pdf" as const,
+      file: attachment.file,
+      note: attachment.parseSource ? `Odczytano: ${attachment.parseSource}` : "Nie udało się odczytać — pola wpisz z tego dokumentu ręcznie.",
+    })),
+  ];
+  const zrodloWidoczne = pokazZrodlo && sources.length > 0;
+
+  const isExport = isExportSide(form.direction);
   const stopLabel = isExport ? "załadunek" : "rozładunek";
   const stopGenitive = isExport ? "załadunku" : "rozładunku";
   const handoverLabel = isExport
@@ -589,7 +623,13 @@ export function ImportOrderDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
+      {/* Z otwartym źródłem okno musi być szerokie — dokument i pola mają być czytelne
+          JEDNOCZEŚNIE, inaczej podgląd nie rozwiązuje problemu, dla którego powstał. */}
+      <div
+        className={`flex max-h-[90vh] w-full flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950 ${
+          zrodloWidoczne && (stage === "review" || stage === "saving") ? "max-w-[92rem]" : "max-w-3xl"
+        }`}
+      >
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{title}</h2>
           <button
@@ -602,7 +642,8 @@ export function ImportOrderDialog({
           </button>
         </div>
 
-        <div className="flex-1 overflow-auto p-4">
+        <div className="flex min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-auto p-4">
           {stage === "pick" && (
             <div className="flex flex-col items-center gap-4 py-6">
               <p className="max-w-xl text-center text-sm text-zinc-600 dark:text-zinc-400">
@@ -776,6 +817,16 @@ export function ImportOrderDialog({
 
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
                 <span>Sprawdź i popraw pola przed zapisem — appka niczego nie zapisuje bez Twojej zgody.</span>
+                {sources.length > 0 && (
+                  <button
+                    type="button"
+                    data-testid="przelacz-zrodlo"
+                    onClick={() => setPokazZrodlo((v) => !v)}
+                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  >
+                    {pokazZrodlo ? "Ukryj źródło" : `Pokaż źródło (${sources.length})`}
+                  </button>
+                )}
                 <label className="cursor-pointer rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
                   + Dopnij kolejny dokument (PDF)
                   <input
@@ -812,8 +863,11 @@ export function ImportOrderDialog({
                 <Field label="Kierunek *">
                   <select className={inputClass} value={form.direction} onChange={(e) => updateField("direction", e.target.value as ParsedOrder["direction"])}>
                     <option value="">— wybierz —</option>
-                    <option value="I">Import</option>
-                    <option value="E">Eksport</option>
+                    {DIRECTION_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="Podjęcie (terminal)">
@@ -859,6 +913,19 @@ export function ImportOrderDialog({
                 <Field label="Adres" full>
                   <input className={inputClass} value={form.address} onChange={(e) => updateField("address", e.target.value)} />
                 </Field>
+
+                {/* Kolejne miejsca: jedno zlecenie bywa wielopunktowe (właściciel: "zlecenia
+                    krajowe, bądź w sumie jakiekolwiek, mogą mieć więcej niż jeden
+                    rozładunek/załadunek"). Pierwsze miejsce stoi w polach wyżej — tu dokładamy
+                    drugie i dalsze, każde z własną datą i godziną. */}
+                <div className="col-span-2">
+                  <StopsEditor
+                    stops={form.extra_stops}
+                    onChange={(next) => updateField("extra_stops", next)}
+                    heading={`Kolejne miejsca ${isExport ? "załadunku" : "rozładunku"}`}
+                    emptyHint="Zlecenie ma jedno miejsce — to z pól wyżej. Dodaj kolejne, jeśli samochód jedzie pod więcej niż jeden adres."
+                  />
+                </div>
 
                 <Field label={`Data (domyślnie dzień roboczy przed ${isExport ? "załadunkiem" : "rozładunkiem"})`}>
                   <input type="date" className={inputClass} value={form.load_date} onChange={(e) => updateField("load_date", e.target.value)} />
@@ -976,6 +1043,13 @@ export function ImportOrderDialog({
           )}
         </div>
 
+        {zrodloWidoczne && (stage === "review" || stage === "saving") && (
+          <div className="hidden min-h-0 w-[46%] shrink-0 py-4 pr-4 lg:flex">
+            <SourcePreview items={sources} onClose={() => setPokazZrodlo(false)} />
+          </div>
+        )}
+        </div>
+
         {(stage === "review" || stage === "saving") && (
           <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
             <button type="button" onClick={onClose} className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
@@ -983,7 +1057,7 @@ export function ImportOrderDialog({
             </button>
             <button
               type="button"
-              disabled={stage === "saving" || (form.direction !== "I" && form.direction !== "E")}
+              disabled={stage === "saving" || !isDirection(form.direction)}
               onClick={handleSave}
               className="rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
             >

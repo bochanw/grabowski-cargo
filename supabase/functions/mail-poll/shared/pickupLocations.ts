@@ -11,6 +11,12 @@
 // pokazuje też wartość spoza listy, jeśli rekord już taką ma, zamiast ją gubić.
 export const PICKUP_LOCATIONS = ["GCT", "BCT", "BHub", "Poimport", "Depot"] as const;
 
+// Gdzie ZDAJEMY kontener, gdy nie ma na niego ładunku i jedzie na pusto (`loads.submitted_where`).
+// Ta sama lista terminali bez "Poimport" — po stronie zdania to nie jest miejsce, tylko pochodzenie
+// kontenera. Kolumna jest zwykłym textem i bywa instrukcją ("zgodnie z instrukcjami armatora"),
+// więc lista jest podpowiedzią, a wartość spoza niej zostaje (patrz withCurrentOption).
+export const EMPTY_DROP_LOCATIONS = ["GCT", "BCT", "BHub", "Depot"] as const;
+
 // Warianty zapisu spotykane w dokumentach; porównanie idzie na tekście bez spacji, myślników i
 // wielkości liter ("Baltic Hub" -> "baltichub"). Kolejność ma znaczenie tylko o tyle, że pierwszy
 // trafiony wariant wygrywa — wzorce są rozłączne.

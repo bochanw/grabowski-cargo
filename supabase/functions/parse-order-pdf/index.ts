@@ -71,13 +71,30 @@ const EXTRACT_TOOL = {
       forwarder_address: { type: 'string', description: 'Ulica i numer w adresie ZLECENIODAWCY, bez kodu pocztowego i miasta. Pusty string, jeśli nie ma.' },
       forwarder_postal_code: { type: 'string', description: 'Kod pocztowy ZLECENIODAWCY (np. "81-537"). Pusty string, jeśli nie ma.' },
       forwarder_city: { type: 'string', description: 'Miejscowość ZLECENIODAWCY. Pusty string, jeśli nie ma.' },
-      direction: { type: 'string', enum: ['', 'I', 'E'], description: '"I" jeśli dokument wprost mówi "Import", "E" jeśli "Eksport"/"Export". Pusty string, jeśli dokument tego nie precyzuje — NIE zgaduj kierunku z samej trasy.' },
+      direction: { type: 'string', enum: ['', 'I', 'E', 'K'], description: '"I" jeśli dokument wprost mówi "Import", "E" jeśli "Eksport"/"Export", "K" jeśli dokument wprost nazywa zlecenie krajowym ("krajówka", "transport krajowy", "przewóz krajowy"). Pusty string, jeśli dokument tego nie precyzuje — NIE zgaduj kierunku z samej trasy ani z tego, że oba adresy są w Polsce (przewóz kontenera z portu do magazynu też jest w całości w Polsce, a to import).' },
       container_number: { type: 'string', description: 'Numer kontenera (format ISO 6346, np. "NYKU9911861"). Pusty string, jeśli nie ma.' },
       container_size: { type: 'string', description: 'Wielkość/typ kontenera (np. "20DV", "40HC") — bez nazwy armatora/linii. Pusty string, jeśli nieznana.' },
       shipping_line: { type: 'string', description: 'Linia żeglugowa/armator/gestia kontenera (np. "ONE", "MSC", "Maersk"), jeśli podana. Pusty string, jeśli nie ma.' },
       company_name: { type: 'string', description: 'Nazwa firmy/miejsca, DO KTÓREGO jedzie samochód (magazyn, zakład, odbiorca), jeśli podana osobno od adresu. Pusty string, jeśli nie ma.' },
       address: { type: 'string', description: 'Adres z rubryki MIEJSCE ZAŁADUNKU / ROZŁADUNKU — czyli tam, gdzie faktycznie jedzie samochód. To zwykle NIE jest adres rejestrowy firmy z nagłówka dokumentu (zakład/magazyn bywa w innym mieście niż siedziba) — nigdy nie podstawiaj adresu z nagłówka, gdy dokument podaje osobne miejsce załadunku/rozładunku. Pusty string, jeśli nieznany.' },
       city: { type: 'string', description: 'Sama nazwa miejscowości z TEGO SAMEGO miejsca co pole address (załadunek/rozładunek), bez reszty adresu i bez siedziby firmy z nagłówka. Pusty string, jeśli nieznana.' },
+      extra_stops: {
+        type: 'array',
+        description: 'KOLEJNE miejsca załadunku/rozładunku — drugie, trzecie itd. Pierwsze miejsce idzie do pól company_name/address/city/delivery_date/delivery_time i NIE POWTARZA SIĘ tutaj. Pusta lista, jeśli zlecenie ma tylko jedno miejsce.',
+        items: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['', 'load', 'unload'], description: '"load" = załadunek, "unload" = rozładunek. Pusty string, jeśli dokument tego nie nazywa.' },
+            company_name: { type: 'string', description: 'Nazwa firmy/miejsca. Pusty string, jeśli nie ma.' },
+            address: { type: 'string', description: 'Ulica z numerem (i kod pocztowy, jeśli podany). Pusty string, jeśli nie ma.' },
+            city: { type: 'string', description: 'Sama miejscowość. Pusty string, jeśli nie ma.' },
+            date: { type: 'string', description: 'Data tego miejsca w formacie RRRR-MM-DD. Pusty string, jeśli dokument jej nie podaje osobno.' },
+            time: { type: 'string', description: 'Godzina/okno czasowe tego miejsca (np. "08:30", "8-16"). Pusty string, jeśli nie ma.' },
+            notes: { type: 'string', description: 'Uwaga dotycząca TEGO miejsca (np. numer awizacji, "wjazd od tyłu"). Pusty string, jeśli nie ma.' },
+          },
+          required: ['kind', 'company_name', 'address', 'city', 'date', 'time', 'notes'],
+        },
+      },
       load_date: { type: 'string', description: 'Data ZAŁADUNKU/podjęcia w formacie RRRR-MM-DD, TYLKO jeśli dokument podaje ją osobno od daty rozładunku. Pusty string, jeśli nieznana — NIGDY nie zgaduj roku ani dnia.' },
       delivery_date: { type: 'string', description: 'Data obsługi U KLIENTA w formacie RRRR-MM-DD: przy imporcie data ROZŁADUNKU, przy eksporcie data ZAŁADUNKU (kontener jedzie do portu). Pusty string, jeśli nieznana — NIGDY nie zgaduj.' },
       delivery_time: { type: 'string', description: 'Godzina obsługi u klienta (rozładunku przy imporcie, załadunku przy eksporcie) w formacie GG:MM. Pusty string, jeśli nieznana.' },
@@ -105,7 +122,7 @@ const EXTRACT_TOOL = {
       trailer_plate: { type: 'string', description: 'Numer rejestracyjny NACZEPY/przyczepy. Pusty string, jeśli nie podano.' },
       driver_phone: { type: 'string', description: 'Telefon kierowcy. Pusty string, jeśli nie podano.' },
     },
-    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'seal_number', 'goods_name', 'net_weight_kg', 'submitted_when', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
+    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'extra_stops', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'seal_number', 'goods_name', 'net_weight_kg', 'submitted_when', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
   },
 };
 
@@ -127,8 +144,11 @@ Zasady, których nie wolno złamać:
    fakturowania ("fakturę proszę wystawić na..."), (b) firma wystawiająca dokument. NIGDY nie jest
    nią sama firma Grabowski (zawsze przewoźnik) ani ZAŁADOWCA/nadawca/odbiorca towaru — to strony
    ładunku, nie zleceniodawca transportu.
-3. Rozróżnij "Import"/"Export" WYŁĄCZNIE jeśli dokument to wprost nazywa (nagłówek, etykieta) —
-   nie zgaduj kierunku z samej trasy geograficznej.
+3. Rozróżnij "Import"/"Export"/"krajówka" WYŁĄCZNIE jeśli dokument to wprost nazywa (nagłówek,
+   etykieta) — nie zgaduj kierunku z samej trasy geograficznej. "K" (krajówka) TYLKO wtedy, gdy
+   dokument sam nazywa przewóz krajowym ("krajówka", "transport krajowy", "przewóz krajowy",
+   "kabotaż"). To, że załadunek i rozładunek są w Polsce, NIE wystarcza: przewóz kontenera z portu
+   do magazynu też jest w całości krajowy, a jest importem.
 4. Data w polach load_date/delivery_date MUSI być w formacie RRRR-MM-DD. Jeśli w dokumencie jest
    sama data bez jednoznacznego roku, zostaw pole puste zamiast zgadywać.
 5. rate_amount i payment_terms_days to same liczby, bez jednostek/tekstu/waluty. Gdy dokument
@@ -137,8 +157,11 @@ Zasady, których nie wolno złamać:
    ("stawka 3000 zł z BAF 13%" → rate_amount 3000, baf_percentage 13, rate_includes_baf true;
    "2000 zł + BAF 13%" → rate_amount 2000, baf_percentage 13, rate_includes_baf false). NIE licz
    sam żadnych kwot BAF-u — rozbicie robi appka.
-6. Jeśli dokument wymienia więcej niż jedno miejsce rozładunku, wybierz PIERWSZE — dyspozytor
-   doda pozostałe ręcznie, jeśli będzie trzeba (appka dziś obsługuje jedno miejsce na rekord).
+6. Zlecenie MOŻE mieć więcej niż jedno miejsce załadunku/rozładunku (szczególnie przewozy krajowe).
+   PIERWSZE miejsce wpisz w company_name/address/city/delivery_date/delivery_time, a każde KOLEJNE
+   jako osobny element listy extra_stops — w kolejności z dokumentu i bez powtarzania pierwszego.
+   Jedno miejsce = pusta lista extra_stops. Nie rozbijaj jednego adresu na dwa wpisy tylko dlatego,
+   że stoi w kilku liniach.
 7. Kierowca, numery rejestracyjne i telefon to dane z listu przewozowego — jeśli dokument ich nie
    zawiera, zostaw puste. NIE przepisuj tu danych firmy przewozowej ani osoby kontaktowej
    spedytora, tylko faktycznego kierowcę i jego pojazd.

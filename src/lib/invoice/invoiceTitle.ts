@@ -1,4 +1,5 @@
 import type { Load } from "../../types/load";
+import { normalizeStops } from "../../types/loadStop";
 
 // Tytuł pozycji na fakturze — reguła właściciela: "Transport kontenera <nr kontenera>, na trasie
 // <trasa>, nr zlecenia <nr>", gdzie trasa dla importu to "<port> - <miejscowość> - <port>", a dla
@@ -19,10 +20,20 @@ export function portCityForPickup(pickupType: string | null | undefined): string
   return "Gdańsk";
 }
 
-export function buildRoute(load: Pick<Load, "direction" | "city" | "pickup_type">, exportOrigin: ExportOrigin): string {
+export function buildRoute(
+  load: Pick<Load, "direction" | "city" | "pickup_type"> & Partial<Pick<Load, "stops">>,
+  exportOrigin: ExportOrigin
+): string {
   const port = portCityForPickup(load.pickup_type);
-  const city = (load.city ?? "").trim() || "?";
-  return load.direction === "E" ? `${EXPORT_ORIGIN_LABEL[exportOrigin]} - ${city} - ${port}` : `${port} - ${city} - ${port}`;
+  // Zlecenie bywa wielopunktowe — faktura ma wtedy pokazywać CAŁĄ trasę, bo klient płaci właśnie
+  // za kilka rozładunków (właściciel: "zlecenia mogą mieć więcej niż jeden rozładunek/załadunek").
+  const cities = [(load.city ?? "").trim(), ...normalizeStops(load.stops).map((stop) => stop.city.trim())]
+    .filter(Boolean);
+  const trasa = cities.length > 0 ? cities.join(" - ") : "?";
+  // Krajówka nie ma portu po żadnej stronie (transport krajowy), więc trasa portowa byłaby na
+  // fakturze nieprawdą. Zostają same miejscowości — tytuł i tak jest do poprawienia w oknie faktury.
+  if (load.direction === "K") return trasa;
+  return load.direction === "E" ? `${EXPORT_ORIGIN_LABEL[exportOrigin]} - ${trasa} - ${port}` : `${port} - ${trasa} - ${port}`;
 }
 
 /**
@@ -40,10 +51,14 @@ export function buildBafPositionTitle(
 }
 
 export function buildInvoiceTitle(
-  load: Pick<Load, "direction" | "city" | "pickup_type" | "container_number" | "order_number">,
+  load: Pick<Load, "direction" | "city" | "pickup_type" | "container_number" | "order_number"> &
+    Partial<Pick<Load, "stops">>,
   exportOrigin: ExportOrigin = "poimport"
 ): string {
-  const container = (load.container_number ?? "").trim() || "?";
+  const container = (load.container_number ?? "").trim();
   const order = (load.order_number ?? "").trim() || "?";
-  return `Transport kontenera ${container}, na trasie ${buildRoute(load, exportOrigin)}, nr zlecenia ${order}`;
+  // Krajówka bywa bez kontenera (zwykły transport krajowy) — wtedy "Transport kontenera ?" byłoby
+  // bez sensu. Z numerem kontenera nazywamy go tak samo jak przy imporcie i eksporcie.
+  const co = container ? `kontenera ${container}` : load.direction === "K" ? "krajowy" : "kontenera ?";
+  return `Transport ${co}, na trasie ${buildRoute(load, exportOrigin)}, nr zlecenia ${order}`;
 }

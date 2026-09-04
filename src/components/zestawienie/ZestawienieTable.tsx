@@ -9,6 +9,7 @@ import { EMPTY_FLEET, useFleet, withCurrentOption, type Fleet } from "@/lib/flee
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { splitBaf } from "@/lib/invoice/baf";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
+import { DIRECTION_LABELS, DIRECTION_OPTIONS, DIRECTION_ORDER } from "@/lib/loads/direction";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { ALARM_PREFIX, bhubCellDecoration, isAlarm } from "@/lib/bhub/cellDecoration";
 import { BHUB_STATUSES, BHUB_STATUS_LABELS } from "@/lib/bhub/status";
@@ -30,6 +31,10 @@ import { ContractorsDialog } from "./ContractorsDialog";
 import { OrderTemplatesDialog } from "./OrderTemplatesDialog";
 import { LoadDocumentsDialog } from "./LoadDocumentsDialog";
 import { removeStoredFilesForLoad, useLoadDocuments } from "@/hooks/useLoadDocuments";
+import type { LoadDocument } from "@/types/loadDocument";
+import type { SourceItem } from "./SourcePreview";
+import { LoadStopsDialog } from "./LoadStopsDialog";
+import { normalizeStops, summarizeStops } from "@/types/loadStop";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { useContractors } from "@/hooks/useContractors";
@@ -57,6 +62,20 @@ function formatDayHeading(loadDate: string | null): string {
   return WEEKDAY_FORMATTER.format(parsed);
 }
 
+/** Dokumenty zlecenia jako ŹRÓDŁO do podglądu obok pól (prywatny bucket — podpis robi podgląd). */
+function sourcesFromDocuments(documents: LoadDocument[], loadId: string): SourceItem[] {
+  return documents
+    .filter((document) => document.load_id === loadId)
+    .map((document) => ({
+      id: `dok-${document.id}`,
+      label: document.file_name ?? "dokument.pdf",
+      kind: "pdf" as const,
+      bucket: document.bucket,
+      path: document.storage_path,
+      note: document.parse_source ? `Odczytano: ${document.parse_source}` : undefined,
+    }));
+}
+
 function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Map<string, string>): string {
   if (value === null || value === undefined || value === "") return "";
   if (kind === "number" && typeof value === "number") {
@@ -65,6 +84,10 @@ function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Ma
   if (kind === "contractor") return contractorNames.get(String(value)) ?? "(nieznany kontrahent)";
   // W bazie siedzi kod ('tyl'/'przod'), w tabeli ma stać nazwa miejsca — ta sama, co w Planie.
   if (kind === "plan_slot") return PLAN_SLOT_LABELS[value as PlanSlot] ?? String(value);
+  // Tak samo kierunek: w bazie I/E/K, w tabeli "Import"/"Eksport"/"Krajówka".
+  if (kind === "direction") return DIRECTION_LABELS[value as Direction] ?? String(value);
+  // Kolejne miejsca: w komórce skrót ("Łódź; Warszawa"), pełna lista w oknie po kliknięciu.
+  if (kind === "stops") return summarizeStops(normalizeStops(value));
   return String(value);
 }
 
@@ -134,11 +157,7 @@ function groupByDay(loads: Load[]): DayGroup[] {
     .map(([dateKey, dayLoads]) => ({ dateKey, loads: dayLoads }));
 }
 
-const DIRECTION_ORDER: Direction[] = ["E", "I"];
-const DIRECTION_LABELS: Record<Direction, string> = {
-  E: "Eksport",
-  I: "Import",
-};
+// Kolejność bloków w dniu (krajówka nad eksportem) i ich nazwy — patrz src/lib/loads/direction.ts.
 
 interface EditingCell {
   id: string;
@@ -153,7 +172,8 @@ type Dialog =
   | { kind: "view" }
   | { kind: "extension" }
   | { kind: "invoice"; loadIds: string[] }
-  | { kind: "documents"; load: Load };
+  | { kind: "documents"; load: Load }
+  | { kind: "stops"; load: Load };
 
 export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -618,10 +638,14 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       {dialog?.kind === "documents" && (
         <LoadDocumentsDialog load={dialog.load} onClose={() => setDialog(null)} />
       )}
+      {dialog?.kind === "stops" && <LoadStopsDialog load={dialog.load} onClose={() => setDialog(null)} />}
       {dialog?.kind === "attach" && (
         <ImportOrderDialog
           mode="attach"
           existingLoad={dialog.load}
+          // Dokumenty JUŻ zapisane przy zleceniu są źródłem tak samo jak dopinany właśnie plik —
+          // poprawiając pola po tygodniu, dyspozytor musi widzieć oryginał, a nie pamiętać go.
+          initialSources={sourcesFromDocuments(loadDocuments, dialog.load.id)}
           recentLoads={recentLoads.filter((l) => l.id !== dialog.load.id)}
           onSaved={checkAfterSave}
           onLearned={(notes) => setLearnNote(notes.join(" "))}
@@ -717,6 +741,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
                 onAttach={(load) => setDialog({ kind: "attach", load })}
                 onInvoice={(load) => setDialog({ kind: "invoice", loadIds: [load.id] })}
                 onDocuments={(load) => setDialog({ kind: "documents", load })}
+                onStops={(load) => setDialog({ kind: "stops", load })}
                 onDelete={handleDelete}
               />
             ))}
@@ -752,6 +777,7 @@ interface RowHandlers {
   onAttach: (load: Load) => void;
   onInvoice: (load: Load) => void;
   onDocuments: (load: Load) => void;
+  onStops: (load: Load) => void;
   onDelete: (load: Load) => void;
 }
 
@@ -817,6 +843,7 @@ function DirectionRows({
   onAttach,
   onInvoice,
   onDocuments,
+  onStops,
   onDelete,
 }: { direction: Direction; loads: Load[]; columns: ColumnDef[]; isFirst: boolean } & RowHandlers) {
   return (
@@ -870,7 +897,10 @@ function DirectionRows({
                 key={column.key}
                 style={stickyCellStyle(index + 1, frozenCount, 1)}
                 onClick={() => {
-                  if (!isEditing) onStartEdit({ id: load.id, key: column.key });
+                  // Lista miejsc (jsonb) NIE wchodzi do edytora inline — ten zapisuje tekst,
+                  // więc Enter w tej komórce skasowałby wszystkie miejsca. Otwiera się okno.
+                  if (column.kind === "stops") onStops(load);
+                  else if (!isEditing) onStartEdit({ id: load.id, key: column.key });
                 }}
                 className={`whitespace-nowrap border-b border-zinc-100 p-0 text-zinc-800 dark:border-zinc-900 dark:text-zinc-200 ${
                   column.align === "right" ? "text-right tabular-nums" : ""
@@ -1050,10 +1080,7 @@ function selectOptionsFor(
     case "contractor_id":
       return contractors.map((c) => ({ value: c.id, label: c.name }));
     case "direction":
-      return [
-        { value: "I", label: "Import" },
-        { value: "E", label: "Eksport" },
-      ];
+      return DIRECTION_OPTIONS;
     case "pickup_type":
       return withCurrentOption([...PICKUP_LOCATIONS], current);
     // Status z terminala normalnie ustawia bot, ale kolumna jest edytowalna jak każda inna —
