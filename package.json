@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/build-extension-zip.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/build-extension-zip.mjs",
     "build": "next build",
+    "wtyczka": "node scripts/build-extension-zip.mjs",
     "start": "next start",
     "lint": "eslint"
   },

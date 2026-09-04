@@ -1209,6 +1209,39 @@ jako odczytane)"):
 - **UWAGA: to działa dopiero po wdrożeniu `mail-poll`** (patrz punkt 1 niżej) — cała reguła siedzi
   w funkcji brzegowej.
 
+**Wtyczka do pobrania z appki — ZROBIONE** (właściciel: „guzik, który pozwoli mi zawsze pobrać
+aktualną wersję wtyczki"):
+- **Paczka powstaje PRZY BUDOWANIU APPKI**, więc nie może rozjechać się z katalogiem `extension/`:
+  `scripts/build-extension-zip.mjs` (uruchamiany przez `prebuild`/`predev`, ręcznie `npm run
+  wtyczka`) pakuje `extension/` do `public/rozszerzenie/wtyczka.zip` + `wersja.json` (wersja z
+  `manifest.json`, rozmiar, data). Katalog `public/rozszerzenie/` jest w `.gitignore` — to artefakt
+  buildu, nie kod.
+- **ZIP zapisywany własnym kodem** (`zlib` z Node), bez zależności i bez zewnętrznego `zip`:
+  paczka musi powstać na komputerze właściciela przed `next build` (appka to eksport statyczny
+  wgrywany na Netlify), a `zip` nie istnieje na Windowsie. Wpis, którego deflate wyszedł WIĘKSZY
+  niż oryginał (drobne PNG), zapisujemy bez kompresji — inaczej paczka rosłaby.
+- W ZIP-ie jest KATALOG `grabowski-statusy-kontenerow/` (Chrome w „Załaduj rozpakowane" wskazuje
+  się katalog z `manifest.json`), nazwa stała — aktualizacja to nadpisanie tego samego katalogu
+  i „Odśwież" w `chrome://extensions`, bez ponownego logowania. Adres pobrania też jest stały
+  (`/rozszerzenie/wtyczka.zip`); wersja idzie w atrybut `download`, więc w Pobranych ląduje
+  `grabowski-wtyczka-1.0.8.zip`.
+- **Appka wie, czy dyspozytor ma starą wtyczkę**: `bhubExtensionState()` zwraca teraz `wersja`
+  (rozszerzenie i tak ją odsyłało w odpowiedzi „stan", nikt tego nie czytał), a `stanPaczki()`
+  porównuje ją z paczką — **po członach jako LICZBY**, bo tekstowo „1.0.10" < „1.0.9". Guzik
+  „Wtyczka" świeci wtedy na pomarańczowo z kropką, a okno pokazuje kroki AKTUALIZACJI zamiast
+  instalacji od zera. Wersja zainstalowana WYŻSZA od paczki (komputer programisty z katalogiem
+  wprost z repo) to osobny stan, nie alarm.
+- **Po zmianie w `extension/` trzeba podnieść `version` w `manifest.json`** — inaczej appka nie ma
+  po czym poznać, że u dyspozytorów siedzi stara wtyczka (napisane też w `extension/README.md`).
+- Zweryfikowane: logika + paczka — 20 sprawdzeń (`scratch-wtyczka.test.mts`, plik tymczasowy:
+  porównanie wersji, stany paczki, a ZIP rozpakowany **prawdziwym `unzip`**, nie własnym czytnikiem
+  — inaczej błąd w formacie byłby niewidoczny, bo ten sam kod pisałby i czytał; PNG bajt w bajt,
+  polskie znaki bez zmian, klucz z manifestu na miejscu). Przeglądarka (Playwright, `next dev`,
+  tymczasowa strona `/test-wtyczka` z atrapą stanu wtyczki) — 12 sprawdzeń: kliknięcie guzika
+  FAKTYCZNIE pobiera plik, pobrany plik jest bajt w bajt tym z `public/`, rozpakowuje się do
+  gotowego do wgrania katalogu, a komunikat i instrukcja zmieniają się z wersją (brak / stara /
+  aktualna / nowsza). `npm run build` przechodzi i paczka ląduje w `out/rozszerzenie/`.
+
 **Do zrobienia w kolejnej sesji:**
 1. **NAJPIERW: wdrożyć `mail-poll`** (właściciel: „wdroz mail-poll w kolejnej sesji"). Kod jest
    w repo i przetestowany, brakuje tylko wdrożenia — dziś produkcja czyta maile bez nauczonych

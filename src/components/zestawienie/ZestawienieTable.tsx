@@ -16,6 +16,9 @@ import { shouldTrackLoad } from "@/lib/bhub/schedule";
 import { useBhubCheck } from "@/hooks/useBhubCheck";
 import { useBhubAgent } from "@/hooks/useBhubAgent";
 import { opisOstatniegoSprawdzenia } from "@/lib/bhub/agentStatus";
+import { stanPaczki } from "@/lib/bhub/extensionPackage";
+import { useExtensionPackage } from "@/hooks/useExtensionPackage";
+import { ExtensionDialog } from "./ExtensionDialog";
 import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
@@ -145,6 +148,7 @@ type Dialog =
   | { kind: "contractors" }
   | { kind: "templates" }
   | { kind: "view" }
+  | { kind: "extension" }
   | { kind: "invoice"; loadIds: string[] }
   | { kind: "documents"; load: Load };
 
@@ -187,6 +191,11 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const { checking: checkingIds, check: checkBhub, error: bhubError, extension } = useBhubCheck();
   const { data: bhubAgent } = useBhubAgent();
   const bhubStatus = useMemo(() => opisOstatniegoSprawdzenia(bhubAgent, extension), [bhubAgent, extension]);
+  // Wtyczka do Chrome jest do pobrania z appki — a skoro appka i tak zna obie wersje (paczki
+  // i zainstalowaną), to nieaktualną widać na guziku, zamiast czekać, aż ktoś sam zajrzy.
+  const { data: extensionPackage } = useExtensionPackage();
+  const extensionOutdated =
+    stanPaczki(extensionPackage ?? null, extension?.zainstalowane ? (extension.wersja ?? "0") : null) === "stara";
   const trackedIds = useMemo(() => loads.filter(shouldTrackLoad).map((load) => load.id), [loads]);
 
   // Sprawdzenie zaraz po zapisaniu zlecenia (właściciel: "po wgraniu zlecenia które pobieramy
@@ -507,6 +516,25 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           >
             Statusy BHub{trackedIds.length > 0 ? ` (${trackedIds.length})` : ""}
           </button>
+          {/* Pobranie aktualnej wtyczki do Chrome. Paczka jedzie razem z appką (powstaje przy
+              buildzie z katalogu `extension/`), więc „aktualna" znaczy tu tę samą wersję, co
+              w repozytorium — nikt nie musi nikogo prosić o katalog. */}
+          <button
+            type="button"
+            onClick={() => setDialog({ kind: "extension" })}
+            title={
+              extensionOutdated
+                ? `Masz starą wtyczkę (${extension?.wersja ?? "?"}), do pobrania jest ${extensionPackage?.wersja}.`
+                : "Pobierz aktualną wtyczkę do Chrome, która sprawdza statusy w Baltic Hub"
+            }
+            className={`rounded-full border px-3 py-1 text-xs font-medium ${
+              extensionOutdated
+                ? "border-amber-400 text-amber-700 hover:border-amber-500 dark:border-amber-700 dark:text-amber-400"
+                : "border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
+            }`}
+          >
+            Wtyczka{extensionOutdated ? " ●" : ""}
+          </button>
           <button
             type="button"
             onClick={() => setDialog({ kind: "contractors" })}
@@ -569,6 +597,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       )}
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
       {dialog?.kind === "templates" && <OrderTemplatesDialog onClose={() => setDialog(null)} />}
+      {dialog?.kind === "extension" && <ExtensionDialog extension={extension} onClose={() => setDialog(null)} />}
       {dialog?.kind === "view" && (
         <ViewSettingsDialog measureColumnWidths={measureColumnWidths} onClose={() => setDialog(null)} />
       )}

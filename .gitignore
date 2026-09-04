@@ -41,6 +41,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Paczka z wtyczką do Chrome — artefakt buildu (scripts/build-extension-zip.mjs),
+# powstaje z katalogu `extension/` przy każdym `npm run dev` i `npm run build`.
+/public/rozszerzenie/
+
 # Deno (lokalny typecheck/testy Edge Functions)
 supabase/functions/*/node_modules/
 supabase/functions/*/deno.lock

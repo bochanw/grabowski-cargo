@@ -26,6 +26,8 @@ export interface StanRozszerzenia {
   zainstalowane: boolean;
   zalogowane: boolean;
   email: string | null;
+  /** Wersja z `manifest.json` TEJ instalacji — po niej appka pozna, że dyspozytor ma starą wtyczkę. */
+  wersja: string | null;
   trwa: boolean;
   powod: string | null;
 }
@@ -83,15 +85,19 @@ function zapytaj<T>(wiadomosc: unknown, limitMs: number): Promise<{ ok: true; da
 }
 
 export async function bhubExtensionState(): Promise<StanRozszerzenia> {
-  const wynik = await zapytaj<{ ok?: boolean; konto?: { email?: string } | null; trwa?: boolean; ostatni?: { blad?: string | null } }>(
-    { typ: "stan" },
-    LIMIT_STANU_MS,
-  );
-  if (!wynik.ok) return { zainstalowane: false, zalogowane: false, email: null, trwa: false, powod: wynik.error };
+  const wynik = await zapytaj<{
+    ok?: boolean;
+    wersja?: string;
+    konto?: { email?: string } | null;
+    trwa?: boolean;
+    ostatni?: { blad?: string | null };
+  }>({ typ: "stan" }, LIMIT_STANU_MS);
+  if (!wynik.ok) return { zainstalowane: false, zalogowane: false, email: null, wersja: null, trwa: false, powod: wynik.error };
   return {
     zainstalowane: true,
     zalogowane: Boolean(wynik.dane?.konto),
     email: wynik.dane?.konto?.email ?? null,
+    wersja: wynik.dane?.wersja ?? null,
     trwa: Boolean(wynik.dane?.trwa),
     powod: wynik.dane?.konto ? null : "Rozszerzenie nie jest zalogowane — otwórz je i podaj e-mail oraz hasło do appki.",
   };

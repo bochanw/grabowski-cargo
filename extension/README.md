@@ -7,15 +7,24 @@ zleceniach w appce. Działa w przeglądarce dyspozytora, bo terminal odrzuca ruc
 
 ## Instalacja (5 minut, raz na komputer)
 
-1. Skopiuj katalog `extension` na dysk komputera (albo pobierz repozytorium).
+1. W appce kliknij **Wtyczka** w pasku Zestawienia i pobierz paczkę, a potem rozpakuj ją w stałe
+   miejsce (np. Dokumenty) — powstanie katalog `grabowski-statusy-kontenerow`. Chrome wczytuje
+   wtyczkę z dysku przy każdym uruchomieniu, więc tego katalogu nie kasuj.
 2. W Chrome otwórz `chrome://extensions`.
 3. Włącz **Tryb dewelopera** (przełącznik w prawym górnym rogu).
-4. Kliknij **Załaduj rozpakowane** i wskaż katalog `extension`.
+4. Kliknij **Załaduj rozpakowane** i wskaż rozpakowany katalog.
 5. Kliknij ikonę rozszerzenia (kontener) na pasku Chrome i zaloguj się **tym samym e-mailem
    i hasłem, co w appce**. Logowanie jest jednorazowe — sesja odnawia się sama.
 
 Rozszerzenie ma stały identyfikator (`jaiopbejoakjdggjpkgoambeifcjjffj`), więc appka rozpozna je
 na każdym komputerze i po każdym ponownym wgraniu.
+
+## Aktualizacja (1 minuta)
+
+Guzik **Wtyczka** w appce świeci na pomarańczowo (`Wtyczka ●`), gdy w tej przeglądarce działa
+starsza wersja niż ta wgrana z appką. Wtedy: pobierz paczkę, rozpakuj ją NA TEN SAM katalog co
+poprzednio (nadpisz pliki) i w `chrome://extensions` kliknij strzałkę **Odśwież** na kafelku
+wtyczki. Logowanie zostaje — nie trzeba go powtarzać.
 
 ## Jak to działa
 
@@ -73,7 +82,10 @@ otwiera przypiętą kartę, wystarczy przejść weryfikację ręcznie. Kolejne s
 
 ## Dla programisty
 
-Katalog jest gotowym rozszerzeniem — **bez budowania, bez zależności**. Pliki:
+Katalog jest gotowym rozszerzeniem — **bez budowania, bez zależności**. Paczkę ZIP do pobrania
+z appki robi z niego `scripts/build-extension-zip.mjs` (jedzie w `prebuild`/`predev`, ręcznie:
+`npm run wtyczka`) — **po zmianie w rozszerzeniu podnieś `version` w `manifest.json`**, inaczej
+appka nie pozna, że dyspozytorzy mają starą wersję. Pliki:
 
 - `manifest.json` — uprawnienia, stały klucz (identyfikator), adresy, spod których appka może
   wysłać prośbę o sprawdzenie (`externally_connectable`).
