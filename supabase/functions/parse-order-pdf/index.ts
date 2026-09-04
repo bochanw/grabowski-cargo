@@ -22,8 +22,10 @@
 // Functions -> Secrets) — bez klucza funkcja zwraca jawny błąd "not_configured" (status 200, nie
 // 500 — appka po stronie klienta ma dostać czytelny komunikat, nie generyczny błąd sieci).
 //
-// Autoryzacja: domyślna weryfikacja JWT Supabase (verify_jwt) — dostępne dla KAŻDEGO zalogowanego
-// konta tego projektu, bez podziału manager/pracownik. Świadomie inaczej niż DAB (tam ta sama
+// Autoryzacja: JWT Supabase (verify_jwt) ORAZ — od incydentu z wyczerpaniem środków w Claude
+// Console — sprawdzenie w GoTrue, że za tokenem stoi KONKRETNY UŻYTKOWNIK. Zadania w tle (cron,
+// klucz service_role) dostają 403: płatny odczyt ma ruszać z kliknięcia człowieka. Poza tym
+// dostępne dla KAŻDEGO zalogowanego konta tego projektu, bez podziału manager/pracownik. Świadomie inaczej niż DAB (tam ta sama
 // funkcja jest zawężona do managera przez is_manager(), bo tamten moduł jest z założenia
 // finansowy/manager-only) — appka ładunków ma z założenia służyć WSZYSTKIM dyspozytorom naraz
 // (patrz CLAUDE.md, "Współpraca kilku dyspozytorów naraz jest GŁÓWNYM celem appki"), a ta appka
@@ -163,6 +165,39 @@ Deno.serve(async (req: Request) => {
 
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) return json({ ok: false, reason: 'unauthorized', error: 'Brak nagłówka Authorization.' }, 401);
+
+  // TWARDA BLOKADA: płatny odczyt tylko dla ZALOGOWANEGO CZŁOWIEKA, nigdy dla automatu.
+  //
+  // Powód jest zmierzony, nie teoretyczny: `mail-poll` (cron co 2 min, klucz service_role) wołał tę
+  // funkcję dla każdego maila PRZED sprawdzeniem, czy mail już jest w bazie, a kursor Microsoft
+  // Graph celowo porównuje ">=" — więc te same wiadomości wracały w kółko. 515 wywołań przez jedną
+  // noc wyczerpało środki w Claude Console. Sam `mail-poll` jest już poprawiony (nie płaci wcale),
+  // ale poprawka w JEDNYM wywołującym nie chroni przed następnym takim automatem. Ta blokada stoi
+  // po stronie kosztu, więc obejmuje KAŻDEGO wywołującego, także przyszłego.
+  //
+  // verify_jwt Supabase samo tego nie załatwia: przepuszcza również klucz service_role — z jego
+  // punktu widzenia to poprawny token. Dlatego pytamy GoTrue, czy za tokenem stoi konkretny
+  // użytkownik (`sub`); klucz service_role/anon takiego użytkownika nie ma.
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  if (!supabaseUrl) {
+    return json({ ok: false, reason: 'not_configured', error: 'Brak SUPABASE_URL w środowisku funkcji.' }, 200);
+  }
+  try {
+    const who = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: Deno.env.get('SUPABASE_ANON_KEY') ?? token },
+    });
+    const user = who.ok ? await who.json().catch(() => null) : null;
+    if (!user?.id) {
+      return json({
+        ok: false,
+        reason: 'not_a_user',
+        error: 'Płatny odczyt przez Claude jest dostępny wyłącznie dla zalogowanego dyspozytora (kliknięcie w appce), nie dla zadań w tle.',
+      }, 403);
+    }
+  } catch (err) {
+    return json({ ok: false, reason: 'auth_failed', error: `Nie udało się potwierdzić sesji: ${String(err)}` }, 401);
+  }
 
   let body: { pdfBase64?: string; text?: string };
   try {

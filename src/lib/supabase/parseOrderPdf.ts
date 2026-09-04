@@ -29,7 +29,21 @@ function fileToBase64(file: File): Promise<string> {
  * zalogowanego użytkownika — funkcja ma verify_jwt, więc bez nagłówka Authorization dostaniemy
  * 401 zamiast czytelnego błędu.
  */
+/**
+ * Sama TREŚĆ maila zamiast dokumentu — funkcja brzegowa przyjmuje `{ text }` obok `{ pdfBase64 }`
+ * i przepuszcza jedno i drugie przez ten sam schemat pól. Kosztuje ułamek odczytu PDF-a, bo do
+ * modelu idzie kilka zdań, a nie skan.
+ */
+export function parseOrderText(text: string): Promise<ParseOrderPdfResult> {
+  return wyslijDoFunkcji({ text });
+}
+
 export async function parseOrderPdf(file: File): Promise<ParseOrderPdfResult> {
+  const pdfBase64 = await fileToBase64(file);
+  return wyslijDoFunkcji({ pdfBase64 });
+}
+
+async function wyslijDoFunkcji(body: { pdfBase64: string } | { text: string }): Promise<ParseOrderPdfResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) {
@@ -41,8 +55,6 @@ export async function parseOrderPdf(file: File): Promise<ParseOrderPdfResult> {
     return { ok: false, reason: "not_configured", error: "Brak skonfigurowanego adresu Supabase." };
   }
 
-  const pdfBase64 = await fileToBase64(file);
-
   try {
     const res = await fetch(`${supabaseUrl}/functions/v1/parse-order-pdf`, {
       method: "POST",
@@ -50,7 +62,7 @@ export async function parseOrderPdf(file: File): Promise<ParseOrderPdfResult> {
         "content-type": "application/json",
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ pdfBase64 }),
+      body: JSON.stringify(body),
     });
     if (res.status === 404) {
       return {

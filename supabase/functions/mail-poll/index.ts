@@ -16,7 +16,7 @@
 // probabilistycznym):
 //   1. prefiltr BEZ modelu — czy ten mail w ogóle dotyczy zleceń,
 //   2. znany szablon (regex na tekście z pdf.js) — darmowy, deterministyczny,
-//   3. Claude (parse-order-pdf) — tylko dla dokumentów spoza szablonów.
+//   3. Claude (parse-order-pdf) — TYLKO z guzika w Skrzynce, nigdy stąd (patrz niżej).
 // Mail, który nie przejdzie punktu 1, NIE kosztuje ani grosza.
 //
 // BEZPIECZEŃSTWO: treść maila i załączniki pisze ktokolwiek, kto zna adres skrzynki. Traktujemy je
@@ -35,7 +35,6 @@ import { previousWorkingDay } from "./shared/workingDays.ts";
 import {
   EMPTY_PARSED_ORDER,
   mergeParsedOrders,
-  normalizeParsedOrder,
   type ParsedOrder,
 } from "./shared/parsedOrder.ts";
 
@@ -56,37 +55,15 @@ function json(body: unknown, status = 200): Response {
 }
 
 // ------------------------------------------------------------
-// Odczyt dokumentu: znany szablon → Claude
+// UWAGA: tu STAŁA funkcja wołająca `parse-order-pdf` (płatny odczyt przez Claude). Została
+// usunięta świadomie i NIE należy jej tu przywracać.
+//
+// Poller chodzi co 2 minuty i nie ma pojęcia, czy ktokolwiek potrzebuje danego maila. Wołany
+// stąd model wyczerpał właścicielowi środki w Claude Console przez jedną noc (515 wywołań),
+// bo płacił także za maile, które już były w bazie. Płatny odczyt rusza teraz wyłącznie
+// z guzika "Odczytaj przez Claude" w Skrzynce — patrz src/lib/supabase/readEmailWithClaude.ts.
+// Sama funkcja `parse-order-pdf` odrzuca dziś wywołania spoza sesji zalogowanego człowieka.
 // ------------------------------------------------------------
-async function parseViaClaude(
-  supabaseUrl: string,
-  serviceKey: string,
-  payload: { pdfBase64?: string; text?: string },
-): Promise<{ ok: true; parsed: ParsedOrder } | { ok: false; error: string }> {
-  try {
-    const res = await fetch(`${supabaseUrl}/functions/v1/parse-order-pdf`, {
-      method: "POST",
-      headers: { "content-type": "application/json", Authorization: `Bearer ${serviceKey}` },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => null);
-    if (!data || typeof data !== "object") return { ok: false, error: `nieoczekiwana odpowiedź (HTTP ${res.status})` };
-    if (!data.ok) return { ok: false, error: String(data.error ?? data.reason ?? "nieznany błąd") };
-    // normalizeParsedOrder sprowadza też nazwy terminali do listy (GCT/BCT/BHub) — patrz shared/parsedOrder.ts.
-    return { ok: true, parsed: normalizeParsedOrder(data.parsed) };
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
 
 function buildMailSource(env: (key: string) => string | undefined): MailSource {
   const kind = (env("MAIL_SOURCE") ?? "graph").toLowerCase();
@@ -179,7 +156,22 @@ Deno.serve(async (req: Request) => {
       for (const ref of (row.thread_refs ?? []) as string[]) threadLoadByRef.set(ref, loadId);
     }
 
+    // Które z pobranych wiadomości już mamy. Sprawdzamy to JEDNYM zapytaniem PRZED jakąkolwiek
+    // pracą nad nimi — kolejność ma tu wymiar finansowy: poprzednia wersja parsowała mail
+    // (płatnie), a dopiero potem odbijała się o `UNIQUE (message_id)` przy zapisie. Kursor Graph
+    // celowo porównuje ">=" (lepiej powtórzyć wiadomość niż ją zgubić), więc te same maile wracały
+    // w każdym przebiegu co 2 minuty i płaciliśmy za nie od nowa: 515 wywołań przez jedną noc.
+    const { data: juzMamy } = await admin
+      .from("email_messages")
+      .select("message_id")
+      .in("message_id", fetched.messages.map((m) => m.messageId));
+    const znane = new Set((juzMamy ?? []).map((r) => String(r.message_id)));
+
     for (const mail of fetched.messages) {
+      if (znane.has(mail.messageId)) {
+        skipped++;
+        continue;
+      }
       const relevance = assessRelevance(mail, loadsByNormalizedNumber, threadLoadByRef);
 
       const record: Record<string, unknown> = {
@@ -226,17 +218,16 @@ Deno.serve(async (req: Request) => {
             parsed = template.parsed;
             parseSource = template.name;
           } else {
-            // 2) Claude — tylko dla dokumentów spoza szablonów.
-            const viaClaude = await parseViaClaude(supabaseUrl, serviceKey, { pdfBase64: toBase64(pdf.bytes) });
-            if (viaClaude.ok) {
-              parsed = viaClaude.parsed;
-              parseSource = `${pdf.filename} — odczyt przez Claude`;
-            } else {
-              attachmentError = attachmentError
-                ? `${attachmentError}; Claude: ${viaClaude.error}`
-                : `Claude: ${viaClaude.error}`;
-              warnings.push(`${pdf.filename}: nie rozpoznano szablonu, a odczyt przez Claude nie zadziałał (${viaClaude.error}) — pola trzeba wpisać ręcznie.`);
-            }
+            // 2) Odczyt przez Claude JEST PŁATNY i NIE dzieje się tutaj.
+            //
+            // Właściciel: "program wykorzystał wszystkie fundusze Claude Console — odczytem
+            // zleceń; niech płatny odczyt będzie dopiero po moim kliknięciu". Poller robi więc
+            // wyłącznie rzeczy darmowe (prefiltr, znane szablony), a model rusza z guzika
+            // "Odczytaj przez Claude" w Skrzynce, przy konkretnym mailu, który ktoś ogląda.
+            //
+            // Mail zostaje w kolejce z pustym `parse_source` — to jest dla appki znak "jeszcze
+            // nieodczytany" i podstawa, żeby pokazać ten guzik.
+            warnings.push(`${pdf.filename}: dokument spoza znanych szablonów — kliknij „Odczytaj przez Claude" w Skrzynce, gdy będzie potrzebny.`);
           }
 
           if (parsed) {
@@ -261,19 +252,12 @@ Deno.serve(async (req: Request) => {
           });
         }
 
-        // Mail bez PDF-a, ale dotyczący znanego zlecenia (odpowiedź w wątku albo numer w treści) —
-        // to jest wprost wymóg właściciela: „nawet jak klient dośle informację w treści, program to
-        // zobaczy". Do modelu idzie sam tekst, więc koszt jest ułamkiem odczytu PDF-a.
+        // Mail bez PDF-a, ale dotyczący znanego zlecenia (odpowiedź w wątku albo numer w treści)
+        // — wymóg właściciela: "nawet jak klient dośle informację w treści, program to zobaczy".
+        // Sam mail trafia więc do Skrzynki, ale jego ODCZYT (płatny) czeka na kliknięcie; treść
+        // widać w panelu, więc dyspozytor często rozstrzygnie sprawę bez wydawania grosza.
         if (mail.attachments.length === 0 && mail.bodyText.trim()) {
-          const viaClaude = await parseViaClaude(supabaseUrl, serviceKey, {
-            text: `Temat: ${mail.subject}\nOd: ${mail.fromName} <${mail.fromEmail}>\n\n${mail.bodyText}`,
-          });
-          if (viaClaude.ok) {
-            merged = mergeParsedOrders(merged, viaClaude.parsed);
-            sources.push("treść maila — odczyt przez Claude");
-          } else {
-            warnings.push(`Nie udało się odczytać treści maila przez Claude (${viaClaude.error}) — przejrzyj ją ręcznie.`);
-          }
+          warnings.push('Treść maila nieodczytana — kliknij „Odczytaj przez Claude", jeśli chcesz z niej wyciągnąć pola zlecenia.');
         }
 
         // Domyślna „Data" = dzień roboczy przed rozładunkiem/załadunkiem — ta sama reguła co przy

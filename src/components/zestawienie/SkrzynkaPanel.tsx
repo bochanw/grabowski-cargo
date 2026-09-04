@@ -9,6 +9,7 @@ import type { EmailAttachment } from "@/types/emailMessage";
 import type { EmailMessage } from "@/types/emailMessage";
 import type { Load } from "@/types/load";
 import { ImportOrderDialog } from "./ImportOrderDialog";
+import { readEmailWithClaude } from "@/lib/supabase/readEmailWithClaude";
 
 const TIME_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
   day: "2-digit",
@@ -48,6 +49,29 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
   const [openMail, setOpenMail] = useState<EmailMessage | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  // Który mail jest właśnie odczytywany przez Claude. PŁATNE, więc wyłącznie na kliknięcie —
+  // patrz komentarz w src/lib/supabase/readEmailWithClaude.ts (skrzynka robiła to sama i przez
+  // jedną noc wyczerpała środki w Claude Console).
+  const [czytany, setCzytany] = useState<string | null>(null);
+
+  async function odczytajPrzezClaude(mail: EmailMessage) {
+    setCzytany(mail.id);
+    setNotice(null);
+    const { data: zalaczniki } = await supabase
+      .from("email_attachments")
+      .select("filename, storage_path")
+      .eq("email_message_id", mail.id);
+
+    const wynik = await readEmailWithClaude(mail, zalaczniki ?? []);
+    setCzytany(null);
+    if (!wynik.ok) {
+      setNotice(`Nie udało się odczytać: ${wynik.error}`);
+      return;
+    }
+    // Otwieramy formularz od razu — dyspozytor zapłacił za ten odczyt, więc ma go zobaczyć,
+    // a nie szukać po panelu. Wynik jest już zapisany przy mailu, więc drugie wejście jest darmowe.
+    setOpenMail({ ...mail, parsed: wynik.parsed, parse_source: wynik.source });
+  }
 
   async function checkNow() {
     setChecking(true);
@@ -142,8 +166,13 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
                     {mail.match_reason}
                   </div>
                 )}
-                {mail.parse_source && (
+                {mail.parse_source ? (
                   <div className="text-[11px] text-zinc-500">Odczytano: {mail.parse_source}</div>
+                ) : (
+                  <div className="text-[11px] text-zinc-500">
+                    Nieodczytany — dokument spoza znanych szablonów. Kliknij „Odczytaj przez Claude",
+                    gdy tego maila faktycznie potrzebujesz.
+                  </div>
                 )}
 
                 {mail.parsed && (
@@ -169,7 +198,21 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
                   </ul>
                 )}
 
-                <div className="mt-2 flex gap-2">
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {/* Odczyt przez Claude jest PŁATNY, więc rusza wyłącznie stąd — z kliknięcia.
+                      `mail-poll` odczytuje za darmo tylko znane szablony i stąd brak `parse_source`
+                      znaczy "nikt tego jeszcze nie przeczytał". */}
+                  {!mail.parse_source && (
+                    <button
+                      type="button"
+                      onClick={() => void odczytajPrzezClaude(mail)}
+                      disabled={czytany !== null}
+                      title="Wyśle dokument (albo treść maila) do odczytu przez Claude — to jedyne płatne miejsce w appce"
+                      className="rounded border border-amber-400 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-600 dark:text-amber-300 dark:hover:bg-amber-950"
+                    >
+                      {czytany === mail.id ? "Odczytuję…" : "Odczytaj przez Claude (płatne)"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setOpenMail(mail)}
