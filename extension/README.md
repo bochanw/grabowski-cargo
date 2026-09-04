@@ -91,7 +91,13 @@ appka nie pozna, że dyspozytorzy mają starą wersję. Pliki:
   wysłać prośbę o sprawdzenie (`externally_connectable`).
 - `background.js` — cały przebieg: kolejka z serwera → karta → wpisanie → odczyt → odesłanie.
 - `page.js` — jedyny plik dotykający cudzego HTML-a; przy kolejnym terminalu zmienia się tylko on.
+- `odpowiedz.js` — kiedy to, co widać na stronie, JEST już odpowiedzią na nasz numer.
 - `api.js`, `config.js` — logowanie do Supabase i ustawienia.
+
+Przy sprawdzaniu kilku kontenerów pytamy po jednym, w tej samej karcie — dlatego dwie rzeczy są
+tu krytyczne i mają własne testy: rozszerzenie czeka na ŚWIEŻY dokument (nie na sam adres, bo
+stara strona ma ten sam) i uznaje za odpowiedź tylko treść z NASZYM numerem (nie „jakąkolwiek
+kartę kontenera", bo na ekranie wisi jeszcze karta poprzedniego).
 - `popup.html` / `popup.js` — okno rozszerzenia.
 
 Testy (w środowisku z Playwrightem): `page.js` sprawdzany na stronie odwzorowującej mierzone

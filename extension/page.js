@@ -292,10 +292,26 @@
     return { jest: pola.length > 0, wypelnione, czekaNaCzlowieka: widoczneOkno };
   }
 
+  /**
+   * Znacznik „to jest dokument SPRZED nawigacji".
+   *
+   * Po co: przy kilku kontenerach pytamy po jednym, w tej samej karcie. `chrome.tabs.update` tylko
+   * ZLECA wejście na stronę — stary dokument (z wynikami poprzedniego kontenera i wypełnionym
+   * polem) żyje jeszcze przez chwilę i wygląda na gotowy do pracy. Rozszerzenie wpisywało w niego
+   * numer, po czym nawigacja go zabierała — albo, co gorsza, czytało z niego cudzą kartę.
+   * Znacznik siedzi na dokumencie, więc świeży dokument go NIE MA i po tym się je rozróżnia.
+   */
+  function oznaczStary() {
+    document.documentElement.dataset.bhubStary = "1";
+    return { oznaczony: true, adres: location.href };
+  }
+
   function opiszStrone() {
     return {
       tytul: document.title || "",
       adres: location.href,
+      stary: document.documentElement.dataset.bhubStary === "1",
+      wczytana: document.readyState === "complete",
       formularze: [...document.querySelectorAll("form")]
         .slice(0, 10)
         .map((f) => `${f.getAttribute("method") || "GET"} ${f.getAttribute("action") || "-"}`)
@@ -468,6 +484,7 @@
   globalThis.__bhub = {
     /** Czy strona jest gotowa do wypełnienia (przeszła weryfikację Cloudflare i ma pole). */
     stan: () => ({ gotowa: Boolean(znajdzPole()), zagadka: opiszZagadke(), ...opiszStrone() }),
+    oznaczStary,
     ustawTryb: (ile) => ustawTryb(ile),
     wskazniki,
 

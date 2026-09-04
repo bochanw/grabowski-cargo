@@ -1090,6 +1090,47 @@ nie będzie na bank"; przy okazji wybrał: Bright Datę **usunąć całkiem**):
   zlecenie, ma dostać odpowiedź. Cykl automatyczny dalej omija ZP, bo to stan końcowy.
 - `bhub-status` wdrożona (v37).
 
+**KILKA KONTENERÓW W JEDNYM PRZEBIEGU — naprawiony wyścig z wczytywaniem strony (wtyczka 1.0.9;
+zgłoszenie właściciela: „odczytuje bezbłędnie za 1 razem jak zaznaczę pojedynczy ładunek, gubi się
+jak ma sama sprawdzić kilka"):**
+- **Przyczyna: `chrome.tabs.update` tylko ZLECA wejście na stronę i wraca od razu**, a rozszerzenie
+  sprawdzało potem wyłącznie, czy adres karty pasuje do hosta terminala. Stary dokument — ten
+  z wynikami POPRZEDNIEGO kontenera — ma dokładnie ten sam adres i wciąż ma pole na numery, więc
+  warunek spełniał się NATYCHMIAST, jeszcze przed nawigacją. Pytamy po jednym kontenerze
+  (`rozmiarPaczki: 1`), w tej samej przypiętej karcie, więc od drugiego kontenera cała robota szła
+  na stronie, która za chwilę znikała. Przy pierwszym nie było czego pomylić (karta dopiero
+  powstawała) — i dlatego pojedyncze sprawdzenie zawsze wychodziło bez pudła.
+- Skutki były DWA, zależnie od tego, kiedy dojechała nawigacja: numer przepadał razem ze starą
+  stroną (60 s czekania na wyniki, których nikt nie zamówił) albo do serwera szła KARTA
+  POPRZEDNIEGO kontenera — a `parse.ts` nie znajdował w niej naszego numeru i przy zleceniu
+  lądowało „nie rozpoznałem odpowiedzi Baltic Hub".
+- **Naprawa 1 — stary dokument jest ZNACZONY przed nawigacją** (`page.js: oznaczStary`, znacznik
+  na `documentElement`, więc świeży dokument go nie ma), a `wejdzNaStrone` czeka na dokument BEZ
+  znacznika, wczytany do końca i pod właściwym adresem. Gdyby nawigacja w ogóle się nie zaczęła —
+  jedno wymuszone przeładowanie, potem czytelny błąd z migawką.
+- **Naprawa 2 — `odpowiedzDotyczyNas` wymaga NASZEGO numeru**, a nie „jakiejkolwiek karty
+  kontenera". Warunek jest teraz dokładnie tym, czego wymaga `parse.ts` po stronie serwera
+  (`wytnijKarte` szuka „Unit Nbr: <numer>"), więc czekanie dalej nic nie kosztuje, a bez tego
+  cudza karta uchodziła za odpowiedź. Numer dopasowywany z odstępami między znakami — terminal
+  pisze „OMTU 2301120", a `innerText` nie zawiera wartości pól formularza, więc wpisany przez nas
+  numer nie może się podszyć pod odpowiedź.
+- Przy okazji: ponowna próba (`proba < 2`) była MARTWYM KODEM — stała za warunkiem, który w tym
+  miejscu zawsze był spełniony. Stoi teraz tam, gdzie ma sens: strona odpowiedziała, ale nie o nas
+  (puste zapytanie, reCAPTCHA nie zdążyła) → drugie podejście na świeżej stronie zamiast błędu.
+- **Zweryfikowane w PRAWDZIWYM Chrome, na całej drodze** (`scratch-wiele.test.mjs`, plik
+  tymczasowy): atrapa terminala wierna w tym, co decyduje o błędzie — wyniki pojawiają się w tej
+  samej stronie i na niej ZOSTAJĄ, a wczytanie trwa 6 s (u właściciela robi to Cloudflare).
+  Podstawione WYŁĄCZNIE otoczenie (strona i Supabase); background.js, page.js, odpowiedz.js
+  i input.js biegną te same, co u dyspozytora — łącznie z pisaniem przez `chrome.debugger`.
+  15 sprawdzeń: trzy zlecenia, każde dostaje odpowiedź o SWOIM kontenerze i w żadnej nie ma karty
+  cudzego, nieznany kontener wraca jako „brak wyników" (nie jako błąd), „Odrzuć wszystkie"
+  w oknie ciasteczek nietknięte. **Test sprawdzony też odwrotnie**: na kodzie sprzed poprawki
+  pierwszy kontener przechodzi, a drugi i trzeci kończą się błędem — czyli test łapie dokładnie
+  to, co zgłosił właściciel. Do tego 13 sprawdzeń samej reguły odpowiedzi
+  (`scratch-odpowiedz.test.mjs`), które na starym kodzie nie przechodzą w pięciu punktach.
+- **Do zrobienia u właściciela: pobrać wtyczkę 1.0.9 z appki** (guzik „Wtyczka" świeci wtedy
+  pomarańczowo) i odświeżyć ją w `chrome://extensions`. Bez tego dalej działa stara.
+
 **Odczyt maili wyczerpał środki w Claude Console — naprawione (właściciel: „w nocy program
 wykorzystał wszystkie fundusze Claude Console — odczytem zleceń; niech odczyt PDF (płatny) będzie
 dopiero po moim kliknięciu"):**

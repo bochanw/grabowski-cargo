@@ -125,22 +125,55 @@ async function czekaj(kartaId, nazwa, gotowe, limitMs) {
 }
 
 /**
+ * Wejście na ŚWIEŻĄ stronę terminala — z czekaniem, aż to naprawdę będzie NOWY dokument.
+ *
+ * TU SIEDZIAŁ BŁĄD ZGŁOSZONY PRZEZ WŁAŚCICIELA („pojedynczy kontener czyta bezbłędnie, przy kilku
+ * się gubi"). `chrome.tabs.update` tylko ZLECA wejście na stronę i wraca od razu. Poprzednia wersja
+ * sprawdzała potem wyłącznie, czy adres karty pasuje do hosta terminala — a stary dokument (ten
+ * z wynikami POPRZEDNIEGO kontenera) ma dokładnie ten sam adres i wciąż ma pole na numery, więc
+ * warunek spełniał się NATYCHMIAST, jeszcze przed nawigacją. Przy pierwszym kontenerze nie było
+ * czego pomylić — karta dopiero powstawała — i dlatego pojedyncze sprawdzenie zawsze wychodziło.
+ * Przy drugim i kolejnym rozszerzenie pracowało na stronie, która za chwilę znikała: albo numer
+ * przepadał razem z nią (60 s czekania na wyniki, których nikt nie zamówił), albo z ekranu szła do
+ * serwera karta poprzedniego kontenera.
+ *
+ * Dlatego stary dokument jest NAJPIERW ZNACZONY (`oznaczStary`), a potem czekamy, aż zobaczymy
+ * dokument BEZ tego znacznika, wczytany do końca i pod właściwym adresem.
+ */
+async function wejdzNaStrone(kartaId, adres, host) {
+  await naStronie(kartaId, "oznaczStary").catch(() => undefined);
+  await chrome.tabs.update(kartaId, { url: adres });
+
+  const swieza = (s) => s.stary === false && s.wczytana === true && (s.adres ?? "").includes(host);
+  const wynik = await czekaj(kartaId, "stan", swieza, 30_000);
+  if (wynik.ok) return wynik;
+
+  // Nawigacja się nie zaczęła (potrafi tak być, gdy adres jest identyczny z bieżącym). Wymuszamy
+  // przeładowanie — to ostatnia rzecz, która może odświeżyć stronę bez udziału człowieka.
+  await chrome.tabs.reload(kartaId).catch(() => undefined);
+  return czekaj(kartaId, "stan", swieza, 30_000);
+}
+
+/**
  * Jedna paczka numerów: wejście na stronę, wpisanie, klik, odczytanie wyników.
  * Zwraca widoczny tekst strony — rozumie go funkcja brzegowa (`parse.ts`), nie rozszerzenie.
  * Podział jest celowy: reguły odczytu terminala mają być w JEDNYM miejscu, po stronie serwera,
  * żeby poprawka nie wymagała aktualizacji rozszerzenia na każdym komputerze.
  */
 async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
-  await chrome.tabs.update(kartaId, { url: adres });
-  // Świeże wejście na stronę przy każdej paczce: formularz bywa jednorazowy, a wyniki
-  // poprzedniej paczki zostawałyby w treści i mieszały się z nową.
-  //
   // Czekamy na host Z USTAWIEŃ, nie na wpisane na sztywno "baltichub" — adres jest polem w oknie
   // rozszerzenia właśnie po to, żeby dało się go przestawić przy kolejnym terminalu.
   const host = new URL(adres).host;
-  await czekaj(kartaId, "stan", (s) => (s.adres ?? "").includes(host), 30_000);
+  const swieza = await wejdzNaStrone(kartaId, adres, host);
+  if (!swieza.ok) {
+    throw bladZeSzczegolami(
+      `Karta z Baltic Hubem nie wczytała się na nowo w ciągu 60 s (adres: „${swieza.stan.adres ?? "?"}”). ` +
+        `Sprawdź, czy przypięta karta terminala nie jest zablokowana oknem przeglądarki.`,
+      { _etap: "strona nie wczytała się na nowo", ...swieza.stan },
+    );
+  }
 
-  const gotowa = await czekaj(kartaId, "stan", (s) => s.gotowa, CZEKANIE_NA_POLE_MS);
+  const gotowa = await czekaj(kartaId, "stan", (s) => s.gotowa && !s.stary, CZEKANIE_NA_POLE_MS);
   if (!gotowa.ok) {
     const cloudflare = /just a moment|cierpliwo|verify|weryfik/i.test(`${gotowa.stan.tytul} ${gotowa.stan.tekst}`);
     throw bladZeSzczegolami(
@@ -226,6 +259,16 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   if (!wyniki.ok) {
     const zagadka = wyniki.stan.zagadka?.czekaNaCzlowieka;
     const zgodaWisi = okienka.zgodaNadalOtwarta;
+
+    // Strona ODPOWIEDZIAŁA, ale nie o naszym kontenerze — czyli zapytanie doszło puste (reCAPTCHA
+    // nie zdążyła się uruchomić; terminal oddaje wtedy samo „Brak wyników:" bez numeru). Druga
+    // próba na świeżo wczytanej stronie zwykle wraca z kartą, więc zanim zapiszemy błąd przy
+    // zleceniu, próbujemy raz jeszcze. Przy zagadce nie ma sensu — tam czeka się na człowieka.
+    if (wyniki.stan.gotowe && !zagadka && !zgodaWisi && proba < 2) {
+      await spij(2000);
+      return zapytajTerminal(kartaId, adres, numery, proba + 1);
+    }
+
     throw bladZeSzczegolami(
       zagadka
         ? "Baltic Hub poprosił o rozwiązanie zagadki (reCAPTCHA). Otwórz przypiętą kartę i kliknij ją — " +
@@ -248,16 +291,7 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
     );
   }
 
-  const tekst = wyniki.stan.tekst ?? "";
-
-  // Odpowiedź przyszła, ale nie o nas — czyli zapytanie poszło puste. Druga próba na świeżo
-  // wczytanej stronie (reCAPTCHA jest wtedy już rozgrzana) zwykle wraca z kartą.
-  if (!odpowiedzDotyczyNas(tekst, numery) && proba < 2) {
-    await spij(2000);
-    return zapytajTerminal(kartaId, adres, numery, proba + 1);
-  }
-
-  return tekst;
+  return wyniki.stan.tekst ?? "";
 }
 
 // ---------------------------------------------------------------- przebieg
