@@ -125,22 +125,55 @@ async function czekaj(kartaId, nazwa, gotowe, limitMs) {
 }
 
 /**
+ * Wejście na ŚWIEŻĄ stronę terminala — z czekaniem, aż to naprawdę będzie NOWY dokument.
+ *
+ * TU SIEDZIAŁ BŁĄD ZGŁOSZONY PRZEZ WŁAŚCICIELA („pojedynczy kontener czyta bezbłędnie, przy kilku
+ * się gubi"). `chrome.tabs.update` tylko ZLECA wejście na stronę i wraca od razu. Poprzednia wersja
+ * sprawdzała potem wyłącznie, czy adres karty pasuje do hosta terminala — a stary dokument (ten
+ * z wynikami POPRZEDNIEGO kontenera) ma dokładnie ten sam adres i wciąż ma pole na numery, więc
+ * warunek spełniał się NATYCHMIAST, jeszcze przed nawigacją. Przy pierwszym kontenerze nie było
+ * czego pomylić — karta dopiero powstawała — i dlatego pojedyncze sprawdzenie zawsze wychodziło.
+ * Przy drugim i kolejnym rozszerzenie pracowało na stronie, która za chwilę znikała: albo numer
+ * przepadał razem z nią (60 s czekania na wyniki, których nikt nie zamówił), albo z ekranu szła do
+ * serwera karta poprzedniego kontenera.
+ *
+ * Dlatego stary dokument jest NAJPIERW ZNACZONY (`oznaczStary`), a potem czekamy, aż zobaczymy
+ * dokument BEZ tego znacznika, wczytany do końca i pod właściwym adresem.
+ */
+async function wejdzNaStrone(kartaId, adres, host) {
+  await naStronie(kartaId, "oznaczStary").catch(() => undefined);
+  await chrome.tabs.update(kartaId, { url: adres });
+
+  const swieza = (s) => s.stary === false && s.wczytana === true && (s.adres ?? "").includes(host);
+  const wynik = await czekaj(kartaId, "stan", swieza, 30_000);
+  if (wynik.ok) return wynik;
+
+  // Nawigacja się nie zaczęła (potrafi tak być, gdy adres jest identyczny z bieżącym). Wymuszamy
+  // przeładowanie — to ostatnia rzecz, która może odświeżyć stronę bez udziału człowieka.
+  await chrome.tabs.reload(kartaId).catch(() => undefined);
+  return czekaj(kartaId, "stan", swieza, 30_000);
+}
+
+/**
  * Jedna paczka numerów: wejście na stronę, wpisanie, klik, odczytanie wyników.
  * Zwraca widoczny tekst strony — rozumie go funkcja brzegowa (`parse.ts`), nie rozszerzenie.
  * Podział jest celowy: reguły odczytu terminala mają być w JEDNYM miejscu, po stronie serwera,
  * żeby poprawka nie wymagała aktualizacji rozszerzenia na każdym komputerze.
  */
 async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
-  await chrome.tabs.update(kartaId, { url: adres });
-  // Świeże wejście na stronę przy każdej paczce: formularz bywa jednorazowy, a wyniki
-  // poprzedniej paczki zostawałyby w treści i mieszały się z nową.
-  //
   // Czekamy na host Z USTAWIEŃ, nie na wpisane na sztywno "baltichub" — adres jest polem w oknie
   // rozszerzenia właśnie po to, żeby dało się go przestawić przy kolejnym terminalu.
   const host = new URL(adres).host;
-  await czekaj(kartaId, "stan", (s) => (s.adres ?? "").includes(host), 30_000);
+  const swieza = await wejdzNaStrone(kartaId, adres, host);
+  if (!swieza.ok) {
+    throw bladZeSzczegolami(
+      `Karta z Baltic Hubem nie wczytała się na nowo w ciągu 60 s (adres: „${swieza.stan.adres ?? "?"}”). ` +
+        `Sprawdź, czy przypięta karta terminala nie jest zablokowana oknem przeglądarki.`,
+      { _etap: "strona nie wczytała się na nowo", ...swieza.stan },
+    );
+  }
 
-  const gotowa = await czekaj(kartaId, "stan", (s) => s.gotowa, CZEKANIE_NA_POLE_MS);
+  const gotowa = await czekaj(kartaId, "stan", (s) => s.gotowa && !s.stary, CZEKANIE_NA_POLE_MS);
   if (!gotowa.ok) {
     const cloudflare = /just a moment|cierpliwo|verify|weryfik/i.test(`${gotowa.stan.tytul} ${gotowa.stan.tekst}`);
     throw bladZeSzczegolami(
@@ -172,10 +205,18 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   await spij(400);
   const wsk = await naStronie(kartaId, "wskazniki");
 
+  // Okno na stronę dla `input.js` — po to, żeby po każdym podejściu dało się sprawdzić, co
+  // NAPRAWDĘ stoi w polu, zamiast wysyłać formularz w ciemno.
+  const narzedzia = {
+    stanPola: () => naStronie(kartaId, "stanPola"),
+    skupPole: () => naStronie(kartaId, "skupPole"),
+    czyscPole: () => naStronie(kartaId, "czyscPole"),
+  };
+
   let wyslane;
   if (wsk.ok) {
     try {
-      const zaufane = await wpiszJakCzlowiek(kartaId, wsk, numery.join(", "));
+      const zaufane = await wpiszJakCzlowiek(kartaId, wsk, numery.join(", "), narzedzia);
       wyslane = {
         wyslane: true,
         sposob: zaufane.sposob,
@@ -183,6 +224,8 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
         pole: wsk.opisPola,
         guzik: wsk.opisGuzika,
         wpisano: numery.join(", "),
+        wpolu: zaufane.wpolu,
+        fokusKarty: zaufane.fokusKarty,
         kandydaci: wsk.kandydaci,
       };
     } catch (e) {
@@ -191,7 +234,13 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
     }
   } else {
     wyslane = await naStronie(kartaId, "wyslij", [numery]);
+    wyslane.sposob = `${wyslane.sposob ?? "?"} (bez zaufanych zdarzeń: ${wsk.powod ?? "nie zmierzyłem punktu do kliknięcia"})`;
   }
+
+  // Ostatnie spojrzenie na pole PO wysłaniu. Nie zatrzymuje przebiegu — strona po wyszukaniu
+  // potrafi pole wyczyścić — ale ląduje w migawce, więc „terminal nie zna kontenera" da się
+  // odróżnić od „zapytanie poszło puste" bez zgadywania.
+  wyslane.poWyslaniu = await naStronie(kartaId, "stanPola").catch(() => null);
 
   if (!wyslane.wyslane) {
     const blad = bladZeSzczegolami(
@@ -219,13 +268,28 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   // ciasteczek), więc klik mógł trafić w nic. Pole jest już wypełnione, więc to nic nie psuje.
   let drugie = null;
   if (!wyniki.ok) {
-    drugie = await naStronie(kartaId, "wyslij", [numery, { enter: true }]).catch((e) => ({ powod: e.message }));
+    // ...ale TYLKO gdy pole faktycznie coś zawiera. Przy pustym polu Enter wyszukałby pustkę
+    // i terminal odpowiedziałby „Brak wyników:" bez numeru — czyli dokładnie tym, co przez kilka
+    // rund wyglądało jak „nie zna kontenera". Puste pole wypełniamy więc jeszcze raz, drogą
+    // z kodu: bez zaufanych zdarzeń, ale zapytanie z numerem bije zapytanie puste.
+    const wPolu = (wyslane.poWyslaniu?.wartosc ?? "").trim();
+    drugie = await naStronie(kartaId, "wyslij", [numery, { enter: Boolean(wPolu) }]).catch((e) => ({ powod: e.message }));
     wyniki = await czekaj(kartaId, "wyniki", dotyczyNas, CZEKANIE_NA_WYNIKI_MS - CZEKANIE_NA_PIERWSZE_MS);
   }
 
   if (!wyniki.ok) {
     const zagadka = wyniki.stan.zagadka?.czekaNaCzlowieka;
     const zgodaWisi = okienka.zgodaNadalOtwarta;
+
+    // Strona ODPOWIEDZIAŁA, ale nie o naszym kontenerze — czyli zapytanie doszło puste (reCAPTCHA
+    // nie zdążyła się uruchomić; terminal oddaje wtedy samo „Brak wyników:" bez numeru). Druga
+    // próba na świeżo wczytanej stronie zwykle wraca z kartą, więc zanim zapiszemy błąd przy
+    // zleceniu, próbujemy raz jeszcze. Przy zagadce nie ma sensu — tam czeka się na człowieka.
+    if (wyniki.stan.gotowe && !zagadka && !zgodaWisi && proba < 2) {
+      await spij(2000);
+      return zapytajTerminal(kartaId, adres, numery, proba + 1);
+    }
+
     throw bladZeSzczegolami(
       zagadka
         ? "Baltic Hub poprosił o rozwiązanie zagadki (reCAPTCHA). Otwórz przypiętą kartę i kliknij ją — " +
@@ -233,11 +297,12 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
         : zgodaWisi
           ? "Nad stroną Baltic Hub wisi okno zgody na ciasteczka i przykrywa formularz. Otwórz przypiętą " +
             "kartę, zaakceptuj je raz ręcznie — kolejne sprawdzenia pójdą już same."
-          : `Wyszukiwanie uruchomione (${wyslane.sposob}, potem Enter), ale wyniki nie pojawiły się ` +
-            `w ciągu 60 s. Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}. ` +
-            `Migawka strony zapisana do diagnozy.`,
+          : `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 60 s. ` +
+            `W polu stało: „${wyslane.poWyslaniu?.wartosc ?? "?"}”. Pole: ${wyslane.pole ?? "?"}. ` +
+            `Guzik: ${wyslane.guzik ?? "?"}. Migawka strony zapisana do diagnozy.`,
       {
         _etap: "brak wyników",
+        _pole_po_wyslaniu: JSON.stringify(wyslane.poWyslaniu ?? {}),
         _okienka: JSON.stringify(okienka),
         _zagadka: JSON.stringify(wyniki.stan.zagadka ?? {}),
         _drugie_podejscie: JSON.stringify(drugie ?? {}),
@@ -248,16 +313,14 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
     );
   }
 
-  const tekst = wyniki.stan.tekst ?? "";
-
-  // Odpowiedź przyszła, ale nie o nas — czyli zapytanie poszło puste. Druga próba na świeżo
-  // wczytanej stronie (reCAPTCHA jest wtedy już rozgrzana) zwykle wraca z kartą.
-  if (!odpowiedzDotyczyNas(tekst, numery) && proba < 2) {
-    await spij(2000);
-    return zapytajTerminal(kartaId, adres, numery, proba + 1);
-  }
-
-  return tekst;
+  // Obok tekstu wracają dwie rzeczy do migawki przy zleceniu: KTÓRĄ drogą poszło wpisanie i CO
+  // stało w polu. Bez nich udany przebieg nie zostawia żadnego śladu po tym, czy zaufane pisanie
+  // w ogóle zadziałało — a to pierwsza rzecz, o którą trzeba zapytać, gdy odczyt zacznie się psuć.
+  return {
+    tekst: wyniki.stan.tekst ?? "",
+    sposob: wyslane.sposob ?? "?",
+    wPolu: wyslane.poWyslaniu?.wartosc ?? null,
+  };
 }
 
 // ---------------------------------------------------------------- przebieg
@@ -286,8 +349,8 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
       try {
         let wyniki;
         try {
-          const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
-          wyniki = paczka.map((i) => ({ ...i, text: tekst, batchSize: numery.length }));
+          const odp = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
+          wyniki = paczka.map((i) => ({ ...i, ...odp, text: odp.tekst, batchSize: numery.length }));
         } catch (e) {
           // Strona nie dała się przestawić na „wiele kontenerów" — pytamy po jednym. Wolniej
           // i drożej w czasie, ale przebieg kończy się wynikiem zamiast błędem przy pięciu
@@ -295,8 +358,8 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
           if (!e.trybNieustawiony || numery.length === 1) throw e;
           wyniki = [];
           for (const i of paczka) {
-            const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, [i.container]);
-            wyniki.push({ ...i, text: tekst, batchSize: 1 });
+            const odp = await zapytajTerminal(kartaId, cfg.adresTerminala, [i.container]);
+            wyniki.push({ ...i, ...odp, text: odp.tekst, batchSize: 1 });
           }
         }
 
@@ -306,7 +369,12 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
             container: i.container,
             text: i.text,
             batchSize: i.batchSize,
-            details: { _paczka: numery.join(", "), _pytane_pojedynczo: String(i.batchSize === 1 && numery.length > 1) },
+            details: {
+              _paczka: numery.join(", "),
+              _pytane_pojedynczo: String(i.batchSize === 1 && numery.length > 1),
+              _sposob: i.sposob ?? "?",
+              _w_polu: i.wPolu ?? "(nie sprawdzono)",
+            },
           })),
         });
         sprawdzone += paczka.length;

@@ -292,10 +292,26 @@
     return { jest: pola.length > 0, wypelnione, czekaNaCzlowieka: widoczneOkno };
   }
 
+  /**
+   * Znacznik „to jest dokument SPRZED nawigacji".
+   *
+   * Po co: przy kilku kontenerach pytamy po jednym, w tej samej karcie. `chrome.tabs.update` tylko
+   * ZLECA wejście na stronę — stary dokument (z wynikami poprzedniego kontenera i wypełnionym
+   * polem) żyje jeszcze przez chwilę i wygląda na gotowy do pracy. Rozszerzenie wpisywało w niego
+   * numer, po czym nawigacja go zabierała — albo, co gorsza, czytało z niego cudzą kartę.
+   * Znacznik siedzi na dokumencie, więc świeży dokument go NIE MA i po tym się je rozróżnia.
+   */
+  function oznaczStary() {
+    document.documentElement.dataset.bhubStary = "1";
+    return { oznaczony: true, adres: location.href };
+  }
+
   function opiszStrone() {
     return {
       tytul: document.title || "",
       adres: location.href,
+      stary: document.documentElement.dataset.bhubStary === "1",
+      wczytana: document.readyState === "complete",
       formularze: [...document.querySelectorAll("form")]
         .slice(0, 10)
         .map((f) => `${f.getAttribute("method") || "GET"} ${f.getAttribute("action") || "-"}`)
@@ -421,6 +437,41 @@
     return { wyslane: true, sposob: "Enter", ...uzyte };
   }
 
+  /** Opróżnia pole na numery — tak, żeby zauważyły to też strony pisane w Reakcie/Vue. */
+  function czyscPole() {
+    const pole = znajdzPole();
+    if (!pole) return { ok: false, powod: "nie znalazłem pola na numery" };
+    const ustawiacz = Object.getOwnPropertyDescriptor(pole.constructor.prototype, "value")?.set;
+    if (ustawiacz) ustawiacz.call(pole, "");
+    else pole.value = "";
+    pole.dispatchEvent(new Event("input", { bubbles: true }));
+    return { ok: pole.value === "", wartosc: pole.value };
+  }
+
+  /**
+   * Ustawia kursor w polu na numery BEZ klikania myszą.
+   *
+   * Droga awaryjna, gdy zaufany klik nie trafi w pole — a trafić nie musi: współrzędne mierzymy
+   * przed podłączeniem debugera, więc strona zdąży się przewinąć albo dołożyć nad polem warstwę
+   * (na produkcji robiło to okno zgody na ciasteczka). Sam `focus()` nie jest zdarzeniem
+   * zaufanym, ale nie musi być: reCAPTCHA ocenia ruch myszy i pisanie, a te idą dalej przez
+   * debuger — chodzi wyłącznie o to, żeby WPISYWANY tekst trafił do właściwego elementu.
+   */
+  function skupPole() {
+    const pole = znajdzPole();
+    if (!pole) return { ok: false, powod: "nie znalazłem pola na numery" };
+    pole.focus();
+    // Kursor na koniec — `Input.insertText` wpisuje w miejscu kursora.
+    if (typeof pole.setSelectionRange === "function") {
+      try {
+        pole.setSelectionRange(pole.value.length, pole.value.length);
+      } catch {
+        /* pola typu number nie mają zaznaczenia — nie szkodzi */
+      }
+    }
+    return { ok: document.activeElement === pole, aktywny: opisPola(document.activeElement) };
+  }
+
   /**
    * Punkty do KLIKNIĘCIA MYSZĄ (środek pola i środek guzika, we współrzędnych okna).
    *
@@ -449,13 +500,16 @@
 
     // Czyścimy pole przed pisaniem — wpisanie po staremu nie wymaga zaufanego zdarzenia,
     // a zostawiony numer z poprzedniej paczki dokleiłby się do nowego.
-    const ustawiacz = Object.getOwnPropertyDescriptor(pole.constructor.prototype, "value")?.set;
-    if (ustawiacz) ustawiacz.call(pole, "");
-    else pole.value = "";
-    pole.dispatchEvent(new Event("input", { bubbles: true }));
+    czyscPole();
 
     return {
       ok: wOknie(punktPola),
+      // Gdy punktu nie da się kliknąć, przebieg schodzi na drogę BEZ zaufanych zdarzeń (czyli tę,
+      // której reCAPTCHA nie uznaje) — a to musi być widać w migawce, nie tylko po skutku.
+      powod: wOknie(punktPola)
+        ? null
+        : `pole poza widocznym obszarem: punkt ${punktPola.x}×${punktPola.y}, rozmiar ` +
+          `${punktPola.w}×${punktPola.h}, okno ${innerWidth}×${innerHeight}`,
       pole: punktPola,
       guzik: punktGuzika && wOknie(punktGuzika) ? punktGuzika : null,
       opisPola: opisPola(pole),
@@ -468,6 +522,7 @@
   globalThis.__bhub = {
     /** Czy strona jest gotowa do wypełnienia (przeszła weryfikację Cloudflare i ma pole). */
     stan: () => ({ gotowa: Boolean(znajdzPole()), zagadka: opiszZagadke(), ...opiszStrone() }),
+    oznaczStary,
     ustawTryb: (ile) => ustawTryb(ile),
     wskazniki,
 
@@ -486,12 +541,15 @@
       const pole = znajdzPole();
       return {
         wartosc: pole ? pole.value : "(brak pola)",
+        wPolu: Boolean(pole) && document.activeElement === pole,
         aktywny: document.activeElement ? opisPola(document.activeElement) : "-",
         widocznosc: document.visibilityState,
         fokus: document.hasFocus(),
         zagadka: opiszZagadke(),
       };
     },
+    czyscPole,
+    skupPole,
     zamknij: () => zamknijOkienka(),
     wyslij,
     /**
