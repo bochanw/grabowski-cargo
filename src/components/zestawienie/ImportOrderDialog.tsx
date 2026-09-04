@@ -9,7 +9,7 @@ import { matchLearnedTemplate } from "@/lib/orderTemplates/readTemplate";
 import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
 import { useLearnFromDocuments, useOrderTemplates } from "@/hooks/useOrderTemplates";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
-import { previousWorkingDay } from "@/lib/dates/workingDays";
+import { applyOrderDefaults } from "@/lib/loads/prepareOrder";
 import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { useContractors } from "@/hooks/useContractors";
 import { findContractorByName, type Contractor } from "@/types/contractor";
@@ -223,7 +223,10 @@ export function ImportOrderDialog({
     // Te same reguły scalania co przy dopinaniu drugiego dokumentu: dane z maila wypełniają TYLKO
     // puste pola, nigdy nie nadpisują tego, co już stoi na zleceniu.
     const pierwsze = initialOrders?.[0]?.parsed ?? initialParsed;
-    return pierwsze ? mergeParsedOrders(base, pierwsze) : base;
+    // Pola ze Skrzynki wchodzą tą samą drogą co wgrany plik: `mail-poll` zapisuje przy KAŻDYM
+    // załączniku surowy odczyt (bez wyliczanej daty), a od kiedy okno bierze pola per załącznik
+    // — żeby rozdzielić kilka zleceń z jednego maila — musi te reguły dołożyć samo.
+    return pierwsze ? applyOrderDefaults(mergeParsedOrders(base, pierwsze)).order : base;
   });
   // Zlecenia czekające w kolejce (drugie i dalsze z tej samej paczki dokumentów/maila) oraz licznik
   // już zapisanych — z tego bierze się pasek „Zlecenie 2 z 3".
@@ -270,27 +273,11 @@ export function ImportOrderDialog({
    * maila byłoby przygotowane słabiej niż pierwsze.
    */
   function wczytajZlecenie(pending: PendingOrder, base: ParsedOrder) {
-    let merged = mergeParsedOrders(base, pending.parsed);
-    const newWarnings = [...pending.warnings];
-
-    // Domyślna "Data" = dzień roboczy przed rozładunkiem/załadunkiem z dokumentu.
-    if (!merged.load_date && merged.delivery_date) {
-      merged = { ...merged, load_date: previousWorkingDay(merged.delivery_date) };
-    }
-    // Brutto = towar + tara kontenera — po scaleniu dokumentów (typ kontenera może przyjść z jednego,
-    // waga towaru z drugiego).
-    merged = withRecomputedGross(merged, "net_weight_kg");
-
-    // Gestia z uwag: kontener leasingowy nie ma armatora, a informacja o leasingu stoi w uwagach.
-    const beforeLeasing = merged.shipping_line;
-    merged = withLeasingShippingLine(merged);
-    if (merged.shipping_line !== beforeLeasing) {
-      newWarnings.push(
-        beforeLeasing
-          ? `Uwagi wspominają o leasingu — gestię przestawiono z "${beforeLeasing}" na "Leasing".`
-          : "Uwagi wspominają o leasingu — gestię ustawiono na „Leasing”."
-      );
-    }
+    // Domyślna data, brutto z tary i gestia z uwag — jedno miejsce dla wszystkich dróg odczytu
+    // (src/lib/loads/prepareOrder.ts; wcześniej reguły siedziały tutaj i gubiły się w innych drogach).
+    const przygotowane = applyOrderDefaults(mergeParsedOrders(base, pending.parsed));
+    let merged = przygotowane.order;
+    const newWarnings = [...pending.warnings, ...przygotowane.warnings];
 
     // ROZPOZNANIE ZLECENIA PO NUMERZE (właściciel: "każde zlecenie jest rozpoznawane do nr
     // zlecenia — wtedy nie będzie potrzeby dodawać kolejnych dokumentów; jak wgramy drugi dokument

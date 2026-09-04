@@ -1541,6 +1541,23 @@ złożenia (cut off) oraz zaznaczenia SENT bądź ADR"; „brakuje pola nr telef
   przeciekają między zleceniami, etykiety załadunku przy eksporcie, źródło towarzyszy kolejnemu
   zleceniu. Do tego `next build`, `deno check`, 26 testów Deno i strzały w obie wdrożone funkcje.
 
+**REGRESJA: przestała się uzupełniać domyślna „Data" — naprawiona u źródła** (zgłoszenie
+właściciela: „z jakiegoś powodu przestałeś automatycznie uzupełniać datę (domyślnie dzień roboczy
+przed rozładunkiem)"):
+- **Przyczyna, dokładnie**: `mail-poll` dolicza domyślną datę tylko do pól SCALONYCH przy mailu
+  (`email_messages.parsed`), a przy KAŻDYM ZAŁĄCZNIKU zapisuje surowy odczyt szablonu. Od kiedy okno
+  bierze pola per załącznik (żeby rozdzielić kilka zleceń z jednego maila), data z tamtego scalenia
+  w ogóle nie dochodziła — i pole „Data" zostawało puste.
+- **Wniosek szerszy niż ta jedna data**: reguła „appka to sobie dolicza" nie może siedzieć w JEDNEJ
+  z dróg odczytu, bo dołożenie drugiej drogi cicho ją gubi. Wszystkie trzy takie reguły (domyślna
+  data, brutto = towar + tara, gestia „Leasing" z uwag) siedzą teraz w `src/lib/loads/prepareOrder.ts`
+  i przechodzi przez nie KAŻDE wejście pól do formularza: wgrany plik, zlecenie z kolejki i pola ze
+  Skrzynki.
+- Zweryfikowane: 9 sprawdzeń logiki (`scratch-daty.test.mts` — weekend, święto, data już wpisana,
+  ręczny tekst w brutto) i 5 w przeglądarce (`/test-data`, strona tymczasowa) NA TEJ SAMEJ ścieżce,
+  którą zgłosił właściciel. **Test sprawdzony też odwrotnie**: po cofnięciu poprawki pole „Data"
+  faktycznie wychodzi puste, czyli test łapie tę regresję, a nie tylko potwierdza poprawkę.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
