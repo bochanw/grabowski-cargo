@@ -94,10 +94,15 @@ appka nie pozna, że dyspozytorzy mają starą wersję. Pliki:
 - `odpowiedz.js` — kiedy to, co widać na stronie, JEST już odpowiedzią na nasz numer.
 - `api.js`, `config.js` — logowanie do Supabase i ustawienia.
 
-Przy sprawdzaniu kilku kontenerów pytamy po jednym, w tej samej karcie — dlatego dwie rzeczy są
-tu krytyczne i mają własne testy: rozszerzenie czeka na ŚWIEŻY dokument (nie na sam adres, bo
-stara strona ma ten sam) i uznaje za odpowiedź tylko treść z NASZYM numerem (nie „jakąkolwiek
-kartę kontenera", bo na ekranie wisi jeszcze karta poprzedniego).
+Przy sprawdzaniu kilku kontenerów pytamy po jednym, w tej samej karcie — dlatego trzy rzeczy są
+tu krytyczne i mają własne testy:
+
+1. rozszerzenie czeka na ŚWIEŻY dokument (nie na sam adres, bo stara strona ma ten sam),
+2. uznaje za odpowiedź tylko treść z NASZYM numerem (nie „jakąkolwiek kartę kontenera", bo na
+   ekranie wisi jeszcze karta poprzedniego),
+3. po wpisaniu SPRAWDZA, co naprawdę stoi w polu (`stanPola`), i dopiero wtedy klika „Sprawdź".
+   Gdy zaufany klik nie trafi w pole — próbuje jeszcze raz, ustawiając kursor przez `focus()`.
+   Bez tego pustego zapytania nie da się odróżnić od „terminal nie zna kontenera".
 - `popup.html` / `popup.js` — okno rozszerzenia.
 
 Testy (w środowisku z Playwrightem): `page.js` sprawdzany na stronie odwzorowującej mierzone

@@ -205,10 +205,18 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   await spij(400);
   const wsk = await naStronie(kartaId, "wskazniki");
 
+  // Okno na stronę dla `input.js` — po to, żeby po każdym podejściu dało się sprawdzić, co
+  // NAPRAWDĘ stoi w polu, zamiast wysyłać formularz w ciemno.
+  const narzedzia = {
+    stanPola: () => naStronie(kartaId, "stanPola"),
+    skupPole: () => naStronie(kartaId, "skupPole"),
+    czyscPole: () => naStronie(kartaId, "czyscPole"),
+  };
+
   let wyslane;
   if (wsk.ok) {
     try {
-      const zaufane = await wpiszJakCzlowiek(kartaId, wsk, numery.join(", "));
+      const zaufane = await wpiszJakCzlowiek(kartaId, wsk, numery.join(", "), narzedzia);
       wyslane = {
         wyslane: true,
         sposob: zaufane.sposob,
@@ -216,6 +224,8 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
         pole: wsk.opisPola,
         guzik: wsk.opisGuzika,
         wpisano: numery.join(", "),
+        wpolu: zaufane.wpolu,
+        fokusKarty: zaufane.fokusKarty,
         kandydaci: wsk.kandydaci,
       };
     } catch (e) {
@@ -224,7 +234,13 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
     }
   } else {
     wyslane = await naStronie(kartaId, "wyslij", [numery]);
+    wyslane.sposob = `${wyslane.sposob ?? "?"} (bez zaufanych zdarzeń: ${wsk.powod ?? "nie zmierzyłem punktu do kliknięcia"})`;
   }
+
+  // Ostatnie spojrzenie na pole PO wysłaniu. Nie zatrzymuje przebiegu — strona po wyszukaniu
+  // potrafi pole wyczyścić — ale ląduje w migawce, więc „terminal nie zna kontenera" da się
+  // odróżnić od „zapytanie poszło puste" bez zgadywania.
+  wyslane.poWyslaniu = await naStronie(kartaId, "stanPola").catch(() => null);
 
   if (!wyslane.wyslane) {
     const blad = bladZeSzczegolami(
@@ -252,7 +268,12 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   // ciasteczek), więc klik mógł trafić w nic. Pole jest już wypełnione, więc to nic nie psuje.
   let drugie = null;
   if (!wyniki.ok) {
-    drugie = await naStronie(kartaId, "wyslij", [numery, { enter: true }]).catch((e) => ({ powod: e.message }));
+    // ...ale TYLKO gdy pole faktycznie coś zawiera. Przy pustym polu Enter wyszukałby pustkę
+    // i terminal odpowiedziałby „Brak wyników:" bez numeru — czyli dokładnie tym, co przez kilka
+    // rund wyglądało jak „nie zna kontenera". Puste pole wypełniamy więc jeszcze raz, drogą
+    // z kodu: bez zaufanych zdarzeń, ale zapytanie z numerem bije zapytanie puste.
+    const wPolu = (wyslane.poWyslaniu?.wartosc ?? "").trim();
+    drugie = await naStronie(kartaId, "wyslij", [numery, { enter: Boolean(wPolu) }]).catch((e) => ({ powod: e.message }));
     wyniki = await czekaj(kartaId, "wyniki", dotyczyNas, CZEKANIE_NA_WYNIKI_MS - CZEKANIE_NA_PIERWSZE_MS);
   }
 
@@ -276,11 +297,12 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
         : zgodaWisi
           ? "Nad stroną Baltic Hub wisi okno zgody na ciasteczka i przykrywa formularz. Otwórz przypiętą " +
             "kartę, zaakceptuj je raz ręcznie — kolejne sprawdzenia pójdą już same."
-          : `Wyszukiwanie uruchomione (${wyslane.sposob}, potem Enter), ale wyniki nie pojawiły się ` +
-            `w ciągu 60 s. Pole: ${wyslane.pole ?? "?"}. Guzik: ${wyslane.guzik ?? "?"}. ` +
-            `Migawka strony zapisana do diagnozy.`,
+          : `Wyszukiwanie uruchomione (${wyslane.sposob}), ale wyniki nie pojawiły się w ciągu 60 s. ` +
+            `W polu stało: „${wyslane.poWyslaniu?.wartosc ?? "?"}”. Pole: ${wyslane.pole ?? "?"}. ` +
+            `Guzik: ${wyslane.guzik ?? "?"}. Migawka strony zapisana do diagnozy.`,
       {
         _etap: "brak wyników",
+        _pole_po_wyslaniu: JSON.stringify(wyslane.poWyslaniu ?? {}),
         _okienka: JSON.stringify(okienka),
         _zagadka: JSON.stringify(wyniki.stan.zagadka ?? {}),
         _drugie_podejscie: JSON.stringify(drugie ?? {}),
@@ -291,7 +313,14 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
     );
   }
 
-  return wyniki.stan.tekst ?? "";
+  // Obok tekstu wracają dwie rzeczy do migawki przy zleceniu: KTÓRĄ drogą poszło wpisanie i CO
+  // stało w polu. Bez nich udany przebieg nie zostawia żadnego śladu po tym, czy zaufane pisanie
+  // w ogóle zadziałało — a to pierwsza rzecz, o którą trzeba zapytać, gdy odczyt zacznie się psuć.
+  return {
+    tekst: wyniki.stan.tekst ?? "",
+    sposob: wyslane.sposob ?? "?",
+    wPolu: wyslane.poWyslaniu?.wartosc ?? null,
+  };
 }
 
 // ---------------------------------------------------------------- przebieg
@@ -320,8 +349,8 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
       try {
         let wyniki;
         try {
-          const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
-          wyniki = paczka.map((i) => ({ ...i, text: tekst, batchSize: numery.length }));
+          const odp = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
+          wyniki = paczka.map((i) => ({ ...i, ...odp, text: odp.tekst, batchSize: numery.length }));
         } catch (e) {
           // Strona nie dała się przestawić na „wiele kontenerów" — pytamy po jednym. Wolniej
           // i drożej w czasie, ale przebieg kończy się wynikiem zamiast błędem przy pięciu
@@ -329,8 +358,8 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
           if (!e.trybNieustawiony || numery.length === 1) throw e;
           wyniki = [];
           for (const i of paczka) {
-            const tekst = await zapytajTerminal(kartaId, cfg.adresTerminala, [i.container]);
-            wyniki.push({ ...i, text: tekst, batchSize: 1 });
+            const odp = await zapytajTerminal(kartaId, cfg.adresTerminala, [i.container]);
+            wyniki.push({ ...i, ...odp, text: odp.tekst, batchSize: 1 });
           }
         }
 
@@ -340,7 +369,12 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
             container: i.container,
             text: i.text,
             batchSize: i.batchSize,
-            details: { _paczka: numery.join(", "), _pytane_pojedynczo: String(i.batchSize === 1 && numery.length > 1) },
+            details: {
+              _paczka: numery.join(", "),
+              _pytane_pojedynczo: String(i.batchSize === 1 && numery.length > 1),
+              _sposob: i.sposob ?? "?",
+              _w_polu: i.wPolu ?? "(nie sprawdzono)",
+            },
           })),
         });
         sprawdzone += paczka.length;

@@ -42,28 +42,73 @@ async function enter(kartaId) {
   await polecenie(kartaId, "Input.dispatchKeyEvent", { type: "keyUp", ...klawisz });
 }
 
+/** Numer do porównania — strona bywa przystrojona spacjami, my wysyłamy je po przecinku. */
+const goly = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
 /**
  * Klika w pole, wpisuje tekst i klika w guzik — wszystko zdarzeniami przeglądarki.
  * `wskazniki` to punkty zmierzone na stronie (patrz `__bhub.wskazniki` w page.js).
+ *
+ * PO KAŻDYM PODEJŚCIU SPRAWDZAMY, CO NAPRAWDĘ STOI W POLU — zgłoszenie właściciela: „aplikacja
+ * dalej ma tendencje do nie wpisywania w ogóle żadnego kontenera do wyszukiwania". Kod wysyłał
+ * kliknięcie i tekst, po czym BEZ ŻADNEJ WERYFIKACJI klikał „Sprawdź": puste pole wyglądało wtedy
+ * dokładnie tak samo jak wypełnione, a terminal odpowiadał „Brak wyników:" bez numeru — czyli
+ * objawem błędu było „terminal nie zna kontenera". Funkcja `stanPola` służyła dokładnie do tego
+ * rozstrzygnięcia i była w kodzie od początku, tylko NIKT JEJ NIE WOŁAŁ.
+ *
+ * Dwa podejścia, bo klik potrafi nie trafić w pole: współrzędne mierzymy PRZED podłączeniem
+ * debugera (a to trwa), więc strona zdąży się przewinąć albo dołożyć nad polem warstwę. Drugie
+ * podejście ustawia kursor wprost przez `focus()`.
+ *
+ * `narzedzia` to okno na stronę, którego `input.js` sam nie ma: `stanPola`, `skupPole`, `czyscPole`
+ * (patrz `page.js`). Bez nich funkcja zachowuje się jak dotąd — pisze w ciemno.
  */
-export async function wpiszJakCzlowiek(kartaId, wskazniki, tekst) {
+export async function wpiszJakCzlowiek(kartaId, wskazniki, tekst, narzedzia = {}) {
   await chrome.debugger.attach({ tabId: kartaId }, PROTOKOL);
   try {
-    await klik(kartaId, wskazniki.pole);
-    await spij(150);
+    // Karta terminala jest PRZYPIĘTA I NIEAKTYWNA — dla strony to karta bez fokusu, a `document.
+    // hasFocus()` w połowie zabezpieczeń znaczy „nikogo tu nie ma". To polecenie każe przeglądarce
+    // udawać przed stroną, że karta jest na wierzchu, i nie zabiera dyspozytorowi tego, na co
+    // patrzy. Gdyby go zabrakło (starszy Chrome), pracujemy dalej — stąd `catch`.
+    const fokus = await polecenie(kartaId, "Emulation.setFocusEmulationEnabled", { enabled: true })
+      .then(() => "tak")
+      .catch((e) => `nie (${e.message})`);
 
-    // `Input.insertText` wpisuje całość naraz i jest tańsze niż literowanie po znaku, a dla strony
-    // wygląda jak wklejenie. Terminal przyjmuje wklejony numer — właściciel tak właśnie sprawdzał
-    // ręcznie („skopiowałem wartość z tabeli").
-    await polecenie(kartaId, "Input.insertText", { text: tekst });
-    await spij(250);
+    const podejscia = [];
+    for (const sposob of ["zaufany klik w pole", "kursor przez focus()"]) {
+      if (sposob === "zaufany klik w pole") await klik(kartaId, wskazniki.pole);
+      else await narzedzia.skupPole?.();
+      await spij(150);
 
-    if (wskazniki.guzik) {
-      await klik(kartaId, wskazniki.guzik);
-    } else {
-      await enter(kartaId);
+      // `Input.insertText` wpisuje całość naraz i jest tańsze niż literowanie po znaku, a dla strony
+      // wygląda jak wklejenie. Terminal przyjmuje wklejony numer — właściciel tak właśnie sprawdzał
+      // ręcznie („skopiowałem wartość z tabeli").
+      await polecenie(kartaId, "Input.insertText", { text: tekst });
+      await spij(250);
+
+      const stan = (await narzedzia.stanPola?.()) ?? null;
+      podejscia.push(`${sposob} → „${stan ? stan.wartosc : "(nie sprawdzono)"}”`);
+
+      // Brak `stanPola` (stara ścieżka) traktujemy jak sukces — inaczej odcinalibyśmy sobie
+      // jedyną działającą drogę tylko dlatego, że nie umiemy jej sprawdzić.
+      if (!stan || goly(stan.wartosc) === goly(tekst)) {
+        if (wskazniki.guzik) await klik(kartaId, wskazniki.guzik);
+        else await enter(kartaId);
+        return {
+          ok: true,
+          sposob: `${sposob}, ${wskazniki.guzik ? "zaufany klik w guzik" : "zaufany Enter"}`,
+          wpolu: stan?.wartosc ?? "(nie sprawdzono)",
+          fokusKarty: fokus,
+          stanPola: stan,
+        };
+      }
+
+      // Numer nie trafił (albo trafił nie tam). Przed kolejnym podejściem czyścimy pole — inaczej
+      // `insertText` dopisze numer do resztki i wyszukamy dwa numery sklejone w jeden.
+      await narzedzia.czyscPole?.();
     }
-    return { ok: true, sposob: wskazniki.guzik ? "zaufany klik w guzik" : "zaufany Enter" };
+
+    throw new Error(`numer nie trafił do pola — ${podejscia.join("; ")}; fokus karty: ${fokus}`);
   } finally {
     await chrome.debugger.detach({ tabId: kartaId }).catch(() => undefined);
   }

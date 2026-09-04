@@ -1128,8 +1128,49 @@ jak ma sama sprawdzić kilka"):**
   pierwszy kontener przechodzi, a drugi i trzeci kończą się błędem — czyli test łapie dokładnie
   to, co zgłosił właściciel. Do tego 13 sprawdzeń samej reguły odpowiedzi
   (`scratch-odpowiedz.test.mjs`), które na starym kodzie nie przechodzą w pięciu punktach.
-- **Do zrobienia u właściciela: pobrać wtyczkę 1.0.9 z appki** (guzik „Wtyczka" świeci wtedy
+**„W OGÓLE NIE WPISUJE ŻADNEGO KONTENERA" — wpisanie jest teraz SPRAWDZANE (wtyczka 1.0.10):**
+- **Przyczyna: nikt nigdy nie sprawdzał, czy numer trafił do pola.** Rozszerzenie wysyłało klik
+  i tekst przez debuger, po czym BEZ WERYFIKACJI klikało „Sprawdź". Puste pole wygląda wtedy
+  dokładnie tak samo jak wypełnione, a terminal na puste zapytanie odpowiada „Brak wyników:" bez
+  numeru — czyli objawem błędu było „Baltic Hub nie zna kontenera" albo 60 s czekania na wyniki.
+  **Funkcja `stanPola` (wartość w polu, aktywny element, widoczność karty, fokus, czy reCAPTCHA
+  wypełniła swoje pole) istniała w `page.js` OD POCZĄTKU i nie była wołana z żadnego miejsca.**
+- **Trzy poprawki, każda na inny powód pustego pola:**
+  1. **Weryfikacja po każdym podejściu** (`input.js`): po `Input.insertText` czytamy `stanPola`
+     i porównujemy z tym, co chcieliśmy wpisać. Nie zgadza się → drugie podejście, tym razem
+     z kursorem ustawionym przez `skupPole()` (`focus()` na stronie) zamiast klikiem. Dopiero
+     potwierdzona wartość uprawnia do kliknięcia „Sprawdź"; dalej niepusto → wyjątek, czyli stara
+     droga awaryjna. Między podejściami pole jest CZYSZCZONE (`czyscPole`) — inaczej `insertText`
+     dopisałby numer do resztki i wyszukalibyśmy dwa numery sklejone w jeden.
+  2. **`Emulation.setFocusEmulationEnabled`** przy podłączonym debugerze: karta terminala jest
+     przypięta i NIEAKTYWNA, więc dla strony jest kartą bez fokusu (`document.hasFocus() === false`),
+     a to potrafi wyłączyć obsługę wpisywania. Polecenie każe przeglądarce udawać przed stroną,
+     że karta jest na wierzchu — bez zabierania dyspozytorowi tego, na co patrzy.
+  3. **Enter „na drugie podejście" tylko przy NIEPUSTYM polu.** Dotąd przy pustym polu naciskaliśmy
+     Enter, czyli wyszukiwaliśmy pustkę i sami produkowaliśmy „Brak wyników:". Teraz puste pole
+     wypełniamy jeszcze raz drogą z kodu — bez zaufanych zdarzeń, ale zapytanie z numerem bije
+     zapytanie puste.
+- **Ślad w migawce**: udany przebieg zapisuje przy zleceniu `_sposob` (którą drogą poszło wpisanie)
+  i `_w_polu` (co stało w polu), a błąd — dodatkowo `_pole_po_wyslaniu` i powód, dla którego nie
+  dało się zmierzyć punktu do kliknięcia. Bez tego „nie zna kontenera" i „zapytanie poszło puste"
+  wyglądają w bazie identycznie.
+- **Zweryfikowane w prawdziwym Chrome** (`scratch-wpisywanie.test.mjs`, plik tymczasowy), 24
+  sprawdzenia w dwóch przebiegach na tej samej maszynerii; atrapa terminala melduje serwerowi
+  KAŻDE zapytanie, więc dziennik przeżywa nawigację i widać komplet:
+  - **A** — trzy kontenery, wolne wczytywanie, wyniki poprzedniego zostają na ekranie: każde
+    zlecenie dostaje odpowiedź o swoim kontenerze, terminal dostaje dokładnie nasze trzy numery
+    i ani jednego pustego zapytania, wpisanie idzie drogą zaufaną.
+  - **B** — strona liczy WYŁĄCZNIE tekst wpisany zaufanym zdarzeniem (tak zachowuje się formularz
+    za reCAPTCHĄ) i ma nad polem przezroczystą warstwę połykającą kliknięcie (na produkcji robiło
+    to okno zgody na ciasteczka): rozszerzenie zauważa nietrafiony klik, przechodzi na kursor
+    przez `focus()` i **strona przyjmuje tekst jako zaufany** — obie karty odczytane.
+  **Test sprawdzony odwrotnie**: na kodzie sprzed poprawki przebieg B wysyła do terminala
+  **osiem PUSTYCH zapytań** (`["","","","","","","",""]`) i kończy się dwoma błędami — czyli test
+  odtwarza dokładnie to, co zgłosił właściciel.
+- **Do zrobienia u właściciela: pobrać wtyczkę 1.0.10 z appki** (guzik „Wtyczka" świeci wtedy
   pomarańczowo) i odświeżyć ją w `chrome://extensions`. Bez tego dalej działa stara.
+  Gdyby odczyt nadal się psuł: w `bhub_details` przy zleceniu stoi teraz WPROST, co było w polu —
+  to pierwsza rubryka do obejrzenia, zamiast zgadywania.
 
 **Odczyt maili wyczerpał środki w Claude Console — naprawione (właściciel: „w nocy program
 wykorzystał wszystkie fundusze Claude Console — odczytem zleceń; niech odczyt PDF (płatny) będzie
