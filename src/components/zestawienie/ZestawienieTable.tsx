@@ -88,6 +88,9 @@ function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Ma
   if (kind === "direction") return DIRECTION_LABELS[value as Direction] ?? String(value);
   // Kolejne miejsca: w komórce skrót ("Łódź; Warszawa"), pełna lista w oknie po kliknięciu.
   if (kind === "stops") return summarizeStops(normalizeStops(value));
+  // Kolumna logiczna: pusta komórka znaczy "nie wiadomo" (wartość null nigdy tu nie dojdzie —
+  // odsiewa ją warunek wyżej), więc "Nie" widać tylko tam, gdzie ktoś je świadomie ustawił.
+  if (kind === "boolean") return value === true ? "Tak" : value === false ? "Nie" : String(value);
   return String(value);
 }
 
@@ -1076,6 +1079,14 @@ function selectOptionsFor(
   fleet: Fleet,
   contractors: Contractor[]
 ): { value: string; label: string }[] | null {
+  // Kolumna logiczna nie ma czego wpisywać z klawiatury — Tak/Nie z listy, a pusta opcja (dokładana
+  // w CellEditor) wraca do "nie wiadomo".
+  if (column.kind === "boolean") {
+    return [
+      { value: "true", label: "Tak" },
+      { value: "false", label: "Nie" },
+    ];
+  }
   switch (column.key) {
     case "contractor_id":
       return contractors.map((c) => ({ value: c.id, label: c.name }));
@@ -1129,7 +1140,7 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
   // KTÓREJKOLWIEK z nich przelicza pozostałe — inaczej kolumny rozjechałyby się po pierwszej
   // ręcznej poprawce, a faktura poszłaby ze starym rozbiciem.
   if (load && (column.key === "freight_base_amount" || column.key === "baf_percentage" || column.key === "total_amount")) {
-    const numberOrNull = (candidate: string | number | null) => (typeof candidate === "number" ? candidate : null);
+    const numberOrNull = (candidate: string | number | boolean | null) => (typeof candidate === "number" ? candidate : null);
     const percent = column.key === "baf_percentage" ? numberOrNull(value) : load.baf_percentage;
     // Edycja SUMY liczy w drugą stronę (od kwoty z BAF-em w dół), pozostałe — od bazy w górę.
     // Zmiana samego procentu przy pustej bazie też liczy od sumy: to jest wtedy jedyna znana kwota.
@@ -1159,8 +1170,13 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
   return patch;
 }
 
-function coerceCellValue(column: ColumnDef, raw: string): string | number | null {
+function coerceCellValue(column: ColumnDef, raw: string): string | number | boolean | null {
   const trimmed = raw.trim();
+  // Pusty wybór w kolumnie logicznej to null ("nie wiadomo"), nie false — inaczej wyczyszczenie
+  // komórki twierdziłoby, że ważenie NIE jest wymagane.
+  if (column.kind === "boolean") {
+    return trimmed === "" ? null : trimmed === "true";
+  }
   if (column.kind === "number") {
     if (trimmed === "") return null;
     const value = Number(trimmed.replace(",", "."));

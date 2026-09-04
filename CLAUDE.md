@@ -1650,6 +1650,62 @@ sa one odczytywane z maila? nie mozemy zrobic jakiegos obejscia na czas nauki"):
 - **NIE zweryfikowane na żywym koncie**: samo pobranie z prywatnego bucketa (środowisko sesji nie ma
   konta) — pierwsze kliknięcie właściciela pokaże, czy podpis do `order-emails` przechodzi.
 
+**WAŻENIE — „czy wymagane" i „gdzie" (właściciel: „przy imporcie zleceń brakuje opcji zaciągania /
+dopisania gdzie i czy wymagane jest ważenie"; w trakcie sesji doprecyzował: „jest Ważenie (export)
+kolumna na to"):**
+- **Miejsce ważenia zostaje w ISTNIEJĄCEJ kolumnie `weighing_export`** (kolumna R arkusza, „Ważenie
+  (tylko export)") — na produkcji była pusta we wszystkich wierszach, więc nic nie trzeba było
+  przenosić. Nazwa kolumny NIE zmieniona (siedzi w `activity_log` i w zapisanych ustawieniach widoku
+  każdego użytkownika — ta sama zasada, co przy „Złożone kiedy" → „Data złożenia”), zmieniła się
+  tylko etykieta: **„Ważenie gdzie”**. NOWA jest wyłącznie odpowiedź „czy”: `loads.weighing_required
+  boolean` (migracja **0029**, ZAAPLIKOWANA przez MCP + `notify pgrst`).
+- **Dlaczego osobna kolumna, a nie słowo doklejone do miejsca**: po „czy” dyspozytor filtruje dzień
+  („które zlecenia trzeba zważyć”), a „tak” wpisane w tekst miejsca do niczego takiego się nie nadaje.
+  Typ NULLOWALNY, bo trzy stany znaczą co innego: `true` = wymagane, `false` = wprost niewymagane,
+  `null` = **dokument o tym nie mówi**. Wymuszenie `false` na braku informacji kazałoby dyspozytorowi
+  ufać czemuś, czego nikt nie napisał (ta sama zasada, co przy `rate_includes_baf`).
+- **Zaciąganie z dokumentu**: `parse-order-pdf` **wdrożona (v24)** — schemat ma `weighing_required` +
+  `weighing_place`, doszła zasada 12 promptu (ważenie bywa jednym słowem w uwagach; wskazanie miejsca
+  samo w sobie znaczy, że ważenie jest; nie mylić z wagą towaru ani z miejscem podjęcia/zdania).
+  **Opis pola `notes` przestał zbierać ważenie** — dotąd stało tam wprost „np. nietypowe wymagania,
+  ważenie”, i faktycznie tam lądowało: na produkcji zlecenie 441/1130/2026/KK/E ma w uwagach
+  „…odprawa Piła, ważenie w porcie”, bo pola na to nie było.
+- Reguła „**miejsce znaczy, że ważenie jest**" siedzi w `src/lib/loads/prepareOrder.ts`, czyli w tym
+  JEDNYM miejscu, przez które przechodzi każde wejście pól do formularza (wgrany plik, kolejka
+  dokumentów, Skrzynka, ręczne wpisanie) — dokładnie z powodu opisanego przy regresji domyślnej daty.
+  Odwrotnie NIE działa: brak miejsca nie znaczy „niewymagane”, a świadome „nie” dyspozytora nie jest
+  nadpisywane. Zmiana jest widoczna: okno pisze, że appka to zaznaczyła.
+- **Naprawione przy okazji (dziura sprzed tej zmiany): na drodze ze SKRZYNKI ostrzeżenia
+  `applyOrderDefaults` GINĘŁY.** Okno rozpakowywało wynik do samego `.order`, więc dyspozytor
+  otwierający zlecenie z maila nie dowiadywał się, że appka przestawiła mu gestię na „Leasing”
+  (a teraz — że zaznaczyła ważenie); przy wgranym pliku te same ostrzeżenia były pokazywane.
+- **Pierwsza kolumna LOGICZNA w Zestawieniu** — `kind: "boolean"` w `columns.ts`: w komórce „Tak”/
+  „Nie” (nigdy „true”), edycja listą z pustą opcją wracającą do „nie wiadomo”. Pusta komórka to brak
+  informacji, nie „Nie”.
+- **PUŁAPKA złapana testem, nie przy pisaniu: wyszukiwarka dopasowuje po FRAGMENCIE słowa**, więc
+  „ważenie niewymagane” w indeksie sprawiało, że zapytanie „ważenie wymagane" wyciągało dokładnie te
+  zlecenia, których dyspozytor wtedy NIE szuka („wymagane” siedzi w środku „niewymagane”). Zlecenie
+  zwolnione opisujemy więc „bez ważenia”; jest test-straż na tę klasę błędu.
+- **Zweryfikowane**: logika — 13 sprawdzeń (`scratch-wazenie.test.mts`, plik tymczasowy: normalizacja
+  odpowiedzi modelu, scalanie dwóch dokumentów z zachowanym `false`, reguła miejsca, round-trip
+  zapisane zlecenie → formularz, wyszukiwarka). Przeglądarka (Playwright, `next dev`, tymczasowa
+  strona `/test-wazenie`, skasowana po teście) — 17 sprawdzeń **na prawdziwej ścieżce danych**
+  (REST → `useLoads` → tabela → PATCH; podstawiony wyłącznie `fetch`, bo środowisko sesji nie ma
+  konta): obie kolumny w tabeli, „Tak” zamiast „true”, pusta komórka przy braku informacji, edycja
+  listą, zapis `false` i powrót do `null`, pola w oknie zlecenia, miejsce z dokumentu zaznaczające
+  „wymagane” wraz z komunikatem. Baza — REST widzi nową kolumnę (brak PGRST204), filtr
+  `weighing_required=is.true` działa; dziennik zmian obejmuje ją bez zmian w triggerze (0016 liczy
+  diff generycznie z `to_jsonb`, pomijając tylko `updated_at`/`bhub_*`).
+- **NIE zweryfikowane**: realny odczyt ważenia z dokumentu przez model. Od wersji v21 funkcja odrzuca
+  wszystko, co nie jest tokenem ZALOGOWANEGO człowieka (blokada kosztowa po incydencie z Claude
+  Console), a to środowisko konta nie ma — więc strzał curl-em potwierdza tylko, że funkcja wstała i
+  chodzi po naszym kodzie (405 / `not_a_user`, polskie znaki całe). Pierwsze zlecenie z ważeniem
+  u właściciela pokaże resztę.
+- **`mail-poll` ŚWIADOMIE nie przewdrażana** (wdrożona v18 nie zna tych pól). Dziś nie ma to
+  praktycznego skutku: poller nie woła modelu, szablon Q4Road ważenia nie czyta, a nauczonych
+  szablonów jest zero. `shared/parsedOrder.ts` jest już przegenerowane, więc przy najbliższym
+  wdrożeniu tej funkcji z innego powodu pola wejdą same.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -1684,6 +1740,10 @@ sa one odczytywane z maila? nie mozemy zrobic jakiegos obejscia na czas nauki"):
 10. Wielopunktówka a Plan wspaniały: dziś zlecenie stoi w kolumnie swojej JEDNEJ daty, a kolejne
    miejsca są tylko opisem na kafelku („+ N miejsc"). Gdyby okazało się, że wielopunktowe zlecenie
    ma zajmować auto w kilku dniach, to osobna decyzja z właścicielem — nie zakładać jej z góry.
+12. Ważenie: kafelek „Planu wspaniałego" go nie pokazuje, a ważenie zajmuje kierowcy czas w dniu —
+   do rozważenia z właścicielem, czy ma tam stać (dziś widać je tylko w Zestawieniu i w oknie
+   zlecenia). Szablon Q4Road (`q4road.ts`) też nie czyta ważenia — do dopisania, gdy pojawi się ich
+   zlecenie z taką rubryką (nie zgadywać regexa bez dokumentu, patrz pułapka z kotwicą `$`).
 11. Krajówka na fakturze: trasa to dziś same miejscowości (`buildRoute`), bo zlecenie nie ma pola
    „miejsce załadunku" osobno od miejsca rozładunku. Jeśli właściciel będzie chciał pełną trasę
    „skąd — dokąd", potrzebne będzie to pole (albo pierwsze miejsce z listy jako załadunek).

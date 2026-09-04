@@ -30,6 +30,10 @@ export interface Load {
   direction: Direction;
   secondary_date: string | null;
   time_of_day: string | null;
+  // Ważenie kontenera — migracja 0029. `weighing_required`: true = wymagane, false = wprost
+  // niewymagane, null = dokument o tym nie mówi. `weighing_export` (kolumna R arkusza) trzyma
+  // MIEJSCE ważenia; nazwa jest historyczna („tylko export"), pole dotyczy obu kierunków.
+  weighing_required: boolean | null;
   weighing_export: string | null;
   goods_name: string | null;
   status: string | null;

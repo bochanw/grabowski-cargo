@@ -65,6 +65,16 @@ export interface ParsedOrder {
    * checkboxy, tłumaczenie siedzi w src/lib/loads/adrSent.ts.
    */
   adr_sent: string;
+  /**
+   * Ważenie kontenera (właściciel: „brakuje opcji zaciągania / dopisania gdzie i czy wymagane jest
+   * ważenie"). Dwa pola, bo to dwie różne informacje: `weighing_required` to odpowiedź tak/nie,
+   * po której planuje się dzień (i którą da się filtrować), a `weighing_place` mówi GDZIE — bywa
+   * miejscem („waga miejska w Gdyni"), a bywa samą wskazówką („ważenie w porcie").
+   * `weighing_required === null` znaczy „dokument o tym nie mówi", nie „niewymagane" — tak samo jak
+   * przy `rate_includes_baf`. Do bazy: `loads.weighing_required` i `loads.weighing_export`.
+   */
+  weighing_required: boolean | null;
+  weighing_place: string;
   net_weight_kg: number | null; // waga towaru z dokumentu ("Waga towaru brutto" na liście przewozowym)
   gross_weight: string; // wyliczane: net_weight_kg + tara kontenera (src/lib/containers/tare.ts); text, bo bywa "według armatora"
   // Kiedy kontener ma być złożony — w dokumentach zwykle "cut off". Text, nie data: bywa podany z
@@ -111,6 +121,8 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   seal_number: "",
   goods_name: "",
   adr_sent: "",
+  weighing_required: null,
+  weighing_place: "",
   net_weight_kg: null,
   gross_weight: "",
   submitted_when: "",
@@ -215,6 +227,10 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     seal_number: text("seal_number"),
     goods_name: text("goods_name"),
     adr_sent: text("adr_sent"),
+    // "czy wymagane" przechodzi przez ten sam `bool` co BAF: model bywa odpowiada "tak"/1, a brak
+    // klucza MUSI zostać nullem — false znaczyłoby "dokument mówi, że ważenie nie jest wymagane".
+    weighing_required: bool("weighing_required"),
+    weighing_place: text("weighing_place"),
     net_weight_kg: num("net_weight_kg"),
     gross_weight: text("gross_weight"),
     // Terminale bywają w dokumentach pełną nazwą ("Gdynia Container Terminal" = GCT — zgłoszenie

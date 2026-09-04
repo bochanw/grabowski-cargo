@@ -46,6 +46,8 @@ export function loadToForm(load: Load): ParsedOrder {
     seal_number: load.seal_number ?? "",
     goods_name: load.goods_name ?? "",
     adr_sent: load.adr_flag ?? "",
+    weighing_required: load.weighing_required,
+    weighing_place: load.weighing_export ?? "",
     net_weight_kg: load.net_weight_kg,
     gross_weight: load.gross_weight ?? "",
     submitted_when: load.submitted_when ?? "",

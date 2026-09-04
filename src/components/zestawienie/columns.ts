@@ -18,7 +18,9 @@ export interface ColumnDef {
   // "direction": import / eksport / krajówka — w bazie kod (I/E/K), w tabeli nazwa; też CHECK.
   // "stops": kolejne miejsca załadunku/rozładunku (jsonb) — w komórce skrót, edycja w osobnym
   // oknie, NIE w edytorze inline: wpisanie tekstu w komórkę skasowałoby całą listę.
-  kind?: "number" | "date" | "contractor" | "bhub_status" | "plan_slot" | "direction" | "stops";
+  // "boolean": kolumna logiczna (dziś: ważenie wymagane) — lista Tak/Nie z pustą opcją, bo `null`
+  // znaczy "nie wiadomo" i jest czym innym niż "nie".
+  kind?: "number" | "date" | "contractor" | "bhub_status" | "plan_slot" | "direction" | "stops" | "boolean";
 }
 
 export const COLUMNS: ColumnDef[] = [
@@ -46,7 +48,11 @@ export const COLUMNS: ColumnDef[] = [
   { key: "container_size", label: "Wielkość", block: "ladunek" },
   { key: "secondary_date", label: "Data (2)", block: "ladunek", kind: "date" },
   { key: "time_of_day", label: "Godz.", block: "ladunek" },
-  { key: "weighing_export", label: "Ważenie (export)", block: "ladunek" },
+  // Ważenie — dwie kolumny, bo to dwie różne informacje (migracja 0029). "Czy" jest listą tak/nie
+  // (w bazie boolean, `null` = dokument o tym nie mówi), "gdzie" zostaje kolumną R arkusza
+  // (`weighing_export` — nazwa historyczna, dotyczy obu kierunków).
+  { key: "weighing_required", label: "Ważenie", block: "ladunek", kind: "boolean" },
+  { key: "weighing_export", label: "Ważenie gdzie", block: "ladunek" },
   { key: "goods_name", label: "Nazwa towaru", block: "ladunek" },
   { key: "status", label: "Status", block: "ladunek" },
   { key: "pin_booking", label: "PIN/booking", block: "ladunek" },

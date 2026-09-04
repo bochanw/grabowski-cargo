@@ -38,6 +38,16 @@ export function applyOrderDefaults(order: ParsedOrder): OrderDefaults {
     next = { ...next, gross_weight: String(gross) };
   }
 
+  // Ważenie: dokumenty prawie nigdy nie piszą "ważenie: wymagane" — piszą, GDZIE się waży
+  // ("ważenie w porcie", "waga miejska Gdynia"). Skoro dokument wskazał miejsce, to znaczy, że
+  // ważenie jest. Odwrotnie NIE działa: brak miejsca nie znaczy "niewymagane", więc pola „czy"
+  // wtedy nie ruszamy — zostaje null („dokument o tym nie mówi"). Świadome "nie" dyspozytora
+  // (false) też zostaje nietknięte.
+  if (next.weighing_place && next.weighing_required === null) {
+    warnings.push(`Dokument podaje miejsce ważenia („${next.weighing_place}”) — zaznaczono, że ważenie jest wymagane.`);
+    next = { ...next, weighing_required: true };
+  }
+
   // Gestia z uwag: kontener leasingowy nie ma armatora, a informacja o leasingu stoi w uwagach.
   const line = shippingLineForNotes(next.notes, next.shipping_line) ?? "";
   if (line !== next.shipping_line) {

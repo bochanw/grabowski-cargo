@@ -101,6 +101,11 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     seal_number: form.seal_number || null,
     goods_name: form.goods_name || null,
     adr_flag: form.adr_sent || null,
+    // Ważenie: "czy" i "gdzie" osobno — `weighing_export` to kolumna R arkusza (miejsce), patrz
+    // migracja 0029. `weighing_required` przechodzi wprost, bo null ("dokument nie mówi") jest tu
+    // wartością samą w sobie i `|| null` zamieniłoby świadome "nie" w brak informacji.
+    weighing_required: form.weighing_required,
+    weighing_export: form.weighing_place || null,
     net_weight_kg: form.net_weight_kg,
     gross_weight: form.gross_weight || null,
     submitted_when: form.submitted_when || null,
@@ -169,7 +174,11 @@ export function ImportOrderDialog({
   const [stage, setStage] = useState<Stage>(
     mode === "edit" || initialParsed || (initialOrders?.length ?? 0) > 0 ? "review" : "pick"
   );
-  const [form, setForm] = useState<ParsedOrder>(() => {
+  // Pola, z którymi okno startuje, LICZONE RAZ — razem z tym, co appka dołożyła sama. Wynik
+  // `applyOrderDefaults` był tu wcześniej rozpakowywany do samego `.order`, więc na drodze ze
+  // Skrzynki ostrzeżenia ginęły: dyspozytor nie dowiadywał się, że appka przestawiła mu gestię na
+  // „Leasing" albo zaznaczyła ważenie. Przy wgranym pliku (niżej) te same ostrzeżenia były pokazywane.
+  const [wejscie] = useState(() => {
     const base = existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER;
     // Te same reguły scalania co przy dopinaniu drugiego dokumentu: dane z maila wypełniają TYLKO
     // puste pola, nigdy nie nadpisują tego, co już stoi na zleceniu.
@@ -177,8 +186,9 @@ export function ImportOrderDialog({
     // Pola ze Skrzynki wchodzą tą samą drogą co wgrany plik: `mail-poll` zapisuje przy KAŻDYM
     // załączniku surowy odczyt (bez wyliczanej daty), a od kiedy okno bierze pola per załącznik
     // — żeby rozdzielić kilka zleceń z jednego maila — musi te reguły dołożyć samo.
-    return pierwsze ? applyOrderDefaults(mergeParsedOrders(base, pierwsze)).order : base;
+    return pierwsze ? applyOrderDefaults(mergeParsedOrders(base, pierwsze)) : { order: base, warnings: [] };
   });
+  const [form, setForm] = useState<ParsedOrder>(wejscie.order);
   // Zlecenia czekające w kolejce (drugie i dalsze z tej samej paczki dokumentów/maila) oraz licznik
   // już zapisanych — z tego bierze się pasek „Zlecenie 2 z 3".
   const [queue, setQueue] = useState<PendingOrder[]>(() =>
@@ -196,7 +206,7 @@ export function ImportOrderDialog({
   const [contractorId, setContractorId] = useState(existingLoad?.contractor_id ?? "");
   const [recognized, setRecognized] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>(initialOrders?.[0]?.warnings ?? []);
+  const [warnings, setWarnings] = useState<string[]>([...(initialOrders?.[0]?.warnings ?? []), ...wejscie.warnings]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -1084,6 +1094,34 @@ export function ImportOrderDialog({
                 </Field>
                 <Field label="Waga brutto (towar + tara kontenera)">
                   <input className={inputClass} value={form.gross_weight} onChange={(e) => updateField("gross_weight", e.target.value)} placeholder="liczone z typu kontenera" />
+                </Field>
+
+                {/* Ważenie (właściciel: „brakuje opcji zaciągania / dopisania gdzie i czy wymagane
+                    jest ważenie"). Trzy stany, nie checkbox: „—" znaczy, że dokument o ważeniu nie
+                    mówi, i to co innego niż świadome „nie". Miejsce wpisywane jest wolnym tekstem,
+                    bo w dokumentach bywa i adresem wagi, i samą wskazówką („w porcie"). */}
+                <Field label="Ważenie wymagane">
+                  <select
+                    data-testid="pole-wazenie-wymagane"
+                    className={inputClass}
+                    value={form.weighing_required === null ? "" : form.weighing_required ? "true" : "false"}
+                    onChange={(e) =>
+                      updateField("weighing_required", e.target.value === "" ? null : e.target.value === "true")
+                    }
+                  >
+                    <option value="">— dokument nie mówi —</option>
+                    <option value="true">Tak — wymagane</option>
+                    <option value="false">Nie</option>
+                  </select>
+                </Field>
+                <Field label="Ważenie gdzie">
+                  <input
+                    data-testid="pole-wazenie-gdzie"
+                    className={inputClass}
+                    value={form.weighing_place}
+                    onChange={(e) => updateField("weighing_place", e.target.value)}
+                    placeholder="np. w porcie, waga miejska Gdynia, SGS"
+                  />
                 </Field>
 
                 <Field label={handoverLabel} full>
