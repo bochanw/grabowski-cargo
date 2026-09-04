@@ -1043,6 +1043,74 @@ nie będzie na bank"; przy okazji wybrał: Bright Datę **usunąć całkiem**):
   Pierwsze uruchomienie u właściciela pokaże, czy strona daje się obsłużyć bez zagadki i czy
   `parse.ts` czyta karty z widocznego tekstu tak samo, jak czytał je z HTML-a Bright Daty.
 
+**Rozszerzenie URUCHOMIONE u właściciela — co się okazało na żywym terminalu (wersje 1.0.0-1.0.8):**
+- **NAJWAŻNIEJSZE USTALENIE: `element.click()` i `input.value = ...` NIE WYSTARCZAJĄ.** Zdarzenia
+  z JavaScriptu mają `isTrusted === false`, więc reCAPTCHA na stronie terminala nigdy nie rusza i
+  formularz leci pusty — strona odpowiada „Brak wyników". Wpisywanie i klikanie idzie teraz przez
+  **`chrome.debugger` (CDP)**: `Input.dispatchMouseEvent` + `Input.insertText` (`extension/input.js`),
+  czyli zdarzenia nie do odróżnienia od ludzkich. Dlatego w `manifest.json` jest uprawnienie
+  `debugger` i dlatego Chrome pokazuje pasek „rozszerzenie debuguje tę kartę" — to koszt wejścia,
+  nie usterka. Zweryfikowane wprost: ten sam formularz kliknięty po staremu zwraca „Brak wyników",
+  a kliknięty przez CDP zwraca kartę kontenera.
+- **Jeden kontener na zapytanie** (`config.js`, `rozmiarPaczki: 1`). Tryb wielu numerów naraz jest
+  u terminala oznaczony jako „wersja testowa" i przez automat zwracał „Brak wyników", mimo że
+  właściciel wkleił tę samą listę ręcznie i dostał trzy karty. Nie warto było walczyć — pytanie po
+  jednym działa, a kwadrans na cykl i tak wystarcza.
+- **Trzy pułapki „kliknięty nie ten guzik", wszystkie złapane przez właściciela na żywo:**
+  1. Okno zgody na ciasteczka (CookieYes) — pierwszy `<button type=submit>` na stronie to
+     „Dostosuj". Stąd `wOknieZgody()` (odrzuca kontenery `cky/cookie/consent/gdpr/rodo` i
+     `role=dialog`) i osobne zamykanie zgody (`.cky-btn-accept`), z jawnym zakazem klikania
+     „Odrzuć wszystkie".
+  2. „Sprawdź statki przy kei" — nagłówki tabeli i kafelki nawigacji wyglądają jak guziki.
+     `znajdzGuzik()` szuka DWOMA przebiegami (najpierw dokładna etykieta, potem luźno) i ma listę
+     `ZAKAZANE` (`dostosuj|odrzu|ustawienia|online|statk|kei|terminal na żywo|awizacj|...`).
+  3. Pole wyszukiwania kontenera nie ma `name`, `id` ani `placeholder` i stoi POZA formularzem —
+     wybierane jest od pola „w dół", nie po pierwszym inpucie na stronie.
+- **Migawka strony obcięta do 300 znaków** — `wyniki()` rozsypywało obiekt z `opiszStrone()`, który
+  ma własny, skrócony klucz `tekst`, i nadpisywało nim pełną treść. Pełny tekst musi iść JAKO
+  OSTATNI klucz. Objaw był mylący: „program dalej wiesza się na tym samym", bo serwer dostawał za
+  mało tekstu, żeby cokolwiek sparsować.
+- **Poprawne wyniki bywały wyrzucane** (właściciel: „prawidłowe wartości były zwracane, tylko
+  zamiast je zapisać szedłeś dalej"). Przebieg czekał na dowolną zmianę strony, a nie na
+  ODPOWIEDŹ O NASZ KONTENER. `extension/odpowiedz.js` (`odpowiedzDotyczyNas`) sprawdza teraz, czy
+  w treści stoi „Karta kontenera" albo numer, o który pytaliśmy; do tego 3 s odczekania po
+  zamknięciu zgody (reCAPTCHA musi się rozgrzać) i jedna ponowna próba.
+- **ISO Type na oznaczenie klienta** (właściciel: „mogłeś pobrać ISO Type 22G1 i zamienić na 20 —
+  to jest ich oznaczenie"): `isoToOrderSize()` w `src/lib/bhub/isoType.ts`, migracja **0020**.
+  **Straż na kształt kodu ISO (`/^[24L][0-9CDEF][ABGHKNPRSTUV][0-9A-Z]$/`) nie jest ozdobą** —
+  bez niej angielskie słowo „LINK" ze strony przechodziło jako typ kontenera i dawało „45".
+- **Gestia z terminala** — migracja **0021**. Obie (0020 i 0021) wypełniają pole TYLKO, gdy jest
+  puste (`coalesce(nullif(trim(...), ''), p_...)`): zlecenie jest źródłem prawdy, terminal
+  uzupełnia brak. Wyjątkiem zostaje waga brutto, która wg właściciela nadpisuje wszystko.
+- **Ponowne sprawdzenie zlecenia ze statusem ZP**: `pending` z jawną listą `loadIds` pomija
+  WSZYSTKIE filtry cyklu (ZP, próg 10 minut, `pickup_type`) — człowiek, który prosi o konkretne
+  zlecenie, ma dostać odpowiedź. Cykl automatyczny dalej omija ZP, bo to stan końcowy.
+- `bhub-status` wdrożona (v37).
+
+**Odczyt maili wyczerpał środki w Claude Console — naprawione (właściciel: „w nocy program
+wykorzystał wszystkie fundusze Claude Console — odczytem zleceń; niech odczyt PDF (płatny) będzie
+dopiero po moim kliknięciu"):**
+- **Przyczyna, z logów (515 wywołań `parse-order-pdf` przez jedną noc):** `mail-poll` wołał model
+  dla KAŻDEGO maila, ZANIM sprawdził, czy mail już jest w bazie — dedup stał dopiero przy zapisie,
+  na błędzie `23505`. A kursor Microsoft Graph celowo porównuje `ge` („lepiej powtórzyć wiadomość
+  niż ją zgubić"), więc te same maile wracały co 2 minuty i były odczytywane od nowa. **Wniosek na
+  przyszłość: w potoku z płatnym krokiem dedup musi stać PRZED kosztem, nie przy zapisie.**
+- **Trzy zmiany, każda w innym miejscu:** (1) `mail-poll` sprawdza duplikaty jednym zapytaniem
+  przed jakąkolwiek pracą i **w ogóle nie woła modelu** — robi wyłącznie rzeczy darmowe (prefiltr,
+  znane szablony); w miejscu usuniętej funkcji stoi komentarz z zakazem jej przywracania.
+  (2) Guzik **„Odczytaj przez Claude (płatne)"** w Skrzynce (`src/lib/supabase/readEmailWithClaude.ts`)
+  — pobiera załączniki z bucketa, czyta je i ZAPISUJE wynik przy wiadomości, więc drugie otwarcie
+  tego samego maila nie kosztuje nic; mail bez załącznika idzie jako tekst (`parseOrderText`).
+  (3) `parse-order-pdf` pyta GoTrue, czy za tokenem stoi konkretny użytkownik, i **odrzuca (403)
+  wywołania kluczem service_role** — `verify_jwt` sam tego nie łapie, bo service_role to dla niego
+  poprawny token. Poprawka w jednym wywołującym nie chroniłaby przed następnym takim automatem.
+- Migracja **0022** przywraca harmonogram wyłączony na czas naprawy (`cron.unschedule` ad hoc);
+  treść bez zmian wobec 0012. **UWAGA: `execute_sql` przez MCP jest READ-ONLY — `cron.schedule`
+  trzeba puszczać przez `apply_migration`.**
+- Wdrożone i sprawdzone na produkcji: `parse-order-pdf` v21 (klucz publishable dostaje 403
+  `not_a_user`, zero zapytań do modelu), `mail-poll` v15 (wstaje i odpowiada z naszego kodu),
+  cron `mail-poll-co-2-min` aktywny.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -1050,8 +1118,9 @@ nie będzie na bank"; przy okazji wybrał: Bright Datę **usunąć całkiem**):
 2. Więcej przykładów zleceń od innych spedytorów → kolejne pliki w `src/lib/orderTemplates/`
    (wzorzec: `detect` po nagłówku dokumentu + nazwie spedytora, `parse` etykieta→etykieta przez
    `between()`, nigdy `$`).
-3. Kontrola kosztu odczytu przez Claude, jeśli okaże się potrzebna (dziś funkcja jest dostępna dla
-   każdego zalogowanego, bez limitu wywołań) — świadoma decyzja do podjęcia z właścicielem, nie
+3. Kontrola kosztu odczytu przez Claude: pierwszy próg już stoi (płatny odczyt tylko z kliknięcia
+   zalogowanego człowieka, automaty dostają 403 — patrz sekcja o Claude Console). Zostaje pytanie
+   o LIMIT NA OSOBĘ, jeśli okaże się potrzebny — świadoma decyzja do podjęcia z właścicielem, nie
    kopiować `is_manager()` z DAB bez pytania.
 4. Edycja inline: nawigacja Tab/strzałkami między komórkami, jeśli dyspozytorzy o to poproszą.
 6. Widok: przeciąganie nagłówków (dziś kolejność ustawia się strzałkami w oknie "Widok") i
