@@ -49,3 +49,6 @@ next-env.d.ts
 supabase/functions/*/node_modules/
 supabase/functions/*/deno.lock
 deno.lock
+
+# Artefakt budowania funkcji brzegowej (wdrażany przez MCP; źródłem prawdy są pliki .ts)
+supabase/functions/*/bundle.js

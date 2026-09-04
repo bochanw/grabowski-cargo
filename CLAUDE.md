@@ -1222,6 +1222,67 @@ pogrubieniem trójkącik)"):
   **To jest sposób na weryfikację wdrożenia przez MCP: deploy → `get_edge_function` → porównanie
   plików skryptem, nie wzrokiem.**
 
+**TRZY TERMINALE (BHub, BCT, GCT) + alarm MIMO nadpisania** (właściciel: „Wagi, gestie, wielkości
+nadpisujemy ale musimy alarmować że się nie pokrywają ze zleceniem!"; „analogicznie dla BCT
+sprawdzimy stan kontenera tym samym sposobem […] nasza appka będzie sprawdzać stany na 3
+terminalach"):
+
+- **KOREKTA 0031, wprost poproszona.** Tamta migracja rozwiązała napięcie „nadpisać czy pokazać
+  różnicę" tak, że przestała nadpisywać. Właściciel chce OBU rzeczy naraz — więc terminal znowu
+  nadpisuje, a to, co mówiło zlecenie, ląduje w `loads.terminal_conflicts` (migracja **0032**,
+  ZAAPLIKOWANA przez MCP). Wpis powstaje przy PIERWSZEJ rozbieżności, terminal go nie rusza
+  (inaczej po kwadransie alarm gasnąłby sam, zanim ktokolwiek by go zobaczył), a kasuje go dopiero
+  RĘCZNA poprawka tej kolumny — w tabeli albo w oknie zlecenia. Reguła „nie zapamiętuj własnej,
+  starej liczby jako «zlecenia»" ma osobny warunek i osobny test (waga VGM bywa poprawiana).
+- Wygląd: te cztery kolumny (brutto, netto, wielkość, gestia) mają teraz jedną wspólną ozdobę —
+  pogrubienie, gdy terminal potwierdza, i ⚠ z obiema wartościami w dymku, gdy zlecenie mówiło co
+  innego. `effectiveGrossWeightKg()` zostaje, ale po tej zmianie kolumna i tak trzyma wartość
+  terminala.
+
+- **BCT i GCT są OSIĄGALNE ZE STRONY SERWERA** (sprawdzone curl-em z tej sesji: BCT to zwykły
+  formularz ASP.NET z `__RequestVerificationToken`, GCT — PRADO z `PRADO_PAGESTATE`; oba oddały
+  prawdziwe karty). Świadomie NIE korzystamy z tego dziś: właściciel poprosił o „ten sam sposób",
+  czyli wtyczkę, a jedna droga dla wszystkich terminali jest prostsza i przenosi się na kolejne,
+  które będą się bronić jak Baltic Hub. **To jest jednak realna opcja na przyszłość** — sprawdzanie
+  chodziłoby wtedy bez włączonej przeglądarki dyspozytora.
+- Parsery napisane na PRAWDZIWYCH odpowiedziach (`supabase/functions/bhub-status/fixtures/`):
+  zapytanie poszło naprawdę, a odpowiedź została zrenderowana w prawdziwym Chromium i zapisana jako
+  `innerText` — czyli dokładnie w postaci, w jakiej przysyła ją wtyczka. Co się okazało:
+  - **BCT to ten sam Navis N4 co Baltic Hub**, ale karta jest TABELĄ: etykieta i wartość w dwóch
+    komórkach, więc w tekście nie ma dwukropka (stąd `paryZKarty(karta, false)`).
+  - **BCT zapisuje „nic tu nie ma" jako `--`** — bez `pusteJakoPuste` pusta rubryka `Stops`
+    wyszłaby jako BLOKADA na kontenerze, czyli „nie wolno zabierać" zamiast „brak blokad".
+  - **BCT podaje typ kontenera w starym, LICZBOWYM zapisie ISO („2210")**. `ISO_CODE` i
+    `parseIsoType` znają teraz oba warianty; rodzinę z zapisu liczbowego mapujemy TYLKO dla grup
+    0x i 1x (uniwersalne) — reszta zostaje „nie wiem", bo zgadnięty open top pojechałby na
+    dokumencie przewozowym.
+  - **GCT to inny układ**: jedna tabela z polskimi nagłówkami, bez wag i bez armatora. Granicę
+    kolumn niesie TABULATOR (sąsiadują „Status" i „Status celny", oba wolnym tekstem ze spacjami),
+    więc czytamy tekst PRZED sklejeniem białych znaków. Wartości mają w środku złamania linii,
+    dlatego wiersz składamy z PÓL, a nie z linii. „Data/Czas podjęcia" to odpowiednik `Time Out`.
+  - GCT nie daje się dopasować do pięciu kodów statusu (własne słownictwo: „na terminalu — w trakcie
+    przyjęcia") → status zostaje surowym tekstem bez koloru. **Do wyjaśnienia z właścicielem, jak
+    tłumaczyć te stany.**
+- Wtyczka **1.1.0**: grupuje zlecenia po terminalach, każdy ma swój adres (do nadpisania w oknie),
+  rozmiar paczki (GCT sam zaprasza do pytania zbiorczego — do 10 numerów) i `markerWynikow`.
+  Zlecenie z terminalem, którego wtyczka nie zna, dostaje BŁĄD z prośbą o aktualizację, zamiast
+  ginąć po cichu.
+- **Zweryfikowane**: 15 testów Deno na prawdziwych odpowiedziach BCT i GCT (`parse.test.ts`, w repo
+  razem z fixturami), RPC odpalona na ŻYWEJ bazie w transakcji cofniętej wyjątkiem (nadpisuje
+  wszystkie cztery kolumny, pamięta wartości zlecenia, przy powtórce ich nie zmienia, przy zmianie
+  wagi przez terminal NIE podmienia ich własną starą liczbą, aktor `bot:bct`), 43 sprawdzenia
+  logiki appki i 23 w przeglądarce — z podglądem tego, co appka WYSYŁA przy ręcznej poprawce
+  (kasuje wpis o tej kolumnie, cudzych nie rusza).
+- **Ograniczenie tej sesji**: przeglądarka nie przechodzi przez proxy środowiska (uścisk TLS
+  zrywany przez przekaźnik — curl przechodzi), więc fixtury powstały z prawdziwych odpowiedzi HTTP
+  wyrenderowanych lokalnie, a nie z sesji na żywej stronie. Nie sprawdzono też, czy heurystyki
+  `page.js` (znajdź pole, znajdź guzik) trafiają na żywych stronach BCT i GCT — z HTML-a wynika, że
+  tak (`#ContainerNo` + guzik „Sprawdź"; `textarea` + `input[type=submit]` „Pokaż"), ale pierwsze
+  uruchomienie u właściciela to potwierdzi.
+- **Funkcja `bhub-status` wdrożona (v39) jako PACZKA** (esbuild, `--charset=utf8`): wdrożenie idzie
+  przez MCP, czyli treść trzeba przenieść ręcznie, a paczka to połowa objętości źródeł. Źródłem
+  prawdy zostają pliki `.ts` w repo; `bundle.js` jest w `.gitignore`.
+
 **Odczyt maili wyczerpał środki w Claude Console — naprawione (właściciel: „w nocy program
 wykorzystał wszystkie fundusze Claude Console — odczytem zleceń; niech odczyt PDF (płatny) będzie
 dopiero po moim kliknięciu"):**

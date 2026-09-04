@@ -94,6 +94,13 @@ appka nie pozna, że dyspozytorzy mają starą wersję. Pliki:
 - `odpowiedz.js` — kiedy to, co widać na stronie, JEST już odpowiedzią na nasz numer.
 - `api.js`, `config.js` — logowanie do Supabase i ustawienia.
 
+**TRZY TERMINALE** (od 1.1.0): Baltic Hub, BCT i GCT. O tym, gdzie pytać o dany kontener, decyduje
+pole „Podjęcie" zlecenia — serwer przysyła nazwę terminala razem z numerem, więc czwarty terminal
+będzie zmianą po stronie appki, a nie na komputerze dyspozytora. W `config.js` zostaje tylko to,
+czego serwer wiedzieć nie może: adres formularza, rozmiar paczki, znak rozdzielający numery i ślad,
+po którym poznać gotową odpowiedź (`markerWynikow` — u GCT sam numer NIE wystarcza, bo siedzi
+w polu tekstowym).
+
 Przy sprawdzaniu kilku kontenerów pytamy po jednym, w tej samej karcie — dlatego trzy rzeczy są
 tu krytyczne i mają własne testy:
 
