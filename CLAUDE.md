@@ -1305,10 +1305,20 @@ pojazdach):
   (`PLAN_DAYS_BEFORE`/`PLAN_DAYS_AFTER`) w `planBoard.ts`.
   Skutki, o których łatwo zapomnieć przy zmianie szerokości okna: lista „Do zaplanowania" obejmuje
   CAŁE okno (przy każdym zleceniu stoi jego dzień), a nieobecność auta jest liczona per dzień —
-  nagłówek wiersza pokazuje urlopy z całego okna bez powtórek, ale na żółto podświetlają się tylko
-  te bloki, w których auto faktycznie nie jeździ. 16 kolumn slotów mieści się na ultrawide (kolumna
-  pojazdu jest przyklejona do lewej, reszta się przewija), a nagłówki miejsc są skrócone do
-  „tył"/„przód" (pełna nazwa w dymku).
+  wiersz pokazuje urlop tylko w tych dniach, w których auto faktycznie nie jeździ.
+- **Dni idą JEDEN POD DRUGIM, nie w bok** (właściciel po zobaczeniu pierwszej wersji: „przewijanie
+  jest w tej chwili lewo-prawo dni, a ma być góra-dół"). Pierwsza wersja rozkładała okno poziomo
+  (4 dni × 4 kolumny = 16 kolumn) — teraz kolumny są CZTERY i stałe, a każdy dzień to sekcja
+  z własnym nagłówkiem („czwartek, 29.01 · import: piątek, 30.01"), pod którym stoją wszystkie
+  auta. Stąd `PlanRow.blocks[]` (ten sam pojazd w kolejnych dniach) zamiast kolejnych kolumn
+  w wierszu; wiersz pojazdu powtarza się w każdej sekcji, więc selektory w testach muszą podawać
+  `data-dzien`. Napis w nagłówku sekcji jest w `<div class="sticky left-2">` — ta sama sztuczka
+  co przy nagłówkach dnia w Zestawieniu. Jest test-straż na sam układ: cztery nagłówki slotów,
+  zero nagłówków dnia w `<thead>`, każda kolejna sekcja niżej od poprzedniej i w tej samej kolumnie.
+- Przy czterech dniach × kilkudziesięciu autach lista robi się długa, więc doszły dwa sposoby jej
+  skrócenia: przełącznik **„tylko auta z ładunkiem"** w pasku (domyślnie WYŁĄCZONY — właściciel
+  prosił o „wszystkie auta", bo z pustych wierszy widać wolne moce) i **„Ukryj to auto w planie"**
+  w ustawieniach wiersza (ukryte auto i tak wraca w dniu, w którym coś na nim stoi).
 - **Bez własnego zbioru danych.** Plan czyta `loads` i tylko inaczej je układa: wiersz z
   `vehicle_plate`, kolumna z `direction` + `load_date`, a jedyne, czego brakowało, to MIEJSCE na
   zestawie. Stąd `loads.plan_slot` (`tyl`/`przod`) i `loads.plan_prev_note` (ręczne nadpisanie

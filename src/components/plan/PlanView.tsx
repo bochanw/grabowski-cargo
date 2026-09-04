@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import type { Load } from "@/types/load";
 import { useLoads, useUpdateLoad } from "@/hooks/useLoads";
 import { useFleet, EMPTY_FLEET, findDriver } from "@/lib/fleet/fleetStore";
@@ -15,7 +15,7 @@ import {
   type PlanRow,
   type PlanRowBlock,
 } from "@/lib/plan/planBoard";
-import { PLAN_SLOTS, PLAN_SLOT_LABELS, PLAN_SLOT_SHORT, type PlanSlot } from "@/lib/plan/slots";
+import { PLAN_SLOTS, PLAN_SLOT_LABELS, type PlanSlot } from "@/lib/plan/slots";
 import { assignRefusal, assignmentPatch, unassignPatch } from "@/lib/plan/assign";
 import { nextWorkingDay, previousWorkingDay, todayIso, isWorkingDay } from "@/lib/dates/workingDays";
 import { PlanTile } from "./PlanTile";
@@ -59,6 +59,10 @@ export function PlanView() {
   const [message, setMessage] = useState<{ text: string; kind: "info" | "error" } | null>(null);
   const [settingsRow, setSettingsRow] = useState<PlanRow | null>(null);
   const [memoryEdit, setMemoryEdit] = useState<{ load: Load; value: string } | null>(null);
+  // Cztery dni razy kilkadziesiąt aut to długa lista — przełącznik dla dyspozytora, który
+  // chce zobaczyć samą pracę. Domyślnie WYŁĄCZONY: właściciel prosił o "wszystkie auta",
+  // bo z pustych wierszy widać wolne moce.
+  const [tylkoZajete, setTylkoZajete] = useState(false);
 
   const board: PlanBoard = useMemo(
     () =>
@@ -136,20 +140,12 @@ export function PlanView() {
   const pierwszy = board.days[0];
   const ostatni = board.days[board.days.length - 1];
 
-  // Gruba kreska między dniami — bez niej szesnaście kolumn zlewa się w jedną ścianę.
-  const blockEdge = (slotIndex: number, direction: "I" | "E", isLastDay: boolean): string => {
-    if (direction === "I" && slotIndex === PLAN_SLOTS.length - 1 && !isLastDay) return "border-r-4 border-r-zinc-400 dark:border-r-zinc-600";
-    if (direction === "E" && slotIndex === PLAN_SLOTS.length - 1) return "border-r-2";
-    return "border-r";
-  };
+  // Kolumny są cztery i stałe (eksport tył/przód, import tył/przód) — dni idą JEDEN POD DRUGIM,
+  // więc przewija się w dół, nie w bok (właściciel: "przewijanie ma być góra-dół").
+  const slotEdge = (slotIndex: number, direction: "I" | "E"): string =>
+    direction === "E" && slotIndex === PLAN_SLOTS.length - 1 ? "border-r-2" : "border-r";
 
-  const renderSide = (
-    row: PlanRow,
-    block: PlanRowBlock,
-    direction: "I" | "E",
-    isLastDay: boolean,
-    nieobecny: boolean
-  ) => {
+  const renderSide = (row: PlanRow, block: PlanRowBlock, direction: "I" | "E", nieobecny: boolean) => {
     const cells: PlanCell[] = direction === "E" ? block.eksport : block.import;
     const columnDay = direction === "E" ? block.day.dayExport : block.day.dayImport;
 
@@ -160,7 +156,7 @@ export function PlanView() {
       const refusal = selected ? assignRefusal(selected, target) : null;
       const canDrop = Boolean(selected) && !refusal;
       // Scalony kafelek 40/45 zjada sąsiednie miejsce, więc kreska ma stanąć po drugiej kolumnie.
-      const edge = blockEdge(index + cell.span - 1, direction, isLastDay);
+      const edge = slotEdge(index + cell.span - 1, direction);
 
       return (
         <td
@@ -249,6 +245,15 @@ export function PlanView() {
           <strong className="text-zinc-800 dark:text-zinc-200">{formatShortDay(pierwszy.dayExport)}</strong> –{" "}
           <strong className="text-zinc-800 dark:text-zinc-200">{formatShortDay(ostatni.dayImport)}</strong>
         </span>
+        <label className="flex items-center gap-1 text-zinc-600 dark:text-zinc-400">
+          <input
+            type="checkbox"
+            checked={tylkoZajete}
+            onChange={(event) => setTylkoZajete(event.target.checked)}
+            aria-label="Tylko auta z ładunkiem"
+          />
+          tylko auta z ładunkiem
+        </label>
         {selected && (
           <span className="rounded bg-blue-100 px-2 py-1 text-blue-900 dark:bg-blue-900 dark:text-blue-100">
             Wybrano: {selected.container_number || selected.order_number || "zlecenie"} — kliknij wolne miejsce.{" "}
@@ -279,127 +284,129 @@ export function PlanView() {
             <thead className="sticky top-0 z-20">
               <tr>
                 <th
-                  rowSpan={3}
+                  rowSpan={2}
                   className="sticky left-0 z-30 w-56 border-b border-r border-zinc-300 bg-zinc-100 px-2 py-1 text-left dark:border-zinc-700 dark:bg-zinc-900"
                 >
                   Pojazd / kierowca
                 </th>
-                {board.days.map((planDay, index) => (
-                  <th
-                    key={`dzien-${planDay.dayExport}`}
-                    colSpan={4}
-                    data-testid="naglowek-dnia"
-                    data-dzien={planDay.dayExport}
-                    className={`border-b border-zinc-300 px-2 py-1 text-center font-semibold dark:border-zinc-700 ${dayHeaderClass(
-                      planDay
-                    )} ${index < board.days.length - 1 ? "border-r-4 border-r-zinc-400 dark:border-r-zinc-600" : ""}`}
-                  >
-                    {formatDay(planDay.dayExport)}
-                    {planDay.offset !== 0 && (
-                      <span className="ml-1 font-normal opacity-70">
-                        ({planDay.offset > 0 ? `+${planDay.offset}` : planDay.offset})
-                      </span>
-                    )}
-                  </th>
-                ))}
+                <th
+                  colSpan={2}
+                  className="border-b border-r-2 border-zinc-300 bg-emerald-50 px-2 py-1 text-center font-semibold text-emerald-900 dark:border-zinc-700 dark:bg-emerald-950 dark:text-emerald-100"
+                >
+                  EKSPORT — dzień z nagłówka sekcji
+                </th>
+                <th
+                  colSpan={2}
+                  className="border-b border-zinc-300 bg-sky-50 px-2 py-1 text-center font-semibold text-sky-900 dark:border-zinc-700 dark:bg-sky-950 dark:text-sky-100"
+                >
+                  IMPORT — następny dzień roboczy po nim
+                </th>
               </tr>
               <tr>
-                {board.days.flatMap((planDay, index) => [
-                  <th
-                    key={`e-${planDay.dayExport}`}
-                    colSpan={2}
-                    className="border-b border-r-2 border-zinc-300 bg-emerald-50 px-2 py-0.5 text-center font-semibold text-emerald-900 dark:border-zinc-700 dark:bg-emerald-950 dark:text-emerald-100"
-                  >
-                    EKSPORT {formatShortDay(planDay.dayExport)}
-                  </th>,
-                  <th
-                    key={`i-${planDay.dayExport}`}
-                    colSpan={2}
-                    className={`border-b border-zinc-300 bg-sky-50 px-2 py-0.5 text-center font-semibold text-sky-900 dark:border-zinc-700 dark:bg-sky-950 dark:text-sky-100 ${
-                      index < board.days.length - 1 ? "border-r-4 border-r-zinc-400 dark:border-r-zinc-600" : ""
-                    }`}
-                  >
-                    IMPORT {formatShortDay(planDay.dayImport)}
-                  </th>,
-                ])}
-              </tr>
-              <tr>
-                {board.days.flatMap((planDay, dayIndex) =>
-                  (["E", "I"] as const).flatMap((direction) =>
-                    PLAN_SLOTS.map((slot, slotIndex) => (
-                      <th
-                        key={`${planDay.dayExport}-${direction}-${slot}`}
-                        title={PLAN_SLOT_LABELS[slot]}
-                        className={`w-44 min-w-44 border-b border-zinc-300 bg-zinc-50 px-2 py-0.5 text-left font-normal text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 ${blockEdge(
-                          slotIndex,
-                          direction,
-                          dayIndex === board.days.length - 1
-                        )}`}
-                      >
-                        {PLAN_SLOT_SHORT[slot]}
-                      </th>
-                    ))
-                  )
+                {(["E", "I"] as const).flatMap((direction) =>
+                  PLAN_SLOTS.map((slot, slotIndex) => (
+                    <th
+                      key={`${direction}-${slot}`}
+                      className={`w-64 border-b border-zinc-300 bg-zinc-50 px-2 py-0.5 text-left font-normal text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 ${slotEdge(
+                        slotIndex,
+                        direction
+                      )}`}
+                    >
+                      {PLAN_SLOT_LABELS[slot]}
+                    </th>
+                  ))
                 )}
               </tr>
             </thead>
             <tbody>
-              {board.rows.map((row) => {
-                const nieobecnyGdziekolwiek = row.absences.length > 0;
-                return (
-                  <tr key={row.plate} className="bg-white dark:bg-zinc-950">
-                    <th
-                      scope="row"
-                      data-testid="wiersz-pojazdu"
-                      data-pojazd={row.plate}
-                      className={`sticky left-0 z-10 border-b border-r border-zinc-200 px-2 py-1 text-left align-top font-normal dark:border-zinc-800 ${
-                        nieobecnyGdziekolwiek ? "bg-amber-50 dark:bg-amber-950" : "bg-white dark:bg-zinc-950"
-                      }`}
+              {board.days.map((planDay, dayIndex) => (
+                <Fragment key={planDay.dayExport}>
+                  {/* Dni idą jeden pod drugim — nagłówek sekcji zamiast kolejnych kolumn w bok.
+                      Sam napis jest przyklejony do lewej, żeby nie uciekał przy przewijaniu w bok
+                      (ta sama sztuczka co przy nagłówkach dnia w Zestawieniu). */}
+                  <tr>
+                    <td
+                      colSpan={5}
+                      data-testid="naglowek-dnia"
+                      data-dzien={planDay.dayExport}
+                      className={`border-y border-zinc-300 px-2 py-1 text-sm font-semibold dark:border-zinc-700 ${dayHeaderClass(
+                        planDay
+                      )} ${dayIndex > 0 ? "border-t-4 border-t-zinc-400 dark:border-t-zinc-600" : ""}`}
                     >
-                      <div className="flex items-start justify-between gap-1">
-                        <div>
-                          <div className="font-semibold text-zinc-900 dark:text-zinc-100">{row.plate}</div>
-                          <div className="text-zinc-600 dark:text-zinc-400">{row.driverName || "— brak kierowcy —"}</div>
-                          {row.trailerPlate && <div className="text-zinc-400">nacz. {row.trailerPlate}</div>}
-                          <div className="text-zinc-500">
-                            ładowność:{" "}
-                            {row.payloadKg === null ? (
-                              <span className="text-zinc-400">—</span>
-                            ) : (
-                              <strong>{row.payloadKg.toLocaleString("pl-PL")} kg</strong>
-                            )}
-                          </div>
-                          {!row.inFleet && <div className="text-amber-700 dark:text-amber-400">spoza Panelu floty</div>}
-                          {row.absences.map((absence) => (
-                            <div key={absence.label} className="text-amber-700 dark:text-amber-400">
-                              {absence.label}
-                            </div>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setSettingsRow(row)}
-                          title="Kierowca, ładowność, nieobecność"
-                          className="rounded border border-zinc-300 px-1 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                        >
-                          ⚙
-                        </button>
+                      <div className="sticky left-2 w-fit">
+                        {formatDay(planDay.dayExport)}
+                        {planDay.offset !== 0 && (
+                          <span className="ml-1 font-normal opacity-70">
+                            ({planDay.offset > 0 ? `+${planDay.offset}` : planDay.offset})
+                          </span>
+                        )}
+                        <span className="ml-2 font-normal opacity-70">
+                          · import: {formatDay(planDay.dayImport)}
+                        </span>
                       </div>
-                    </th>
-                    {row.blocks.flatMap((block, index) => {
-                      const isLastDay = index === row.blocks.length - 1;
-                      const nieobecny = block.absences.length > 0;
-                      return [
-                        ...renderSide(row, block, "E", isLastDay, nieobecny),
-                        ...renderSide(row, block, "I", isLastDay, nieobecny),
-                      ];
-                    })}
+                    </td>
                   </tr>
-                );
-              })}
+                  {board.rows.map((row) => {
+                    const block = row.blocks[dayIndex];
+                    const nieobecny = block.absences.length > 0;
+                    const pusty = !block.eksport.some((c) => c.load) && !block.import.some((c) => c.load);
+                    if (tylkoZajete && pusty) return null;
+                    return (
+                      <tr key={`${planDay.dayExport}-${row.plate}`} className="bg-white dark:bg-zinc-950">
+                        <th
+                          scope="row"
+                          data-testid="wiersz-pojazdu"
+                          data-pojazd={row.plate}
+                          data-dzien={planDay.dayExport}
+                          className={`sticky left-0 z-10 border-b border-r border-zinc-200 px-2 py-1 text-left align-top font-normal dark:border-zinc-800 ${
+                            nieobecny ? "bg-amber-50 dark:bg-amber-950" : "bg-white dark:bg-zinc-950"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-1">
+                            <div>
+                              <div className="font-semibold text-zinc-900 dark:text-zinc-100">{row.plate}</div>
+                              <div className="text-zinc-600 dark:text-zinc-400">
+                                {row.driverName || "— brak kierowcy —"}
+                              </div>
+                              {row.trailerPlate && <div className="text-zinc-400">nacz. {row.trailerPlate}</div>}
+                              <div className="text-zinc-500">
+                                ładowność:{" "}
+                                {row.payloadKg === null ? (
+                                  <span className="text-zinc-400">—</span>
+                                ) : (
+                                  <strong>{row.payloadKg.toLocaleString("pl-PL")} kg</strong>
+                                )}
+                              </div>
+                              {!row.inFleet && (
+                                <div className="text-amber-700 dark:text-amber-400">spoza Panelu floty</div>
+                              )}
+                              {/* Nieobecności TEGO dnia — auto bywa wolne tylko w części okna. */}
+                              {block.absences.map((absence) => (
+                                <div key={absence.label} className="text-amber-700 dark:text-amber-400">
+                                  {absence.label}
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setSettingsRow(row)}
+                              title="Kierowca, ładowność, nieobecność"
+                              className="rounded border border-zinc-300 px-1 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                            >
+                              ⚙
+                            </button>
+                          </div>
+                        </th>
+                        {renderSide(row, block, "E", nieobecny)}
+                        {renderSide(row, block, "I", nieobecny)}
+                      </tr>
+                    );
+                  })}
+                </Fragment>
+              ))}
               {board.rows.length === 0 && (
                 <tr>
-                  <td colSpan={1 + board.days.length * 4} className="px-3 py-6 text-center text-zinc-500">
+                  <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
                     Brak pojazdów. Plan bierze auta z Panelu floty (ciągniki i solówki).
                   </td>
                 </tr>

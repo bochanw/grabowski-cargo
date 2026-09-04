@@ -1,8 +1,12 @@
-// Ułożenie Planu wspaniałego na jeden dzień — czysta funkcja, bez Reacta i bez bazy.
+// Ułożenie Planu wspaniałego — czysta funkcja, bez Reacta i bez bazy.
 //
 // Kształt widoku wprost z opisu właściciela: pięć kolumn — pojazd+kierowca (+ ładowność pod
 // spodem), potem 2 i 3 to EKSPORT z danego dnia roboczego (tył naczepy/przyczepa, potem przód
 // naczepy/solówka), a 4 i 5 to IMPORT z NASTĘPNEGO dnia roboczego (analogicznie).
+//
+// Widok pokazuje kilka dni naraz (−1 / +2), ale kolumny zostają CZTERY: dni idą jeden pod drugim
+// jako sekcje, więc przewija się w dół, nie w bok (właściciel: "przewijanie ma być góra-dół").
+// Stąd `rows[].blocks[]` — ten sam pojazd w kolejnych dniach — a nie kolejne kolumny w wierszu.
 //
 // Plan nie ma własnego zbioru danych — czyta `loads` i tylko inaczej je układa ("jedno wynika
 // z drugiego"). Zlecenie trafia na wiersz przez `vehicle_plate`, do kolumny przez `direction`
@@ -69,6 +73,8 @@ export interface PlanRow {
   absences: PlanRowAbsence[];
   /** Pojazd z Panelu floty czy tablica wpisana tylko na zleceniu (podwykonawca, literówka). */
   inFleet: boolean;
+  /** Auto schowane z planu w ustawieniach wiersza (i tak wraca, gdy coś na nim stoi). */
+  hidden: boolean;
   blocks: PlanRowBlock[];
 }
 
@@ -366,6 +372,7 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
       payloadKg: planVehicle?.payload_kg ?? payload,
       absences: [...byLabel.values()],
       inFleet,
+      hidden: planVehicle?.hidden ?? false,
       blocks,
     };
   });

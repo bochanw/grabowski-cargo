@@ -36,6 +36,7 @@ export function PlanRowSettingsDialog({
 
   const [driverName, setDriverName] = useState(row.driverName);
   const [payload, setPayload] = useState(row.payloadKg === null ? "" : String(row.payloadKg));
+  const [ukryty, setUkryty] = useState(row.hidden);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -58,6 +59,7 @@ export function PlanRowSettingsDialog({
     const err = await savePlanVehicle(row.plate, {
       driver_name: driverName.trim() || null,
       payload_kg: parsed,
+      hidden: ukryty,
     });
     setSaving(false);
     if (err) setError(err);
@@ -114,6 +116,16 @@ export function PlanRowSettingsDialog({
           placeholder="np. 24000"
           className="mb-4 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-950"
         />
+
+        <label className="mb-4 flex items-center gap-2">
+          <input type="checkbox" checked={ukryty} onChange={(event) => setUkryty(event.target.checked)} />
+          <span>
+            Ukryj to auto w planie
+            <span className="block text-xs text-zinc-500">
+              Wiersz i tak wróci w dniu, w którym coś na nim stoi — ukrycie nie chowa pracy.
+            </span>
+          </span>
+        </label>
 
         <div className="mb-4 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded border border-zinc-300 px-3 py-1 dark:border-zinc-700">
