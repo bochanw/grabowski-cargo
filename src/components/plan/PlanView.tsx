@@ -5,18 +5,33 @@ import type { Load } from "@/types/load";
 import { useLoads, useUpdateLoad } from "@/hooks/useLoads";
 import { useFleet, EMPTY_FLEET, findDriver } from "@/lib/fleet/fleetStore";
 import { usePlanAbsences, usePlanVehicles } from "@/hooks/usePlan";
-import { buildPlanBoard, type PlanBoard, type PlanCell, type PlanRow } from "@/lib/plan/planBoard";
-import { PLAN_SLOTS, PLAN_SLOT_LABELS, type PlanSlot } from "@/lib/plan/slots";
+import {
+  buildPlanBoard,
+  PLAN_DAYS_AFTER,
+  PLAN_DAYS_BEFORE,
+  type PlanBoard,
+  type PlanCell,
+  type PlanDay,
+  type PlanRow,
+  type PlanRowBlock,
+} from "@/lib/plan/planBoard";
+import { PLAN_SLOTS, PLAN_SLOT_LABELS, PLAN_SLOT_SHORT, type PlanSlot } from "@/lib/plan/slots";
 import { assignRefusal, assignmentPatch, unassignPatch } from "@/lib/plan/assign";
 import { nextWorkingDay, previousWorkingDay, todayIso, isWorkingDay } from "@/lib/dates/workingDays";
 import { PlanTile } from "./PlanTile";
 import { PlanRowSettingsDialog } from "./PlanRowSettingsDialog";
 
 const DAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", { weekday: "long", day: "2-digit", month: "2-digit" });
+const SHORT_DAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", { weekday: "short", day: "2-digit", month: "2-digit" });
 
 function formatDay(iso: string): string {
   const parsed = new Date(`${iso}T00:00:00`);
   return Number.isNaN(parsed.getTime()) ? iso : DAY_FORMATTER.format(parsed);
+}
+
+function formatShortDay(iso: string): string {
+  const parsed = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? iso : SHORT_DAY_FORMATTER.format(parsed);
 }
 
 /** Dzień startowy: dziś, a w weekend/święto najbliższy dzień roboczy — planu i tak nikt nie robi na niedzielę. */
@@ -118,28 +133,50 @@ export function PlanView() {
     );
   }
 
-  const renderSide = (row: PlanRow, cells: PlanCell[], direction: "I" | "E", columnDay: string) =>
-    cells.map((cell, index) => {
+  const pierwszy = board.days[0];
+  const ostatni = board.days[board.days.length - 1];
+
+  // Gruba kreska między dniami — bez niej szesnaście kolumn zlewa się w jedną ścianę.
+  const blockEdge = (slotIndex: number, direction: "I" | "E", isLastDay: boolean): string => {
+    if (direction === "I" && slotIndex === PLAN_SLOTS.length - 1 && !isLastDay) return "border-r-4 border-r-zinc-400 dark:border-r-zinc-600";
+    if (direction === "E" && slotIndex === PLAN_SLOTS.length - 1) return "border-r-2";
+    return "border-r";
+  };
+
+  const renderSide = (
+    row: PlanRow,
+    block: PlanRowBlock,
+    direction: "I" | "E",
+    isLastDay: boolean,
+    nieobecny: boolean
+  ) => {
+    const cells: PlanCell[] = direction === "E" ? block.eksport : block.import;
+    const columnDay = direction === "E" ? block.day.dayExport : block.day.dayImport;
+
+    return cells.map((cell, index) => {
       if (cell.covered) return null;
       const slot = PLAN_SLOTS[index];
       const target: DropTarget = { row, slot, direction, day: columnDay };
       const refusal = selected ? assignRefusal(selected, target) : null;
       const canDrop = Boolean(selected) && !refusal;
+      // Scalony kafelek 40/45 zjada sąsiednie miejsce, więc kreska ma stanąć po drugiej kolumnie.
+      const edge = blockEdge(index + cell.span - 1, direction, isLastDay);
 
       return (
         <td
-          key={slot}
+          key={`${block.day.dayExport}-${direction}-${slot}`}
           colSpan={cell.span}
           data-testid={`slot-${direction}-${slot}`}
           data-pojazd={row.plate}
+          data-dzien={block.day.dayExport}
           onDragOver={(event) => event.preventDefault()}
           onDrop={(event) => handleDrop(event, target)}
           onClick={() => {
             if (!selected || cell.load) return;
             void place(selected, target);
           }}
-          className={`border-b border-r border-zinc-200 p-1 align-top dark:border-zinc-800 ${
-            cell.load ? "" : canDrop ? "cursor-pointer bg-blue-50/60 dark:bg-blue-950/40" : ""
+          className={`border-b border-zinc-200 p-1 align-top dark:border-zinc-800 ${edge} ${
+            cell.load ? "" : canDrop ? "cursor-pointer bg-blue-50/60 dark:bg-blue-950/40" : nieobecny ? "bg-amber-50/60 dark:bg-amber-950/30" : ""
           }`}
         >
           {cell.load ? (
@@ -157,7 +194,7 @@ export function PlanView() {
             />
           ) : (
             <div className="min-h-[46px] rounded border border-dashed border-zinc-200 text-center text-[11px] leading-[46px] text-zinc-300 dark:border-zinc-800 dark:text-zinc-700">
-              {selected ? (refusal ? "nie tutaj" : "wstaw tutaj") : ""}
+              {selected ? (refusal ? "nie tutaj" : "wstaw tutaj") : nieobecny ? "wolne" : ""}
             </div>
           )}
           {cell.conflicts.length > 0 && (
@@ -169,6 +206,12 @@ export function PlanView() {
         </td>
       );
     });
+  };
+
+  const dayHeaderClass = (planDay: PlanDay): string =>
+    planDay.offset === 0
+      ? "bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900"
+      : "bg-zinc-100 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -201,9 +244,10 @@ export function PlanView() {
         >
           dziś
         </button>
-        <span className="ml-2 text-zinc-500">
-          eksport: <strong className="text-zinc-800 dark:text-zinc-200">{formatDay(board.dayExport)}</strong> · import:{" "}
-          <strong className="text-zinc-800 dark:text-zinc-200">{formatDay(board.dayImport)}</strong>
+        <span className="ml-2 text-zinc-500" data-testid="okno-planu">
+          okno {PLAN_DAYS_BEFORE > 0 ? `−${PLAN_DAYS_BEFORE}` : "0"} / +{PLAN_DAYS_AFTER}:{" "}
+          <strong className="text-zinc-800 dark:text-zinc-200">{formatShortDay(pierwszy.dayExport)}</strong> –{" "}
+          <strong className="text-zinc-800 dark:text-zinc-200">{formatShortDay(ostatni.dayImport)}</strong>
         </span>
         {selected && (
           <span className="rounded bg-blue-100 px-2 py-1 text-blue-900 dark:bg-blue-900 dark:text-blue-100">
@@ -235,42 +279,73 @@ export function PlanView() {
             <thead className="sticky top-0 z-20">
               <tr>
                 <th
-                  rowSpan={2}
+                  rowSpan={3}
                   className="sticky left-0 z-30 w-56 border-b border-r border-zinc-300 bg-zinc-100 px-2 py-1 text-left dark:border-zinc-700 dark:bg-zinc-900"
                 >
                   Pojazd / kierowca
                 </th>
-                <th
-                  colSpan={2}
-                  className="border-b border-r-2 border-zinc-300 bg-emerald-50 px-2 py-1 text-center font-semibold dark:border-zinc-700 dark:bg-emerald-950"
-                >
-                  EKSPORT — {formatDay(board.dayExport)}
-                </th>
-                <th
-                  colSpan={2}
-                  className="border-b border-zinc-300 bg-sky-50 px-2 py-1 text-center font-semibold dark:border-zinc-700 dark:bg-sky-950"
-                >
-                  IMPORT — {formatDay(board.dayImport)}
-                </th>
+                {board.days.map((planDay, index) => (
+                  <th
+                    key={`dzien-${planDay.dayExport}`}
+                    colSpan={4}
+                    data-testid="naglowek-dnia"
+                    data-dzien={planDay.dayExport}
+                    className={`border-b border-zinc-300 px-2 py-1 text-center font-semibold dark:border-zinc-700 ${dayHeaderClass(
+                      planDay
+                    )} ${index < board.days.length - 1 ? "border-r-4 border-r-zinc-400 dark:border-r-zinc-600" : ""}`}
+                  >
+                    {formatDay(planDay.dayExport)}
+                    {planDay.offset !== 0 && (
+                      <span className="ml-1 font-normal opacity-70">
+                        ({planDay.offset > 0 ? `+${planDay.offset}` : planDay.offset})
+                      </span>
+                    )}
+                  </th>
+                ))}
               </tr>
               <tr>
-                {(["E", "I"] as const).flatMap((direction) =>
-                  PLAN_SLOTS.map((slot) => (
-                    <th
-                      key={`${direction}-${slot}`}
-                      className={`w-64 border-b border-zinc-300 bg-zinc-50 px-2 py-1 text-left font-normal text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 ${
-                        direction === "E" && slot === "przod" ? "border-r-2" : "border-r"
-                      }`}
-                    >
-                      {PLAN_SLOT_LABELS[slot]}
-                    </th>
-                  ))
+                {board.days.flatMap((planDay, index) => [
+                  <th
+                    key={`e-${planDay.dayExport}`}
+                    colSpan={2}
+                    className="border-b border-r-2 border-zinc-300 bg-emerald-50 px-2 py-0.5 text-center font-semibold text-emerald-900 dark:border-zinc-700 dark:bg-emerald-950 dark:text-emerald-100"
+                  >
+                    EKSPORT {formatShortDay(planDay.dayExport)}
+                  </th>,
+                  <th
+                    key={`i-${planDay.dayExport}`}
+                    colSpan={2}
+                    className={`border-b border-zinc-300 bg-sky-50 px-2 py-0.5 text-center font-semibold text-sky-900 dark:border-zinc-700 dark:bg-sky-950 dark:text-sky-100 ${
+                      index < board.days.length - 1 ? "border-r-4 border-r-zinc-400 dark:border-r-zinc-600" : ""
+                    }`}
+                  >
+                    IMPORT {formatShortDay(planDay.dayImport)}
+                  </th>,
+                ])}
+              </tr>
+              <tr>
+                {board.days.flatMap((planDay, dayIndex) =>
+                  (["E", "I"] as const).flatMap((direction) =>
+                    PLAN_SLOTS.map((slot, slotIndex) => (
+                      <th
+                        key={`${planDay.dayExport}-${direction}-${slot}`}
+                        title={PLAN_SLOT_LABELS[slot]}
+                        className={`w-44 min-w-44 border-b border-zinc-300 bg-zinc-50 px-2 py-0.5 text-left font-normal text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 ${blockEdge(
+                          slotIndex,
+                          direction,
+                          dayIndex === board.days.length - 1
+                        )}`}
+                      >
+                        {PLAN_SLOT_SHORT[slot]}
+                      </th>
+                    ))
+                  )
                 )}
               </tr>
             </thead>
             <tbody>
               {board.rows.map((row) => {
-                const nieobecny = row.absences.length > 0;
+                const nieobecnyGdziekolwiek = row.absences.length > 0;
                 return (
                   <tr key={row.plate} className="bg-white dark:bg-zinc-950">
                     <th
@@ -278,7 +353,7 @@ export function PlanView() {
                       data-testid="wiersz-pojazdu"
                       data-pojazd={row.plate}
                       className={`sticky left-0 z-10 border-b border-r border-zinc-200 px-2 py-1 text-left align-top font-normal dark:border-zinc-800 ${
-                        nieobecny ? "bg-amber-50 dark:bg-amber-950" : "bg-white dark:bg-zinc-950"
+                        nieobecnyGdziekolwiek ? "bg-amber-50 dark:bg-amber-950" : "bg-white dark:bg-zinc-950"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-1">
@@ -311,14 +386,20 @@ export function PlanView() {
                         </button>
                       </div>
                     </th>
-                    {renderSide(row, row.eksport, "E", board.dayExport)}
-                    {renderSide(row, row.import, "I", board.dayImport)}
+                    {row.blocks.flatMap((block, index) => {
+                      const isLastDay = index === row.blocks.length - 1;
+                      const nieobecny = block.absences.length > 0;
+                      return [
+                        ...renderSide(row, block, "E", isLastDay, nieobecny),
+                        ...renderSide(row, block, "I", isLastDay, nieobecny),
+                      ];
+                    })}
                   </tr>
                 );
               })}
               {board.rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
+                  <td colSpan={1 + board.days.length * 4} className="px-3 py-6 text-center text-zinc-500">
                     Brak pojazdów. Plan bierze auta z Panelu floty (ciągniki i solówki).
                   </td>
                 </tr>
@@ -334,7 +415,7 @@ export function PlanView() {
           <div className="min-h-0 flex-1 space-y-1 overflow-auto p-2">
             {board.unassigned.length === 0 && (
               <p className="px-1 py-3 text-xs text-zinc-500">
-                Wszystkie zlecenia z tych dwóch dni mają przypisany pojazd.
+                Wszystkie zlecenia z pokazanych dni mają przypisany pojazd.
               </p>
             )}
             {board.unassigned.map((load) => (
@@ -363,7 +444,9 @@ export function PlanView() {
                     {load.direction === "E" ? "EKS" : "IMP"}
                   </span>
                   <span className="font-semibold">{load.container_number || load.order_number || "(bez numeru)"}</span>
-                  {!load.load_date && (
+                  {load.load_date ? (
+                    <span className="text-zinc-400">{formatShortDay(load.load_date)}</span>
+                  ) : (
                     <span
                       className="rounded bg-amber-100 px-1 text-[10px] text-amber-800 dark:bg-amber-900 dark:text-amber-100"
                       title="Zlecenie nie ma daty — położenie go na miejscu ustawi datę tej kolumny"

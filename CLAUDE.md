@@ -1296,6 +1296,19 @@ pojazdach):
   naczepy/solówka; (4,5) IMPORT z NASTĘPNEGO dnia roboczego, analogicznie. W eksporcie kafelek ma
   dolną linię „po jakim imporcie jest kontener"; **w imporcie tej linii NIE MA** — właściciel:
   „import jest prosty, tam są tylko realne ładunki z informacjami o nich".
+- **Okno czterech dni roboczych: −1 / dzień planu / +1 / +2** (właściciel po pierwszym obejrzeniu:
+  „chciałbym, żeby widok pokazywał się −1 +2 […] resztę sobie będziemy zaciągać z archiwum, zależy
+  nam na wygodnej pracy"). Każdy dzień to ten sam blok co wcześniej — EKSPORT tego dnia + IMPORT
+  następnego dnia roboczego — więc bloki NIE dublują tej samej pary (kierunek, data); jest na to
+  osobny test. Liczone w dniach ROBOCZYCH: w poniedziałek „−1" to piątek, a „+2" z czwartku to
+  poniedziałek. Strzałki i pole daty przesuwają całe okno; szerokość okna to dwie stałe
+  (`PLAN_DAYS_BEFORE`/`PLAN_DAYS_AFTER`) w `planBoard.ts`.
+  Skutki, o których łatwo zapomnieć przy zmianie szerokości okna: lista „Do zaplanowania" obejmuje
+  CAŁE okno (przy każdym zleceniu stoi jego dzień), a nieobecność auta jest liczona per dzień —
+  nagłówek wiersza pokazuje urlopy z całego okna bez powtórek, ale na żółto podświetlają się tylko
+  te bloki, w których auto faktycznie nie jeździ. 16 kolumn slotów mieści się na ultrawide (kolumna
+  pojazdu jest przyklejona do lewej, reszta się przewija), a nagłówki miejsc są skrócone do
+  „tył"/„przód" (pełna nazwa w dymku).
 - **Bez własnego zbioru danych.** Plan czyta `loads` i tylko inaczej je układa: wiersz z
   `vehicle_plate`, kolumna z `direction` + `load_date`, a jedyne, czego brakowało, to MIEJSCE na
   zestawie. Stąd `loads.plan_slot` (`tyl`/`przod`) i `loads.plan_prev_note` (ręczne nadpisanie
@@ -1334,15 +1347,18 @@ pojazdach):
   samo, co 0006). Sprawdzone `has_function_privilege` po zaaplikowaniu.
 - Zakładki „Zestawienie / Plan wspaniały" (`src/components/AppViews.tsx`). Synchronizacji nie ma i
   nie trzeba: oba widoki czytają ten sam cache TanStack Query odświeżany przez Realtime.
-- **Zweryfikowane**: logika — 36 sprawdzeń (`scratch-plan.test.mts`, plik tymczasowy; jedno złapało
+- **Zweryfikowane**: logika — 42 sprawdzenia (`scratch-plan.test.mts`, plik tymczasowy; jedno złapało
   realny błąd: kontener wypchnięty przez czterdziestkę liczył się dwa razy). Przeglądarka
   (Playwright, `next dev`, tymczasowe strony `/test-plan` i `/test-widoki`, usunięte po teście) —
-  19 + 6 sprawdzeń **z podstawionym REST-em, nie z atrapą hooków**, więc szła ta sama ścieżka co w
-  appce (fetch → TanStack Query → widok → PATCH): scalenie kolumn przy 40HC, brak drugiego miejsca,
+  21 + 6 sprawdzeń **z podstawionym REST-em, nie z atrapą hooków**, więc szła ta sama ścieżka co w
+  appce (fetch → TanStack Query → widok → PATCH): cztery dni okna z właściwymi datami i kolumnami,
+  zlecenia z dnia −1 i +2 w swoich blokach, scalenie kolumn przy 40HC, brak drugiego miejsca,
   pamiątka wyliczona i nadpisana, odmowa 40HC na solówkę BEZ zapisu, 20DV na solówce zapisane,
   prawdziwe przeciąganie, zdjęcie z planu, upsert ładowności, przełączanie zakładek bez błędu
   strony. Baza — REST widzi nowe tabele i kolumny (brak PGRST204), insert bez sesji odbity przez
   RLS (42501), `loads` przez klucz publishable wraca puste mimo 6 wierszy (RLS działa).
+  **UWAGA przy uruchamianiu Playwrighta w tym środowisku**: wersja z `node_modules` szuka
+  chromium-1234, a zainstalowany jest 1194 — `chromium.launch({ executablePath: "/opt/pw-browsers/chromium" })`.
   **NIE zweryfikowane na żywym koncie** — pierwsze planowanie u właściciela pokaże resztę
   (środowisko sesji nie ma konta do zalogowania).
 - **Do dopytania właściciela przy pierwszym użyciu**: w arkuszu przy miejscowości stoi liczba

@@ -16,7 +16,7 @@ import type { Load } from "@/types/load";
 import type { PlanAbsence, PlanVehicle } from "@/types/plan";
 import type { FleetDriver, FleetVehicle } from "@/lib/fleet/fleetStore";
 import { normalizePlate, normalizeName } from "@/lib/fleet/fleetStore";
-import { nextWorkingDay } from "@/lib/dates/workingDays";
+import { nextWorkingDay, previousWorkingDay } from "@/lib/dates/workingDays";
 import { PLAN_SLOTS, isPlanSlot, isSolowka, loadOccupiesWholeSet, type PlanSlot } from "./slots";
 
 export interface PlanCell {
@@ -42,37 +42,55 @@ export interface PlanRowAbsence {
   absenceId: string | null;
 }
 
+/** Jeden dzień planu: kolumny eksportu z tego dnia i importu z następnego dnia roboczego. */
+export interface PlanDay {
+  dayExport: string;
+  dayImport: string;
+  /** Przesunięcie względem dnia, na którym stoi plan: -1 wczoraj, 0 dziś, 1 i 2 do przodu. */
+  offset: number;
+}
+
+/** Ten sam pojazd w jednym dniu okna. */
+export interface PlanRowBlock {
+  day: PlanDay;
+  eksport: PlanCell[];
+  import: PlanCell[];
+  /** Nieobecności obejmujące AKURAT ten dzień — auto bywa wolne tylko w części okna. */
+  absences: PlanRowAbsence[];
+}
+
 export interface PlanRow {
   plate: string;
   vehicleType: string;
   trailerPlate: string;
   driverName: string;
   payloadKg: number | null;
+  /** Nieobecności z całego okna — to, co stoi w nagłówku wiersza. */
   absences: PlanRowAbsence[];
   /** Pojazd z Panelu floty czy tablica wpisana tylko na zleceniu (podwykonawca, literówka). */
   inFleet: boolean;
-  eksport: PlanCell[];
-  import: PlanCell[];
+  blocks: PlanRowBlock[];
 }
 
 export interface PlanBoard {
-  /** Dzień, na którym stoi plan — kolumny eksportu. */
-  dayExport: string;
-  /** Następny dzień roboczy — kolumny importu. */
-  dayImport: string;
+  days: PlanDay[];
   rows: PlanRow[];
-  /** Zlecenia z tych dwóch dni bez pojazdu — boczna lista "do zaplanowania". */
+  /** Zlecenia z okna bez pojazdu (oraz te bez daty) — boczna lista "do zaplanowania". */
   unassigned: Load[];
 }
 
 export interface PlanBoardInput {
+  /** Dzień, na którym stoi plan (offset 0). */
   day: string;
-  /** WSZYSTKIE zlecenia — linia "po jakim imporcie" sięga poza wyświetlane dwa dni. */
+  /** WSZYSTKIE zlecenia — linia "po jakim imporcie" sięga poza wyświetlane dni. */
   loads: Load[];
   fleetVehicles: FleetVehicle[];
   fleetDrivers: FleetDriver[];
   planVehicles: PlanVehicle[];
   absences: PlanAbsence[];
+  /** Ile dni roboczych wstecz i w przód pokazać obok dnia bieżącego. */
+  daysBefore?: number;
+  daysAfter?: number;
 }
 
 function emptyCell(slot: PlanSlot): PlanCell {
@@ -236,18 +254,48 @@ function layoutSide(sideLoads: Load[], allLoads: Load[], plateKey: string, withM
   return cells;
 }
 
+/**
+ * Okno dni, które plan pokazuje naraz (właściciel: "-1 +2, jeden dzień do tyłu i 2 dni do przodu;
+ * resztę będziemy zaciągać z archiwum, zależy nam na wygodnej pracy"). Liczone w dniach ROBOCZYCH,
+ * nie kalendarzowych — w poniedziałek "dzień do tyłu" to piątek, a nie niedziela.
+ */
+export const PLAN_DAYS_BEFORE = 1;
+export const PLAN_DAYS_AFTER = 2;
+
+export function planWindowDays(day: string, before: number, after: number): PlanDay[] {
+  const offsets: string[] = [];
+  let cursor = day;
+  for (let i = 0; i < before; i++) {
+    cursor = previousWorkingDay(cursor);
+    offsets.unshift(cursor);
+  }
+  const wstecz = offsets.map((iso, index) => ({ iso, offset: index - before }));
+
+  const wprzod: { iso: string; offset: number }[] = [];
+  cursor = day;
+  for (let i = 1; i <= after; i++) {
+    cursor = nextWorkingDay(cursor);
+    wprzod.push({ iso: cursor, offset: i });
+  }
+
+  return [...wstecz, { iso: day, offset: 0 }, ...wprzod].map(({ iso, offset }) => ({
+    dayExport: iso,
+    dayImport: nextWorkingDay(iso),
+    offset,
+  }));
+}
+
 export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
-  const dayExport = input.day;
-  const dayImport = nextWorkingDay(input.day);
+  const days = planWindowDays(input.day, input.daysBefore ?? PLAN_DAYS_BEFORE, input.daysAfter ?? PLAN_DAYS_AFTER);
 
   const planByPlate = new Map(input.planVehicles.map((pv) => [normalizePlate(pv.vehicle_plate), pv]));
   const driverByName = new Map(input.fleetDrivers.map((d) => [normalizeName(d.name), d]));
 
-  const relevant = input.loads.filter(
-    (load) =>
-      (load.direction === "E" && load.load_date === dayExport) ||
-      (load.direction === "I" && load.load_date === dayImport)
-  );
+  const belongsTo = (load: Load, day: PlanDay): boolean =>
+    (load.direction === "E" && load.load_date === day.dayExport) ||
+    (load.direction === "I" && load.load_date === day.dayImport);
+
+  const relevant = input.loads.filter((load) => days.some((day) => belongsTo(load, day)));
 
   // Zlecenia BEZ daty ("Bez daty" w Zestawieniu — dokument jej nie podał albo nikt jej nie ustawił)
   // nie należą do żadnego dnia, więc nie wejdą do żadnej kolumny. Bez tego byłyby w planie
@@ -284,11 +332,29 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
     const planVehicle = planByPlate.get(key) ?? null;
     const mine = relevant.filter((load) => normalizePlate(load.vehicle_plate ?? "") === key);
 
-    // Kierowca: etatowy z ustawień planu, a gdy go nie ma — ten wpisany na dzisiejszych zleceniach.
+    // Kierowca: etatowy z ustawień planu, a gdy go nie ma — ten wpisany na zleceniach z okna.
     // Panel floty nie wiąże kierowcy z pojazdem, więc innego źródła nie ma.
     const driverName =
       planVehicle?.driver_name?.trim() || mine.map((l) => (l.driver_name ?? "").trim()).find(Boolean) || "";
     const driver = driverByName.get(normalizeName(driverName)) ?? null;
+
+    const blocks: PlanRowBlock[] = days.map((day) => {
+      const tego = mine.filter((load) => belongsTo(load, day));
+      return {
+        day,
+        eksport: layoutSide(tego.filter((l) => l.direction === "E"), input.loads, key, true),
+        import: layoutSide(tego.filter((l) => l.direction === "I"), input.loads, key, false),
+        absences: [
+          ...planAbsenceLabels(input.absences, key, day.dayExport),
+          ...fleetVacationLabels(driver, day.dayExport),
+        ],
+      };
+    });
+
+    // Nagłówek wiersza pokazuje nieobecności z całego okna, bez powtórek — auto bywa wolne tylko
+    // w części dni, a etykieta i tak niesie zakres dat.
+    const byLabel = new Map<string, PlanRowAbsence>();
+    for (const block of blocks) for (const absence of block.absences) byLabel.set(absence.label, absence);
 
     return {
       plate,
@@ -298,13 +364,9 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
       // Ładowność: wpis w planie wygrywa z Panelem floty (dyspozytor poprawia konkretne auto),
       // a gdy nikt nic nie wpisał — wartość z floty, jeśli to pole tam już jest.
       payloadKg: planVehicle?.payload_kg ?? payload,
-      absences: [
-        ...planAbsenceLabels(input.absences, key, dayExport),
-        ...fleetVacationLabels(driver, dayExport),
-      ],
+      absences: [...byLabel.values()],
       inFleet,
-      eksport: layoutSide(mine.filter((l) => l.direction === "E"), input.loads, key, true),
-      import: layoutSide(mine.filter((l) => l.direction === "I"), input.loads, key, false),
+      blocks,
     };
   });
 
@@ -313,7 +375,7 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
   const visible = rows.filter((row) => {
     const planVehicle = planByPlate.get(normalizePlate(row.plate));
     if (!planVehicle?.hidden) return true;
-    return row.eksport.some((c) => c.load) || row.import.some((c) => c.load);
+    return row.blocks.some((block) => block.eksport.some((c) => c.load) || block.import.some((c) => c.load));
   });
 
   const positionOf = (row: PlanRow): number =>
@@ -330,7 +392,7 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
     stableOrder
   );
 
-  return { dayExport, dayImport, rows: visible, unassigned };
+  return { days, rows: visible, unassigned };
 }
 
 /** Czy pojazd wiersza to solówka (nie weźmie 40/45) — używane przy podświetlaniu celu upuszczenia. */
