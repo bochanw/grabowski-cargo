@@ -1242,30 +1242,49 @@ aktualną wersję wtyczki"):
   gotowego do wgrania katalogu, a komunikat i instrukcja zmieniają się z wersją (brak / stara /
   aktualna / nowsza). `npm run build` przechodzi i paczka ląduje w `out/rozszerzenie/`.
 
+**`mail-poll` WDROŻONA (v16) — i przy okazji okazało się, że SKRZYNKA JUŻ DZIAŁA:**
+- **To koryguje wcześniejszy zapis „nie ma jeszcze danych dostępowych do Exchange'a".** Sekrety
+  Microsoftu są wpisane, cron chodzi co 2 minuty, a w bazie leży 892 przejrzanych wiadomości,
+  398 zapisanych, 94 propozycje w Skrzynce, 1 zlecenie przyjęte, 2 odrzucone. Odczyty, które
+  do tej pory były (`parse_source`), pochodzą WYŁĄCZNIE z guzika „Odczytaj przez Claude" — bo
+  wdrożona wersja nie znała ani nauczonych szablonów, ani nowych reguł.
+- **Wdrożone jako BUNDLE, nie jako 16 plików.** Powód jest narzędziowy: `deploy_edge_function`
+  przez MCP wymaga wklejenia treści WSZYSTKICH plików w jednym wywołaniu (~104 kB), a to nie mieści
+  się w limicie jednej odpowiedzi. Bundle (45 kB) mieści się z zapasem. Polecenie, którym powstał:
+
+      supabase/functions/mail-poll$ esbuild index.ts --bundle --format=esm --platform=neutral \
+        --target=esnext --charset=utf8 --external:'npm:*' --external:'jsr:*' --external:'node:*' \
+        --outfile=bundle.js
+
+  `--charset=utf8` jest OBOWIĄZKOWE: bez niego esbuild zamienia polskie znaki na `\uXXXX` i plik
+  puchnie czterokrotnie (dokładnie ta pułapka, która wysadziła poprzednią próbę wdrożenia).
+  `--packages=external` w `deno bundle` NIE działa — Deno i tak wchodzi w `node_modules` pdfjs-a
+  i wykłada się na opcjonalnej zależności `canvas`.
+- **Źródłem prawdy zostaje `supabase/functions/mail-poll/` w repo**; wdrożony plik ma na górze
+  komentarz, że jest artefaktem budowania. **Droga PREFEROWANA to nadal `supabase functions deploy
+  mail-poll --project-ref itlgexjhznjsbonzdxyg`** (wgrywa prawdziwe pliki, czytelne w Dashboardzie)
+  — ta sesja nie miała tokenu dostępowego Supabase, tylko MCP.
+- **Pułapka MCP: przy funkcji, która miała import mapę, trzeba PODAĆ `import_map_path` i dołączyć
+  `deno.json`** — inaczej deploy odbija się błędem „import map path does not exist" ze sklejoną
+  ścieżką z POPRZEDNIEJ wersji.
+- **Bajty NUL w `imap.ts` zamienione na sekwencję ucieczki** (`LITERAL_SEP`, commit efc6716):
+  nie widać ich w podglądzie, gubią się przy przenoszeniu treści (przy poprzednim wdrożeniu
+  zamieniły się na spacje), a git traktował przez nie plik jako binarny.
+- Sprawdzone po wdrożeniu: strzał kluczem publishable → 401 „Brak uprawnień do uruchomienia odczytu
+  skrzynki", zła metoda → 405 (czyli funkcja wstała i chodzi po naszym kodzie, z polskimi znakami
+  bez uszczerbku); `deno check` i 26 testów Deno przechodzi przed wdrożeniem.
+- **UWAGA — reguła „czytaj tylko oznaczone" WCHODZI W ŻYCIE DOPIERO TERAZ** (`only_marked = true`,
+  `marked_categories` puste = liczy się dowolne oznaczenie). Od tego wdrożenia mail z PDF-em staje
+  się propozycją nowego zlecenia TYLKO, gdy ma kategorię albo flagę; mail dotyczący ISTNIEJĄCEGO
+  zlecenia przechodzi jak dotąd. **Nie wnioskować z istniejących wierszy, że nikt nie oznacza** —
+  mają puste `categories`/`flagged`, bo poprzednia wersja tych kolumn w ogóle nie zapisywała.
+  Pierwszy przebieg po wdrożeniu pokaże realne oznaczenia; widać je w Skrzynce pod „Pokaż pominięte
+  maile".
+- **Nauczonych szablonów jest na razie ZERO** (`order_templates` puste) — auto-nauka czeka na
+  pierwsze zlecenia zapisane przez appkę od czasu jej wdrożenia. Do tego czasu poller czyta za
+  darmo tylko dokumenty Q4Road (szablon z kodu), reszta czeka na guzik „Odczytaj przez Claude".
+
 **Do zrobienia w kolejnej sesji:**
-1. **NAJPIERW: wdrożyć `mail-poll`** (właściciel: „wdroz mail-poll w kolejnej sesji"). Kod jest
-   w repo i przetestowany, brakuje tylko wdrożenia — dziś produkcja czyta maile bez nauczonych
-   szablonów, więc załącznik od znanego już spedytora niepotrzebnie czeka na płatny odczyt.
-   - Zrobić to JAKO PIERWSZE w sesji, zanim urośnie kontekst: `deploy_edge_function` przez MCP
-     wymaga wysłania KOMPLETU 16 plików w jednym wywołaniu (~100 kB) i pod koniec długiej sesji
-     nie mieści się w limicie jednej odpowiedzi. Wysyłać z polskimi znakami DOSŁOWNIE, nie jako
-     `\uXXXX` — sekwencje ucieczki puchną 4-krotnie i to one wysadziły poprzednią próbę.
-   - Pliki: `supabase/functions/mail-poll/` — `deno.json`, `index.ts`, `graph.ts`, `imap.ts`,
-     `imapSource.ts`, `mailSource.ts`, `pdfText.ts`, `relevance.ts` + `shared/` (7 plików:
-     `orderNumber`, `orderTemplates`, `parsedOrder`, `pickupLocations`, `q4road`, `readTemplate`,
-     `tare`). BEZ plików `*.test.ts`. `verify_jwt: false` (funkcja autoryzuje sama:
-     `x-ingest-secret` z crona albo sesja dyspozytora).
-   - Przed wdrożeniem: `node scripts/build-edge-shared.mjs` (gdyby `src/lib` się zmieniło) +
-     `deno check supabase/functions/mail-poll/index.ts`.
-   - Po wdrożeniu sprawdzić: strzał kluczem publishable ma dać 401 „Brak uprawnień do uruchomienia
-     odczytu skrzynki" (czyli funkcja wstała i chodzi po naszym kodzie), a `email_ingest_state`
-     po najbliższym przebiegu crona ma mieć świeże `last_ok_at` i `last_error = null`.
-   - Alternatywa dla właściciela, jeśli woli sam: `supabase functions deploy mail-poll
-     --project-ref itlgexjhznjsbonzdxyg`. **To jest droga PREFEROWANA**: wdrożenie przez MCP wymaga
-     przepisania treści plików, a `imap.ts` zawiera bajty NUL, które przy przepisywaniu zamieniają
-     się na spacje (patrz sekcja o oznaczonych mailach).
-   - W tym wdrożeniu jedzie też reguła „czytaj tylko oznaczone" (migracja 0024 już zaaplikowana),
-     więc dopóki go nie ma, skrzynka proponuje zlecenia z KAŻDEGO maila z PDF-em, jak dotąd.
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
    żeby opłacał się deterministyczny szablon zamiast płatnego odczytu.
