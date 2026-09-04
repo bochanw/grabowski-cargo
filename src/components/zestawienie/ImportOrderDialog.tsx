@@ -22,6 +22,8 @@ import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/
 import { describeBafSplit, splitBaf } from "@/lib/invoice/baf";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
 import { parseAdrSent, withAdrSent } from "@/lib/loads/adrSent";
+import { addressCellPatch } from "@/lib/loads/address";
+import { weighingCellPatch, weighingCellText } from "@/lib/loads/weighing";
 import { DIRECTION_OPTIONS, isDirection, isExportSide } from "@/lib/loads/direction";
 import { matchExistingLoad, type LoadMatch } from "@/lib/loads/orderNumber";
 import { loadToForm } from "@/lib/loads/loadToForm";
@@ -122,11 +124,13 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string,
     seal_number: form.seal_number || null,
     goods_name: form.goods_name || null,
     adr_flag: form.adr_sent || null,
-    // Ważenie: "czy" i "gdzie" osobno — `weighing_export` to kolumna R arkusza (miejsce), patrz
-    // migracja 0029. `weighing_required` przechodzi wprost, bo null ("dokument nie mówi") jest tu
-    // wartością samą w sobie i `|| null` zamieniłoby świadome "nie" w brak informacji.
-    weighing_required: form.weighing_required,
-    weighing_export: form.weighing_place || null,
+    // Ważenie: w formularzu i w tabeli JEDNO pole, w bazie dwie kolumny (miejsce = kolumna R
+    // arkusza, „czy" = migracja 0029). Rozkład robi weighingCellPatch — „tak"/„nie" wpisane w to
+    // pole są odpowiedzią, każdy inny tekst jest miejscem (i tym samym odpowiedzią „tak").
+    ...weighingCellPatch(
+      form.weighing_place ||
+        weighingCellText({ weighing_export: null, weighing_required: form.weighing_required })
+    ),
     net_weight_kg: form.net_weight_kg,
     gross_weight: form.gross_weight || null,
     submitted_when: form.submitted_when || null,
@@ -535,7 +539,14 @@ export function ImportOrderDialog({
       const next = withRecomputedGross({ ...prev, [key]: value }, key);
       // Reguła właściciela: uwagi ze słowem "Leasing" przestawiają gestię na "Leasing" — także gdy
       // dyspozytor dopisze to ręcznie w tym formularzu, nie tylko przy odczycie dokumentu.
-      return key === "notes" ? withLeasingShippingLine(next) : next;
+      if (key === "notes") return withLeasingShippingLine(next);
+      // Kod pocztowy nie jest osobnym polem (właściciel: „kod pocztowy powinien być w adresie") —
+      // wylicza się z adresu, więc każda poprawka adresu przelicza też jego. Od kodu zależy stawka
+      // dla kierowcy, a rozjazd „inny kod w adresie, inny w stawce" byłby niewidoczny.
+      if (key === "address") {
+        return { ...next, postal_code: addressCellPatch(String(value ?? "")).postal_code ?? "" };
+      }
+      return next;
     });
   }
 
@@ -1070,19 +1081,25 @@ export function ImportOrderDialog({
                   <input className={inputClass} value={form.city} onChange={(e) => updateField("city", e.target.value)} />
                 </Field>
 
-                <Field label="Adres">
-                  <input className={inputClass} value={form.address} onChange={(e) => updateField("address", e.target.value)} />
-                </Field>
-                {/* Kod pocztowy stoi przy adresie, bo stamtąd się bierze — ale jest osobnym polem,
-                    bo to on decyduje o stawce dla kierowcy (cennik `driver_rates`). */}
-                <Field label={`Kod pocztowy (${stopLabel})`}>
+                {/* Adres RAZEM z kodem pocztowym (właściciel: „kod pocztowy powinien być w
+                    adresie"). Kod nie ma osobnego pola — appka wyłuskuje go z tego tekstu, bo od
+                    niego liczy się stawka dla kierowcy; pod polem widać, co wyłuskała. */}
+                <Field label={`Adres ${stopGenitive} (z kodem pocztowym)`} full>
                   <input
-                    data-testid="pole-kod-pocztowy"
+                    data-testid="pole-adres"
                     className={inputClass}
-                    value={form.postal_code}
-                    onChange={(e) => updateField("postal_code", e.target.value)}
-                    placeholder="np. 05-500"
+                    value={form.address}
+                    onChange={(e) => updateField("address", e.target.value)}
+                    placeholder="np. ul. Magazynowa 3, 55-080 Kąty Wrocławskie"
                   />
+                  <span
+                    data-testid="kod-z-adresu"
+                    className={form.postal_code ? "text-zinc-500 dark:text-zinc-400" : "text-amber-700 dark:text-amber-500"}
+                  >
+                    {form.postal_code
+                      ? `Kod pocztowy z adresu: ${form.postal_code}`
+                      : "Brak kodu pocztowego w adresie — bez niego cennik nie poda stawki dla kierowcy."}
+                  </span>
                 </Field>
                 {/* Telefon ODBIORCY (nie kierowcy) — bywa w zleceniu i wtedy jest jedynym sposobem,
                     żeby kierowca dodzwonił się na miejsce rozładunku. */}
@@ -1206,31 +1223,32 @@ export function ImportOrderDialog({
                   </p>
                 </Field>
 
-                {/* Ważenie (właściciel: „brakuje opcji zaciągania / dopisania gdzie i czy wymagane
-                    jest ważenie"). Trzy stany, nie checkbox: „—" znaczy, że dokument o ważeniu nie
-                    mówi, i to co innego niż świadome „nie". Miejsce wpisywane jest wolnym tekstem,
-                    bo w dokumentach bywa i adresem wagi, i samą wskazówką („w porcie"). */}
-                <Field label="Ważenie wymagane">
-                  <select
-                    data-testid="pole-wazenie-wymagane"
-                    className={inputClass}
-                    value={form.weighing_required === null ? "" : form.weighing_required ? "true" : "false"}
-                    onChange={(e) =>
-                      updateField("weighing_required", e.target.value === "" ? null : e.target.value === "true")
-                    }
-                  >
-                    <option value="">— dokument nie mówi —</option>
-                    <option value="true">Tak — wymagane</option>
-                    <option value="false">Nie</option>
-                  </select>
-                </Field>
-                <Field label="Ważenie gdzie">
+                {/* Ważenie — JEDNO pole (właściciel: „ważenie już mamy kolumnę ważenie gdzie — to
+                    jest to samo"). Wpisane miejsce samo w sobie znaczy, że ważenie jest; „tak"
+                    zapisuje wymóg bez miejsca, „nie" — świadome zwolnienie, puste zostawia „dokument
+                    o tym nie mówi". Rozkład na dwie kolumny bazy: src/lib/loads/weighing.ts. */}
+                <Field label="Ważenie (gdzie / tak / nie)" full>
                   <input
-                    data-testid="pole-wazenie-gdzie"
+                    data-testid="pole-wazenie"
                     className={inputClass}
-                    value={form.weighing_place}
-                    onChange={(e) => updateField("weighing_place", e.target.value)}
-                    placeholder="np. w porcie, waga miejska Gdynia, SGS"
+                    // W polu stoi wpisany tekst; „Tak"/„Nie" pokazujemy tylko wtedy, gdy odpowiedź
+                    // jest znana, a miejsca nie ma. Rozkład na dwa pola bazy robi się przy ZAPISIE
+                    // — inaczej wpisywanie „Terminal…" zamieniałoby się w „Tak" po pierwszej literze.
+                    value={
+                      form.weighing_place ||
+                      weighingCellText({ weighing_export: null, weighing_required: form.weighing_required })
+                    }
+                    onChange={(e) => {
+                      const text = e.target.value;
+                      setForm((prev) => ({
+                        ...prev,
+                        weighing_place: text,
+                        weighing_required: text.trim() === "" ? null : prev.weighing_required,
+                      }));
+                    }}
+                    // Cudzysłów w atrybucie ZAWSZE jako encja/apostrof: polski „…" zamknąłby napis
+                    // (ta sama pułapka, która zepsuła background.js wtyczki).
+                    placeholder="np. w porcie, waga miejska Gdynia — albo: tak / nie"
                   />
                 </Field>
 

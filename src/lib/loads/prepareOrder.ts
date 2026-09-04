@@ -13,6 +13,7 @@ import { previousWorkingDay } from "@/lib/dates/workingDays";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
 import { extractPostalCode, formatPostalCode } from "@/lib/driverRates/rates";
+import { addressWithPostal } from "@/lib/loads/address";
 import type { ParsedOrder } from "@/types/parsedOrder";
 
 export interface OrderDefaults {
@@ -67,6 +68,14 @@ export function applyOrderDefaults(order: ParsedOrder): OrderDefaults {
   if (!next.postal_code) {
     const fromAddress = extractPostalCode([next.address, next.city].filter(Boolean).join(" "));
     if (fromAddress) next = { ...next, postal_code: formatPostalCode(fromAddress) };
+  }
+
+  // …a gdy kod przyszedł Z DOKUMENTU (model albo szukanie przy miejscowości), a w adresie go nie ma
+  // — dopisujemy go do adresu. Właściciel: „kod pocztowy powinien być w adresie", więc kod nie ma
+  // już własnego pola ani kolumny: to, co widać w adresie, jest tym, po czym liczy się stawka.
+  if (next.postal_code) {
+    const withCode = addressWithPostal(next.address, next.postal_code);
+    if (withCode !== next.address) next = { ...next, address: withCode };
   }
 
   // Stawki dla kierowcy TU NIE MA i to jest świadome: cennik przychodzi z bazy (asynchronicznie),

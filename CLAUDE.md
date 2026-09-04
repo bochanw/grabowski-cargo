@@ -2089,7 +2089,51 @@ pierwszej wersji stawek; słuszne):
   a przebieg crona po wdrożeniu kończy się bez błędu (`email_ingest_state.last_error` puste,
   `seen_total` rośnie). **Czego nie da się sprawdzić z tej sesji: czy kod faktycznie wyszedł
   z prawdziwego maila** — potrzeba nowego zlecenia w skrzynce; widać to będzie w Skrzynce przy
-  pierwszej propozycji (pole „Kod pocztowy" w oknie zlecenia).
+  pierwszej propozycji (pole „Kod pocztowy" w oknie zlecenia — od zmiany niżej: pole „Adres").
+
+**TRZY KOLUMNY SCALONE — bo powtarzały to, co już widać** (właściciel po obejrzeniu Zestawienia:
+„nie rozumiem, dlaczego wydzieliliśmy — przecież czy to jest import czy eksport widzimy od razu.
+Kod pocztowy powinien być w adresie, a ważenie już mamy kolumnę ważenie gdzie — to jest to samo"):
+- **Kolumna „Kierunek" USUNIĘTA.** Kierunek jest nagłówkiem bloku w dniu (KRAJÓWKA / EKSPORT /
+  IMPORT), więc kolumna powtarzała go przy każdym wierszu. Nie zginęła możliwość ZMIANY kierunku —
+  po to przy wierszu stoi nowy guzik **„Popraw"**: to samo okno co przy imporcie, z rekordem
+  wczytanym do pól (`mode="edit"`, istniało od dawna, tylko nikt go stamtąd nie otwierał). Jest to
+  też droga do pól, których w tabeli nie ma.
+- **Kolumna „Kod pocztowy" USUNIĘTA — kod jest częścią adresu.** `loads.postal_code` ZOSTAJE
+  w bazie (liczy się z niego stawka kierowcy, filtry go szukają), ale nikt go już nie wypełnia
+  osobno: wylicza się z adresu (`src/lib/loads/address.ts`). Komórka „Adres" pokazuje adres razem
+  z kodem (dopisuje go, gdy w treści adresu go nie ma — tak przychodzi z odczytu dokumentu),
+  edytor startuje od TEGO SAMEGO tekstu, a Enter zapisuje adres i wyliczony z niego kod jednym
+  PATCH-em (razem z przeliczoną stawką). Dzięki temu nie da się mieć w adresie jednego kodu, a
+  w stawce drugiego. `applyOrderDefaults` dopisuje kod do adresu przy KAŻDYM wejściu pól do
+  formularza (jedyny lejek — patrz regresja domyślnej daty), więc dotyczy to też Skrzynki.
+  W oknie zlecenia zamiast pola „Kod pocztowy" jest zdanie pod adresem: jaki kod appka wyłuskała
+  albo że go nie ma (a wtedy cennik nie poda stawki).
+- **Ważenie w JEDNEJ kolumnie** (`weighing_export`, etykieta „Ważenie"). W komórce stoi miejsce,
+  a gdy miejsca nie znamy — samo „Tak"/„Nie"; pusto dalej znaczy „dokument o tym nie mówi" i NIE
+  jest odpowiedzią „nie". Wpisany tekst rozkłada się na dwie kolumny bazy (`src/lib/loads/
+  weighing.ts`): „tak"/„nie" to sama odpowiedź, każdy inny tekst to miejsce (i tym samym „tak"),
+  puste kasuje jedno i drugie. Obie kolumny bazy zostają — `weighing_required` niesie odpowiedź
+  także bez miejsca i po niej filtruje się dzień. W oknie zlecenia też jedno pole zamiast dwóch.
+- **BEZ migracji i bez zmian schematu** — zmieniło się to, co widać i co wypełnia człowiek, nie to,
+  co stoi w bazie. Zapisane ustawienia widoku (`user_view_settings`) same przestają pokazywać
+  usunięte kolumny: `resolveColumns` odsiewa klucze, których nie ma w `COLUMNS`.
+- Sprawdzone w bazie PRZED zmianą (żeby nie scalać na ślepo): z 10 zleceń 4 mają kod pocztowy,
+  3 z nich mają go też w adresie, a ważenie jest wszędzie puste — czyli scalenie niczego nie gubi.
+- **Pułapka (trzeci raz w tym repo): polski cudzysłów „…" wewnątrz napisu w `"…"` ZAMYKA napis.**
+  Trafiło w placeholder JSX i w plik testu; w JSX złapał to `tsc`, w teście `node --check`. Cytat
+  w atrybucie albo w napisie zapisywać przez apostrofy, nie przez `"`.
+- **Zweryfikowane**: logika — 27 sprawdzeń (`scratch-kolumny.test.mts`, plik tymczasowy: dopisanie
+  kodu, adres z innym kodem, round-trip „to, co widać, zapisuje się bez zmian", trzy stany ważenia,
+  reguły wejściowe, stawka licząca się z kodu stojącego w adresie). Przeglądarka (Playwright,
+  `next dev`, tymczasowa strona `/test-kolumny`, skasowana po teście) — 27 sprawdzeń NA PRAWDZIWEJ
+  ŚCIEŻCE (podstawiony wyłącznie `fetch`, bo środowisko sesji nie ma konta): brak trzech kolumn,
+  nagłówki bloków na miejscu, kod dopisany do adresu, edycja adresu zapisująca kod i stawkę jednym
+  PATCH-em, „nie"/miejsce w ważeniu, guzik „Popraw" otwierający okno i przestawiający kierunek na
+  krajówkę. `npm run build` przechodzi.
+- **NIE zweryfikowane na żywym koncie** (środowisko sesji nie ma konta): zapis z produkcji.
+  `mail-poll` nie wymaga wdrożenia — cała zmiana jest po stronie przeglądarki; propozycja ze
+  skrzynki dostaje kod dopisany do adresu w oknie zlecenia i to wystarczy.
 
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
