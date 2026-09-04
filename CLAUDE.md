@@ -1350,6 +1350,20 @@ pojazdach):
   prawdziwe zlecenie** (podpowiedź nie może schować cudzej pracy); i podpowiedź liczy się z CAŁEGO
   `loads`, nie z okna — import z pierwszego dnia okna należy do sekcji, której już nie widać, więc
   bez tego pierwsza sekcja byłaby ślepa.
+- **„Na pusto do:" na podpowiedzi z importu** (właściciel: „jeżeli składamy na pusto, dodaj
+  możliwość wyboru gdzie składamy — jeżeli jest nie zaplanowany"). Lista `EMPTY_DROP_LOCATIONS`
+  (GCT / BCT / BHub / Depot — bez „Poimport", bo to pochodzenie kontenera, nie miejsce zdania)
+  zapisuje `submitted_where` NA TYM IMPORCIE, czyli tę samą kolumnę co „Złożenie gdzie"
+  w Zestawieniu — wybór widać po obu stronach i wchodzi do dziennika zmian. Wartość spoza listy
+  (np. „zgodnie z instrukcjami armatora") zostaje jako dodatkowa opcja. Pole znika, gdy na kontener
+  dołożono ładunek — wtedy nie jedzie na pusto. `stopPropagation` na `<select>` jest konieczne:
+  komórka pod spodem jest celem kliknięcia przy wstawianiu zlecenia.
+- **Kafelek IMPORTU niesie komplet** (właściciel: „dodaj wagę brutto przy imporcie, odprawa,
+  adr/sent, spedycja zlecająca"): `gross_weight` (czysta liczba formatowana na „24 500 kg", tekst
+  typu „według armatora" zostaje dosłownie), `customs_status`, `adr_flag` jako czerwona plakietka
+  i `forwarder`. **Eksport zostaje zwięzły** — te cztery pola są tylko po stronie importu, na to
+  jest test-straż. Kolumna `adr_flag` w Zestawieniu ma teraz etykietę „ADR/SENT" (to jedno pole na
+  oba oznaczenia, wartość wpisuje dyspozytor).
 - **Nic nie ginie**: kontener wypchnięty przez czterdziestkę i „trzeci na zestawie" lądują w
   czerwonym pasku „Nie mieści się na zestawie" przy kafelku; pojazd z tablicy, której nie ma w
   Panelu floty, dostaje własny wiersz („spoza Panelu floty"); **zlecenie BEZ DATY** trafia do
@@ -1378,7 +1392,7 @@ pojazdach):
 - **Zweryfikowane**: logika — 50 sprawdzeń (`scratch-plan.test.mts`, plik tymczasowy; jedno złapało
   realny błąd: kontener wypchnięty przez czterdziestkę liczył się dwa razy). Przeglądarka
   (Playwright, `next dev`, tymczasowe strony `/test-plan` i `/test-widoki`, usunięte po teście) —
-  26 + 6 sprawdzeń **z podstawionym REST-em, nie z atrapą hooków**, więc szła ta sama ścieżka co w
+  31 + 6 sprawdzeń **z podstawionym REST-em, nie z atrapą hooków**, więc szła ta sama ścieżka co w
   appce (fetch → TanStack Query → widok → PATCH): cztery dni okna z właściwymi datami i kolumnami,
   zlecenia z dnia −1 i +2 w swoich blokach, scalenie kolumn przy 40HC, brak drugiego miejsca,
   pamiątka wyliczona i nadpisana, odmowa 40HC na solówkę BEZ zapisu, 20DV na solówce zapisane,

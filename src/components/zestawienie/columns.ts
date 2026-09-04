@@ -73,7 +73,8 @@ export const COLUMNS: ColumnDef[] = [
   { key: "settled_weight_kg", label: "Waga (rozl.)", block: "rozliczenie", align: "right", kind: "number" },
   { key: "delivery_or_customs", label: "Dostawa/odprawa", block: "rozliczenie" },
   { key: "rate_misc", label: "Stawka (inne)", block: "rozliczenie" },
-  { key: "adr_flag", label: "ADR", block: "rozliczenie" },
+  // Jedno pole na oba oznaczenia — właściciel mówi o nim "adr/sent"; wartość wpisuje dyspozytor.
+  { key: "adr_flag", label: "ADR/SENT", block: "rozliczenie" },
   { key: "gct_leasing_addons", label: "GCT leasing dodatki", block: "rozliczenie", align: "right", kind: "number" },
   { key: "freight_base_amount", label: "Stawka bazowa", block: "rozliczenie", align: "right", kind: "number" },
   { key: "baf_percentage", label: "%BAF", block: "rozliczenie", align: "right", kind: "number" },

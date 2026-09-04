@@ -110,6 +110,21 @@ export function PlanView() {
     [updateLoad]
   );
 
+  /**
+   * "Na pusto do:" na podpowiedzi z importu — zapisuje `submitted_where` na TYM imporcie
+   * (właściciel: "jeżeli składamy na pusto, dodaj możliwość wyboru gdzie składamy — jeżeli jest
+   * nie zaplanowany"). To ta sama kolumna co "Złożenie gdzie" w Zestawieniu, więc wybór widać
+   * po obu stronach i trafia do dziennika zmian.
+   */
+  const setDropOff = useCallback(
+    async (load: Load, value: string) => {
+      const err = await updateLoad(load.id, { submitted_where: value.trim() || null });
+      if (err) setMessage({ text: `Nie udało się zapisać miejsca złożenia: ${err}`, kind: "error" });
+      else setMessage(null);
+    },
+    [updateLoad]
+  );
+
   const handleDrop = useCallback(
     (event: React.DragEvent, target: DropTarget) => {
       event.preventDefault();
@@ -178,6 +193,7 @@ export function PlanView() {
           {cell.load ? (
             <PlanTile
               load={cell.load}
+              direction={direction}
               memory={cell.memory}
               memoryIsManual={cell.memoryIsManual}
               selected={selectedId === cell.load.id}
@@ -189,7 +205,10 @@ export function PlanView() {
               }
             />
           ) : cell.carriedFrom && !selected ? (
-            <PlanCarryTile load={cell.carriedFrom} />
+            <PlanCarryTile
+              load={cell.carriedFrom}
+              onDropOffChange={(value) => void setDropOff(cell.carriedFrom!, value)}
+            />
           ) : (
             <div className="min-h-[46px] rounded border border-dashed border-zinc-200 text-center text-[11px] leading-[46px] text-zinc-300 dark:border-zinc-800 dark:text-zinc-700">
               {selected
