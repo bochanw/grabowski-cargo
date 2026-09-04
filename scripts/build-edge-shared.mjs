@@ -29,6 +29,9 @@ const TARGETS = {
     "src/lib/orderTemplates/pickupLocations.ts": "pickupLocations.ts",
     "src/lib/orderTemplates/q4road.ts": "q4road.ts",
     "src/lib/orderTemplates/index.ts": "orderTemplates.ts",
+    // Nauczone szablony (auto-nauka): do Deno jedzie TYLKO połowa CZYTAJĄCA (readTemplate.ts).
+    // Uczy się wyłącznie przeglądarka — serwer ma stosować gotowe reguły, nie wyprowadzać nowych.
+    "src/lib/orderTemplates/readTemplate.ts": "readTemplate.ts",
     "src/lib/dates/workingDays.ts": "workingDays.ts",
     "src/lib/loads/orderNumber.ts": "orderNumber.ts",
   },

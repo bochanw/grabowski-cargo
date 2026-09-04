@@ -16,6 +16,7 @@
 // probabilistycznym):
 //   1. prefiltr BEZ modelu — czy ten mail w ogóle dotyczy zleceń,
 //   2. znany szablon (regex na tekście z pdf.js) — darmowy, deterministyczny,
+//   2b. szablon NAUCZONY z wcześniej zapisanych zleceń (migracja 0023) — też darmowy,
 //   3. Claude (parse-order-pdf) — TYLKO z guzika w Skrzynce, nigdy stąd (patrz niżej).
 // Mail, który nie przejdzie punktu 1, NIE kosztuje ani grosza.
 //
@@ -31,6 +32,7 @@ import { type MailSource, MailSourceError } from "./mailSource.ts";
 import { assessRelevance, MIN_ORDER_NUMBER_LENGTH, normalizeOrderNumber } from "./relevance.ts";
 import { extractPdfText } from "./pdfText.ts";
 import { matchKnownTemplate } from "./shared/orderTemplates.ts";
+import { matchLearnedTemplate, type LearnedTemplateLike } from "./shared/readTemplate.ts";
 import { previousWorkingDay } from "./shared/workingDays.ts";
 import {
   EMPTY_PARSED_ORDER,
@@ -127,6 +129,15 @@ Deno.serve(async (req: Request) => {
 
   try {
     const { data: state } = await admin.from("email_ingest_state").select("*").eq("id", true).single();
+
+    // Szablony NAUCZONE z zapisanych zleceń (migracja 0023). Skrzynka używa ich tak samo jak ręczny
+    // import — i to tutaj są najbardziej warte: mail przychodzi sam, więc bez nich każdy załącznik
+    // spoza ręcznie napisanych szablonów czekałby na płatny odczyt z kliknięcia człowieka.
+    const { data: learnedRows } = await admin
+      .from("order_templates")
+      .select("id,label,forwarder_name,forwarder_nip,doc_kind,labels,rules,status")
+      .eq("status", "aktywny");
+    const learnedTemplates = (learnedRows ?? []) as LearnedTemplateLike[];
     const fetched = await source.fetchSince(String(state?.cursor ?? ""), MAX_MESSAGES_PER_RUN);
 
     // Zbiory do dopasowania maila do istniejącego zlecenia — pobrane RAZ na przebieg, nie per mail.
@@ -214,9 +225,17 @@ Deno.serve(async (req: Request) => {
             attachmentError = `tekst z PDF-a: ${(e as Error).message}`;
           }
           const template = text ? matchKnownTemplate(text) : null;
+          const learned = template || !text ? null : matchLearnedTemplate(text, learnedTemplates);
           if (template) {
             parsed = template.parsed;
             parseSource = template.name;
+          } else if (learned && learned.missing.length === 0) {
+            // Nauczony szablon jest darmowy i deterministyczny, więc wchodzi przed modelem.
+            // Warunek "komplet kluczowych pól" jest ten sam co w oknie importu (decyzja
+            // właściciela) — niekompletny odczyt zostawia maila do przejrzenia zamiast tworzyć
+            // propozycję z dziurami.
+            parsed = learned.parsed;
+            parseSource = learned.template.label;
           } else {
             // 2) Odczyt przez Claude JEST PŁATNY i NIE dzieje się tutaj.
             //
@@ -227,7 +246,11 @@ Deno.serve(async (req: Request) => {
             //
             // Mail zostaje w kolejce z pustym `parse_source` — to jest dla appki znak "jeszcze
             // nieodczytany" i podstawa, żeby pokazać ten guzik.
-            warnings.push(`${pdf.filename}: dokument spoza znanych szablonów — kliknij „Odczytaj przez Claude" w Skrzynce, gdy będzie potrzebny.`);
+            warnings.push(
+              learned
+                ? `${pdf.filename}: nauczony szablon „${learned.template.label}" nie odczytał kompletu pól (brakuje: ${learned.missing.join(", ")}) — kliknij „Odczytaj przez Claude" w Skrzynce, gdy będzie potrzebny.`
+                : `${pdf.filename}: dokument spoza znanych szablonów — kliknij „Odczytaj przez Claude" w Skrzynce, gdy będzie potrzebny.`
+            );
           }
 
           if (parsed) {

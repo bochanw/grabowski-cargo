@@ -20,8 +20,10 @@ import { type ColumnDef } from "./columns";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { ActivityLogPanel } from "./ActivityLogPanel";
 import { SkrzynkaPanel } from "./SkrzynkaPanel";
+import { useOrderTemplates } from "@/hooks/useOrderTemplates";
 import { useEmailInbox } from "@/hooks/useEmailInbox";
 import { ContractorsDialog } from "./ContractorsDialog";
+import { OrderTemplatesDialog } from "./OrderTemplatesDialog";
 import { LoadDocumentsDialog } from "./LoadDocumentsDialog";
 import { removeStoredFilesForLoad, useLoadDocuments } from "@/hooks/useLoadDocuments";
 import { InvoiceDialog } from "./InvoiceDialog";
@@ -141,6 +143,7 @@ type Dialog =
   | { kind: "import" }
   | { kind: "attach"; load: Load }
   | { kind: "contractors" }
+  | { kind: "templates" }
   | { kind: "view" }
   | { kind: "invoice"; loadIds: string[] }
   | { kind: "documents"; load: Load };
@@ -152,8 +155,14 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   // Licznik przy guziku „Skrzynka" — zlecenie z maila ma się rzucać w oczy samo, bez
   // zaglądania do panelu. Hook jest tu, a nie w panelu, bo licznik musi żyć także zamknięty.
   const { data: inboxMessages } = useEmailInbox();
+  // Licznik przy guziku „Szablony": ile układów appka czyta już sama, bez płatnego odczytu.
+  const { data: orderTemplates } = useOrderTemplates();
+  const activeTemplates = (orderTemplates ?? []).filter((t) => t.status === "aktywny").length;
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Co appka wyniosła z ostatniego zapisu dla przyszłych dokumentów (auto-nauka szablonów) —
+  // pokazywane w pasku, żeby nauka nie działa się w ukryciu przed dyspozytorem.
+  const [learnNote, setLearnNote] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -455,6 +464,15 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
         )}
         {saveError || bhubError ? (
           <span className="text-xs text-red-600">{saveError ?? bhubError}</span>
+        ) : learnNote ? (
+          <button
+            type="button"
+            onClick={() => setLearnNote(null)}
+            title="Kliknij, żeby schować"
+            className="text-left text-xs text-emerald-700 dark:text-emerald-400"
+          >
+            {learnNote}
+          </button>
         ) : (
           selectedLoads.length === 0 && (
             <span className="hidden text-xs text-zinc-400 xl:inline">Kliknij komórkę, żeby edytować — Enter zapisuje, Esc anuluje.</span>
@@ -498,6 +516,14 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           </button>
           <button
             type="button"
+            onClick={() => setDialog({ kind: "templates" })}
+            title="Układy dokumentów, których appka nauczyła się sama — te zlecenia czyta bez płatnego odczytu"
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-400"
+          >
+            Szablony{activeTemplates > 0 ? ` (${activeTemplates})` : ""}
+          </button>
+          <button
+            type="button"
             onClick={() => setIsInboxOpen((open) => !open)}
             title="Zlecenia odczytane ze skrzynki firmowej, czekające na zatwierdzenie"
             className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
@@ -534,9 +560,15 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
       </div>
 
       {dialog?.kind === "import" && (
-        <ImportOrderDialog recentLoads={recentLoads} onSaved={checkAfterSave} onClose={() => setDialog(null)} />
+        <ImportOrderDialog
+          recentLoads={recentLoads}
+          onSaved={checkAfterSave}
+          onLearned={(notes) => setLearnNote(notes.join(" "))}
+          onClose={() => setDialog(null)}
+        />
       )}
       {dialog?.kind === "contractors" && <ContractorsDialog onClose={() => setDialog(null)} />}
+      {dialog?.kind === "templates" && <OrderTemplatesDialog onClose={() => setDialog(null)} />}
       {dialog?.kind === "view" && (
         <ViewSettingsDialog measureColumnWidths={measureColumnWidths} onClose={() => setDialog(null)} />
       )}
@@ -560,6 +592,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
           existingLoad={dialog.load}
           recentLoads={recentLoads.filter((l) => l.id !== dialog.load.id)}
           onSaved={checkAfterSave}
+          onLearned={(notes) => setLearnNote(notes.join(" "))}
           onClose={() => setDialog(null)}
         />
       )}

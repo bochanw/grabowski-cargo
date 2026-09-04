@@ -1,4 +1,6 @@
 import { supabase } from "./client";
+import { extractPdfText } from "@/lib/pdf/extractPdfText";
+import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
 import { parseOrderPdf, parseOrderText } from "./parseOrderPdf";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import { previousWorkingDay } from "@/lib/dates/workingDays";
@@ -20,7 +22,7 @@ import type { EmailMessage } from "@/types/emailMessage";
 // zwracać dane do formularza.
 
 export type OdczytResult =
-  | { ok: true; parsed: ParsedOrder; source: string; warnings: string[] }
+  | { ok: true; parsed: ParsedOrder; source: string; warnings: string[]; documents: LearningDocument[] }
   | { ok: false; error: string };
 
 /** Załącznik maila w Storage — tyle, ile trzeba, żeby pobrać plik i nazwać go w komunikacie. */
@@ -49,6 +51,9 @@ async function pobierzPlik(zalacznik: Zalacznik): Promise<File | null> {
 export async function readEmailWithClaude(mail: EmailMessage, zalaczniki: Zalacznik[]): Promise<OdczytResult> {
   const warnings: string[] = [];
   const sources: string[] = [];
+  // Materiał do auto-nauki: mail przyszedł sam, więc bez tego zlecenia ze skrzynki NIGDY nie
+  // nauczyłyby appki żadnego układu — a to właśnie one powtarzają się najczęściej.
+  const documents: LearningDocument[] = [];
   let merged: ParsedOrder = mail.parsed ?? EMPTY_PARSED_ORDER;
   let cokolwiek = false;
 
@@ -69,6 +74,14 @@ export async function readEmailWithClaude(mail: EmailMessage, zalaczniki: Zalacz
     merged = mergeParsedOrders(merged, wynik.parsed);
     sources.push(`${plik.name} — odczyt przez Claude`);
     cokolwiek = true;
+    // Tekst wyciągamy TERAZ, kiedy plik i tak jest pobrany. Skan bez warstwy tekstowej po prostu
+    // nie da się nauczyć — nie jest to błąd odczytu (model dostał oryginalny PDF).
+    try {
+      const text = await extractPdfText(plik);
+      if (text) documents.push({ text, fileName: plik.name, source: `${plik.name} — odczyt przez Claude` });
+    } catch {
+      // trudno — nauka jest dodatkiem, odczyt się udał
+    }
   }
 
   // Mail bez załączników bywa samą informacją („rozładunek przesuwamy na piątek") — wtedy do
@@ -113,5 +126,5 @@ export async function readEmailWithClaude(mail: EmailMessage, zalaczniki: Zalacz
   // raz. Dyspozytor straci najwyżej podgląd w Skrzynce po zamknięciu okna.
   if (error) warnings.push(`Odczyt się udał, ale nie zapisał się w Skrzynce: ${error.message}`);
 
-  return { ok: true, parsed: merged, source, warnings };
+  return { ok: true, parsed: merged, source, warnings, documents };
 }

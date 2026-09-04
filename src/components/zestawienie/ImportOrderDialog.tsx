@@ -5,6 +5,9 @@ import { supabase } from "@/lib/supabase/client";
 import { extractPdfText } from "@/lib/pdf/extractPdfText";
 import { parseOrderPdf } from "@/lib/supabase/parseOrderPdf";
 import { matchKnownTemplate } from "@/lib/orderTemplates";
+import { matchLearnedTemplate } from "@/lib/orderTemplates/readTemplate";
+import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
+import { useLearnFromDocuments, useOrderTemplates } from "@/hooks/useOrderTemplates";
 import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { previousWorkingDay } from "@/lib/dates/workingDays";
 import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
@@ -130,6 +133,8 @@ export function ImportOrderDialog({
   initialParsed,
   mode = existingLoad ? "edit" : "import",
   recentLoads = [],
+  onLearned,
+  initialLearningDocs = [],
 }: {
   onClose: () => void;
   /**
@@ -148,6 +153,13 @@ export function ImportOrderDialog({
   mode?: "import" | "edit" | "attach";
   /** Istniejące zlecenia od najnowszego — fallback "z poprzedniego zlecenia" dla pól floty. */
   recentLoads?: Load[];
+  /** Co appka wyniosła z tego zapisu dla przyszłych dokumentów (auto-nauka szablonów). */
+  onLearned?: (notes: string[]) => void;
+  /**
+   * Teksty dokumentów odczytanych POZA tym oknem (Skrzynka) — żeby zlecenie z maila uczyło appkę
+   * tak samo jak wgrane ręcznie. Bez tego nauka pomijałaby najczęstszą drogę zleceń.
+   */
+  initialLearningDocs?: LearningDocument[];
 }) {
   const { data: fleetData } = useFleet();
   const fleet: Fleet = fleetData ?? EMPTY_FLEET;
@@ -181,6 +193,11 @@ export function ImportOrderDialog({
   const [forceNew, setForceNew] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const uploadDocument = useUploadLoadDocument();
+  const { data: orderTemplates = [] } = useOrderTemplates();
+  const learnFromDocuments = useLearnFromDocuments();
+  // Teksty wgranych dokumentów — appka uczy się z nich DOPIERO po udanym zapisie, kiedy wiadomo,
+  // co dyspozytor faktycznie zatwierdził (patrz src/lib/orderTemplates/autoLearn.ts).
+  const [learningDocs, setLearningDocs] = useState<LearningDocument[]>(initialLearningDocs);
 
   // Jedno zlecenie to u klienta zwykle DWA dokumenty (zlecenie spedycyjne + list przewozowy dla
   // kierowcy) — można wgrać oba naraz albo dopiąć drugi później (także do już zapisanego zlecenia);
@@ -212,6 +229,7 @@ export function ImportOrderDialog({
     // zachowane jako załączniki") — KAŻDY wgrany plik, także ten, którego nie udało się odczytać:
     // dyspozytor przepisze z niego pola ręcznie, ale sam dokument ma być pod ręką.
     const newAttachments: PendingAttachment[] = [];
+    const newLearningDocs: LearningDocument[] = [];
 
     for (const file of files) {
       setProgress(`Odczytywanie ${file.name}…`);
@@ -229,26 +247,56 @@ export function ImportOrderDialog({
       //    natychmiastowe i deterministyczne. Do modelu idzie tylko to, czego nie umiemy sami.
       const match = text ? matchKnownTemplate(text) : null;
       let source: string | null = null;
+      let usedTemplateId: string | undefined;
+      let templateOutput: ParsedOrder | undefined;
       if (match) {
         absorb(match.parsed, file.name, match.name);
         source = match.name;
       } else {
-        // 2. Fallback: odczyt przez Claude (Edge Function parse-order-pdf). Nierozpoznany dokument
-        //    nadal nie jest błędem — jeśli i to nie zadziała, pola zostają do ręcznego wpisania.
-        setProgress(`${file.name}: nieznany szablon — czytam przez Claude…`);
-        const result = await parseOrderPdf(file);
-        if (result.ok) {
-          source = `${file.name} — odczyt przez Claude`;
-          absorb(result.parsed, file.name, source);
+        // 2. Szablon NAUCZONY z wcześniejszych zleceń tego spedytora — też darmowy i
+        //    deterministyczny, więc idzie przed modelem. Wchodzi tylko wtedy, gdy odczytał komplet
+        //    kluczowych pól (decyzja właściciela); niekompletny odczyt oddaje sprawę Claude'owi,
+        //    zamiast zostawiać dziury w zleceniu.
+        const learned = text ? matchLearnedTemplate(text, orderTemplates) : null;
+        if (learned && learned.missing.length === 0) {
+          source = learned.template.label;
+          usedTemplateId = learned.template.id;
+          templateOutput = learned.parsed;
+          absorb(learned.parsed, file.name, source);
         } else {
-          newWarnings.push(
-            extractError
-              ? `${file.name}: nie udało się odczytać pliku PDF (${extractError}), a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
-              : `${file.name}: nie rozpoznano znanego szablonu, a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
-          );
+          if (learned) {
+            newWarnings.push(
+              `${file.name}: nauczony szablon „${learned.template.label}" nie odczytał kompletu pól (brakuje: ${learned.missing.join(", ")}) — czytam ten dokument przez Claude.`
+            );
+          }
+          // 3. Fallback: odczyt przez Claude (Edge Function parse-order-pdf). Nierozpoznany dokument
+          //    nadal nie jest błędem — jeśli i to nie zadziała, pola zostają do ręcznego wpisania.
+          setProgress(`${file.name}: nieznany szablon — czytam przez Claude…`);
+          const result = await parseOrderPdf(file);
+          if (result.ok) {
+            source = `${file.name} — odczyt przez Claude`;
+            absorb(result.parsed, file.name, source);
+          } else {
+            newWarnings.push(
+              extractError
+                ? `${file.name}: nie udało się odczytać pliku PDF (${extractError}), a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
+                : `${file.name}: nie rozpoznano znanego szablonu, a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
+            );
+          }
         }
       }
       newAttachments.push({ file, kind: guessDocumentKind(file.name, source), parseSource: source });
+      // Materiał do nauki zbieramy dla KAŻDEGO dokumentu z warstwą tekstową — także wpisanego
+      // ręcznie po nieudanym odczycie: to wtedy dyspozytor podaje appce wzorcowe wartości.
+      if (text) {
+        newLearningDocs.push({
+          text,
+          fileName: file.name,
+          source: source ?? "wpisane ręcznie",
+          usedTemplateId,
+          templateOutput,
+        });
+      }
     }
     setProgress("");
 
@@ -319,6 +367,7 @@ export function ImportOrderDialog({
 
     const allRecognized = [...recognized, ...newRecognized];
     setAttachments((prev) => [...prev, ...newAttachments]);
+    setLearningDocs((prev) => [...prev, ...newLearningDocs]);
     setForm(order);
     setRecognized(allRecognized);
     setNotice(
@@ -495,6 +544,13 @@ export function ImportOrderDialog({
       setStage("review");
       return;
     }
+
+    // AUTO-NAUKA — dopiero tutaj, bo dopiero teraz wiadomo, co dyspozytor ZATWIERDZIŁ. To jest cała
+    // różnica wobec uczenia się z odpowiedzi modelu: appka dopasowuje do tekstu dokumentu wartości
+    // sprawdzone przez człowieka, a nie to, co model zgadł. Nauka nigdy nie blokuje zapisu — gdyby
+    // padła, zlecenie i tak jest zapisane.
+    const notes = await learnFromDocuments(learningDocs, form);
+    if (notes.length > 0) onLearned?.(notes);
 
     // Dopiero po UDANYM zapisie — mail w Skrzynce ma zostać do przejrzenia, jeśli zapis padł.
     await onSaved?.(loadId);

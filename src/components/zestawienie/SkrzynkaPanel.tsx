@@ -10,6 +10,7 @@ import type { EmailMessage } from "@/types/emailMessage";
 import type { Load } from "@/types/load";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import { readEmailWithClaude } from "@/lib/supabase/readEmailWithClaude";
+import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
 
 const TIME_FORMATTER = new Intl.DateTimeFormat("pl-PL", {
   day: "2-digit",
@@ -53,6 +54,9 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
   // patrz komentarz w src/lib/supabase/readEmailWithClaude.ts (skrzynka robiła to sama i przez
   // jedną noc wyczerpała środki w Claude Console).
   const [czytany, setCzytany] = useState<string | null>(null);
+  // Teksty załączników odczytanych przez Claude — po zapisie zlecenia appka uczy się z nich układu
+  // dokumentu, żeby kolejny mail od tego spedytora był darmowy (patrz autoLearn.ts).
+  const [materialDoNauki, setMaterialDoNauki] = useState<LearningDocument[]>([]);
 
   async function odczytajPrzezClaude(mail: EmailMessage) {
     setCzytany(mail.id);
@@ -70,6 +74,7 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
     }
     // Otwieramy formularz od razu — dyspozytor zapłacił za ten odczyt, więc ma go zobaczyć,
     // a nie szukać po panelu. Wynik jest już zapisany przy mailu, więc drugie wejście jest darmowe.
+    setMaterialDoNauki(wynik.documents);
     setOpenMail({ ...mail, parsed: wynik.parsed, parse_source: wynik.source });
   }
 
@@ -239,11 +244,19 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
           puste pola, więc nie nadpisze tego, co ktoś już poprawił ręcznie. */}
       {openMail && (
         <ImportOrderDialog
+          // Klucz per wiadomość: bez niego React zachowałby stan formularza (i materiał do nauki)
+          // przy przejściu z jednego maila na drugi.
+          key={openMail.id}
           mode={matchedLoad ? "attach" : "import"}
           existingLoad={matchedLoad}
           initialParsed={openMail.parsed ?? undefined}
+          initialLearningDocs={materialDoNauki}
           recentLoads={loads}
-          onClose={() => setOpenMail(null)}
+          onLearned={(notes) => setNotice(notes.join(" "))}
+          onClose={() => {
+            setOpenMail(null);
+            setMaterialDoNauki([]);
+          }}
           onSaved={async (loadId) => {
             await setStatus(openMail.id, "accepted");
             // Załącznik maila JUŻ leży w Storage (bucket `order-emails`, zapisał go `mail-poll`) —
