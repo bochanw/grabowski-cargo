@@ -203,7 +203,7 @@ export function ImportOrderDialog({
    * załączniki po numerze zlecenia). Pierwsze wchodzi do formularza, reszta czeka w kolejce i
    * zapisuje się po kolei — `externalIds` mówi, które załączniki maila należą do którego zlecenia.
    */
-  initialOrders?: { parsed: ParsedOrder; externalIds: string[] }[];
+  initialOrders?: { parsed: ParsedOrder; externalIds: string[]; warnings?: string[] }[];
   /**
    * ŹRÓDŁO pól, których nikt tu nie wgrywał — treść maila i jego załączniki leżące już w Storage
    * (Skrzynka). Właściciel: "odczytując zlecenia z maila nie widzę źródła, więc nie jestem w stanie
@@ -231,7 +231,12 @@ export function ImportOrderDialog({
   // Zlecenia czekające w kolejce (drugie i dalsze z tej samej paczki dokumentów/maila) oraz licznik
   // już zapisanych — z tego bierze się pasek „Zlecenie 2 z 3".
   const [queue, setQueue] = useState<PendingOrder[]>(() =>
-    (initialOrders ?? []).slice(1).map((order) => ({ ...EMPTY_PENDING, parsed: order.parsed, externalIds: order.externalIds }))
+    (initialOrders ?? []).slice(1).map((order) => ({
+      ...EMPTY_PENDING,
+      parsed: order.parsed,
+      externalIds: order.externalIds,
+      warnings: order.warnings ?? [],
+    }))
   );
   const [savedInBatch, setSavedInBatch] = useState(0);
   // Załączniki tego zlecenia leżące już w Storage (mail) — po zapisie podpina je wołający.
@@ -240,7 +245,7 @@ export function ImportOrderDialog({
   const [contractorId, setContractorId] = useState(existingLoad?.contractor_id ?? "");
   const [recognized, setRecognized] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<string[]>(initialOrders?.[0]?.warnings ?? []);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
   const [dragging, setDragging] = useState(false);

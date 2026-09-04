@@ -1588,6 +1588,26 @@ oznaczać, a nie z góry wywalać"):
   „Już w Zestawieniu", mail z samym kontenerem tylko jako podpowiedź, mail o nieznanym zleceniu bez
   oznaczenia, komunikat mówiący wprost, że mail zostaje, i to, że ŻADEN mail nie znika z listy.
 
+**TREŚĆ MAILA jest teraz czytana ZAWSZE, nie tylko przy mailu bez załącznika** (pytanie właściciela:
+„czy program czyta także treść maila? tam czasami są informacje o dodatkowej stawce, przesunięciu"):
+- Stan przed zmianą: treść była zapisywana, pokazywana (guzik „Treść maila", zakładka w podglądzie
+  źródła) i używana do POWIĄZANIA maila ze zleceniem (prefiltr `mail-poll`), ale do modelu szła
+  TYLKO wtedy, gdy mail nie miał żadnego załącznika. Mail z PDF-em i dopiskiem „stawka +200" albo
+  „rozładunek przesuwamy na piątek" był więc czytany bez tego dopisku.
+- Teraz „Odczytaj przez Claude" czyta dokumenty ORAZ treść. Tekst kosztuje ułamek odczytu PDF-a
+  i dalej rusza wyłącznie z kliknięcia (zasada z incydentu z Claude Console bez zmian).
+- **Dokument wygrywa, rozbieżność jest ostrzeżeniem, nie cichym nadpisaniem.** Mail bywa nowszy
+  („przesuwamy na piątek"), ale bywa też źle odczytany — a wartość z dokumentu da się sprawdzić
+  w podglądzie źródła obok. Dla ośmiu pól, przy których to ma znaczenie (data, godzina, stawka,
+  termin płatności, kontener, numer zlecenia, podjęcie, cut off) appka pisze wprost: „Treść maila
+  mówi X, a dokument Y — zostawiam wartość z dokumentu, popraw ręcznie, jeśli mail jest nowszy".
+- Pola z treści dochodzą do formularza przez `ordersFromAttachments`: przy JEDNYM zleceniu na mailu
+  scalają się z polami dokumentów (dokument pierwszy). Przy KILKU zleceniach nie są przypisywane —
+  pola maila są wtedy zlepkiem kilku zleceń, więc appka mówi o tym w ostrzeżeniu i odsyła do
+  zakładki „Treść maila", zamiast zgadywać, do którego zlecenia dopisek należy.
+- Zweryfikowane: 18 sprawdzeń logiki (`scratch-grupy.test.mts` — w tym oba nowe przypadki: treść
+  dochodzi do jedynego zlecenia, a przy kilku zleceniach nie dochodzi, ale zostawia ostrzeżenie).
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

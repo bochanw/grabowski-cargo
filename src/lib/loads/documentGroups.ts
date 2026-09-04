@@ -107,13 +107,16 @@ export interface AttachmentLike {
  *    swojego. Nieodczytane dokumenty dopinamy do pierwszego zlecenia, żeby oryginał nie został
  *    w skrzynce bez powiązania.
  */
-export function ordersFromAttachments(
-  mailParsed: ParsedOrder | null,
-  attachments: AttachmentLike[]
-): { parsed: ParsedOrder; externalIds: string[] }[] {
+export interface MailOrder {
+  parsed: ParsedOrder;
+  externalIds: string[];
+  warnings: string[];
+}
+
+export function ordersFromAttachments(mailParsed: ParsedOrder | null, attachments: AttachmentLike[]): MailOrder[] {
   const odczytane = attachments.filter((a) => a.parsed);
   if (odczytane.length === 0) {
-    return mailParsed ? [{ parsed: mailParsed, externalIds: attachments.map((a) => a.id) }] : [];
+    return mailParsed ? [{ parsed: mailParsed, externalIds: attachments.map((a) => a.id), warnings: [] }] : [];
   }
 
   const groups = groupDocumentsByOrder(
@@ -124,9 +127,21 @@ export function ordersFromAttachments(
     }))
   );
   const nieodczytane = attachments.filter((a) => !a.parsed).map((a) => a.id);
+
+  // TREŚĆ MAILA niesie zwykle informację DO zlecenia („stawka +200", „przesuwamy na piątek"), a jej
+  // odczyt siedzi w polach maila (`email_messages.parsed`) obok pól z dokumentów. Gdy mail dotyczy
+  // JEDNEGO zlecenia, dokładamy je tutaj — dokument wygrywa, treść uzupełnia to, czego w nim nie ma.
+  // Przy kilku zleceniach na jednym mailu tego nie robimy: pola maila są wtedy zlepkiem kilku
+  // zleceń i przypisanie ich do któregokolwiek byłoby zgadywaniem — mówimy o tym wprost.
+  const wielozleceniowy = groups.length > 1;
   return groups.map((group, index) => ({
-    parsed: group.parsed,
+    parsed: !wielozleceniowy && mailParsed ? mergeParsedOrders(group.parsed, mailParsed) : group.parsed,
     externalIds:
       index === 0 ? [...group.documents.map((d) => d.payload), ...nieodczytane] : group.documents.map((d) => d.payload),
+    warnings: wielozleceniowy
+      ? [
+          'Ten mail niesie kilka zleceń, więc informacji z jego TREŚCI (np. zmiana terminu, dodatkowa stawka) appka nie przypisała automatycznie — sprawdź zakładkę „Treść maila” w podglądzie źródła obok.',
+        ]
+      : [],
   }));
 }

@@ -21,6 +21,22 @@ import type { EmailMessage } from "@/types/emailMessage";
 // maila NIC nie kosztuje. To jest cały powód, dla którego ta funkcja pisze do bazy, zamiast tylko
 // zwracać dane do formularza.
 
+/**
+ * Pola, przy których rozbieżność „dokument vs treść maila" ma znaczenie dla pracy dyspozytora
+ * (termin, kwota, kontener, terminal). Reszta pól bywa w mailu skrótem myślowym i porównywanie ich
+ * dawałoby szum zamiast informacji.
+ */
+const POROWNYWANE: [keyof ParsedOrder, string][] = [
+  ["delivery_date", "data rozładunku/załadunku"],
+  ["delivery_time", "godzina"],
+  ["rate_amount", "stawka"],
+  ["payment_terms_days", "termin płatności (dni)"],
+  ["container_number", "numer kontenera"],
+  ["order_number", "numer zlecenia"],
+  ["pickup_type", "podjęcie"],
+  ["submitted_when", "data złożenia (cut off)"],
+];
+
 export type OdczytResult =
   | { ok: true; parsed: ParsedOrder; source: string; warnings: string[]; documents: LearningDocument[] }
   | { ok: false; error: string };
@@ -94,9 +110,12 @@ export async function readEmailWithClaude(mail: EmailMessage, zalaczniki: Zalacz
     }
   }
 
-  // Mail bez załączników bywa samą informacją („rozładunek przesuwamy na piątek") — wtedy do
-  // modelu idzie tekst, co kosztuje ułamek odczytu PDF-a.
-  if (zalaczniki.length === 0 && (mail.body_text ?? "").trim()) {
+  // TREŚĆ MAILA czytamy ZAWSZE, nie tylko gdy nie ma załączników (właściciel: „czy program czyta
+  // także treść maila? tam czasami są informacje o dodatkowej stawce, przesunięciu etc").
+  // Wcześniej mail z PDF-em szedł do modelu bez treści, więc dopisek „stawka +200" albo
+  // „rozładunek przesuwamy na piątek" nie docierał do formularza — a to zwykle NOWSZA informacja
+  // niż sam dokument. Tekst kosztuje ułamek odczytu PDF-a i rusza wyłącznie z kliknięcia.
+  if ((mail.body_text ?? "").trim()) {
     const tresc = [
       `Temat: ${mail.subject ?? ""}`,
       `Od: ${mail.from_name ?? ""} <${mail.from_email ?? ""}>`,
@@ -105,6 +124,18 @@ export async function readEmailWithClaude(mail: EmailMessage, zalaczniki: Zalacz
     ].join("\n");
     const wynik = await parseOrderText(tresc);
     if (wynik.ok) {
+      // ROZBIEŻNOŚCI mówimy wprost, zamiast po cichu nadpisywać. Mail bywa nowszy niż dokument
+      // („przesuwamy na piątek"), ale bywa też źle odczytany — a wartość z dokumentu jest
+      // sprawdzalna w podglądzie źródła. Dlatego dokument zostaje, a różnica trafia do ostrzeżeń
+      // i dyspozytor rozstrzyga ją jednym kliknięciem w polu.
+      for (const [pole, etykieta] of POROWNYWANE) {
+        const zDokumentu = merged[pole];
+        const zTresci = wynik.parsed[pole];
+        if (!zDokumentu || !zTresci || String(zDokumentu) === String(zTresci)) continue;
+        warnings.push(
+          `Treść maila mówi „${etykieta}: ${zTresci}", a dokument „${zDokumentu}" — zostawiam wartość z dokumentu. Jeśli mail jest nowszy, popraw pole ręcznie.`
+        );
+      }
       merged = mergeParsedOrders(merged, wynik.parsed);
       sources.push("treść maila — odczyt przez Claude");
       cokolwiek = true;
