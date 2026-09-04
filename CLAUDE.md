@@ -1558,6 +1558,36 @@ przed rozładunkiem)"):
   którą zgłosił właściciel. **Test sprawdzony też odwrotnie**: po cofnięciu poprawki pole „Data"
   faktycznie wychodzi puste, czyli test łapie tę regresję, a nie tylko potwierdza poprawkę.
 
+**„Mimo utworzenia zlecenia dalej je widzę i chcę drugi raz wpisać" — Skrzynka OZNACZA, nie chowa**
+(zgłoszenie właściciela + doprecyzowanie: „mogą być dodane informacje poprzednio dodane, trzeba to
+oznaczać, a nie z góry wywalać"):
+- **Nie było to zawieszone oznaczanie maila jako przyjęty** — sprawdzone w bazie: statusy ustawiają
+  się poprawnie (7 maili `accepted`, ostatni co do sekundy zgodny z ostatnim zleceniem). Przyczyna
+  jest inna: **TO SAMO zlecenie przychodzi w KILKU mailach** (wątek, ponowna wysyłka, osobny mail
+  z listem przewozowym), a zaakceptowanie jednego nie mówi nic o pozostałych. Konkret z produkcji:
+  mail „Zlecenie transportowe / SRAF0376131 / CSNU1921289" wisiał jako nowy, choć zlecenie z tym
+  kontenerem było w Zestawieniu od rana.
+- **`matched_load_id` od pollera na to nie wystarcza**: dopasowuje po TEKŚCIE maila w chwili
+  odczytu, więc zlecenie utworzone PÓŹNIEJ (albo z numerem, którego w mailu nie było — w tym
+  przypadku numer zlecenia wyszedł z odczytu jako „2090 PLN z 13%baf") nigdy się nie dopasuje.
+  Skrzynka liczy więc dopasowanie NA BIEŻĄCO z aktualnej listy zleceń, tą samą regułą, którą okno
+  importu chroni przed duplikatem (numer — także z przestawionymi członami — a w drugiej kolejności
+  kontener).
+- **Mail zostaje na liście**, bo bywa nośnikiem NOWYCH informacji (zmiana terminu, dosłany
+  dokument) — dostaje tylko oznaczenie: zielone „Już w Zestawieniu jako …" przy dopasowaniu po
+  numerze (guzik zmienia się na „Dopnij do …", który wypełnia wyłącznie PUSTE pola) albo niebieskie
+  „Możliwe, że to zlecenie …" przy samym kontenerze (ten sam kontener wraca po tygodniach na inne
+  zlecenie, więc appka tego nie przesądza). Ukrycie maila zostaje decyzją dyspozytora („Odrzuć").
+- **Migracja 0028** (ZAAPLIKOWANA): `email_attachments` miało politykę tylko na SELECT, więc zapis
+  odczytu PER ZAŁĄCZNIK z przeglądarki („Odczytaj przez Claude") szedł w pustkę — RLS odfiltrowuje
+  wiersze, a PostgREST zwraca wtedy sukces z zerem zmienionych wierszy, czyli błędu nie widać.
+  Bez tej polityki rozdzielanie maila na kilka zleceń działałoby tylko dla dokumentów odczytanych
+  przez pollera (service_role omija RLS).
+- Zweryfikowane w przeglądarce (Playwright, tymczasowa strona `/test-skrzynka` z mailami
+  wstrzykniętymi do cache TanStack Query) — 5 sprawdzeń: mail z tym samym numerem oznaczony jako
+  „Już w Zestawieniu", mail z samym kontenerem tylko jako podpowiedź, mail o nieznanym zleceniu bez
+  oznaczenia, komunikat mówiący wprost, że mail zostaje, i to, że ŻADEN mail nie znika z listy.
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

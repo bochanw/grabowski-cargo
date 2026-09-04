@@ -11,6 +11,7 @@ import type { Load } from "@/types/load";
 import { ImportOrderDialog } from "./ImportOrderDialog";
 import type { SourceItem } from "./SourcePreview";
 import { ordersFromAttachments } from "@/lib/loads/documentGroups";
+import { matchExistingLoad } from "@/lib/loads/orderNumber";
 import { normalizeParsedOrder, type ParsedOrder } from "@/types/parsedOrder";
 import { readEmailWithClaude } from "@/lib/supabase/readEmailWithClaude";
 import type { LearningDocument } from "@/lib/orderTemplates/autoLearn";
@@ -197,9 +198,35 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
     if (error) setNotice(`Nie udało się odrzucić: ${error}`);
   }
 
-  const matchedLoad = openMail?.matched_load_id
-    ? loads.find((l) => l.id === openMail.matched_load_id)
-    : undefined;
+  /**
+   * Czy zlecenie z tego maila JEST JUŻ w Zestawieniu.
+   *
+   * Zgłoszenie właściciela: „mimo utworzenia zlecenia dalej je widzę i chcę drugi raz wpisać" —
+   * bo to samo zlecenie przychodzi w KILKU mailach (wątek, ponowna wysyłka, osobny mail z listem
+   * przewozowym). Zaakceptowanie jednego maila nie mówi nic o pozostałych.
+   *
+   * `matched_load_id` od pollera nie wystarcza: dopasowuje po TEKŚCIE maila w chwili odczytu, więc
+   * zlecenie utworzone PÓŹNIEJ (albo z numerem, którego w treści nie było) nie zostanie złapane.
+   * Dlatego liczymy to na bieżąco z aktualnej listy zleceń — tą samą regułą, którą okno importu
+   * chroni przed duplikatem (numer, także z przestawionymi członami, a w drugiej kolejności kontener).
+   */
+  function rozpoznajZlecenie(mail: EmailMessage): { load: Load; reason: string; pewne: boolean } | null {
+    if (mail.matched_load_id) {
+      const load = loads.find((l) => l.id === mail.matched_load_id);
+      if (load) return { load, reason: mail.match_reason ?? "powiązany z tym zleceniem", pewne: true };
+    }
+    if (!mail.parsed) return null;
+    const match = matchExistingLoad(loads, {
+      order_number: mail.parsed.order_number,
+      container_number: mail.parsed.container_number,
+    });
+    return match ? { load: match.load, reason: match.reason, pewne: match.auto } : null;
+  }
+
+  const rozpoznane = openMail ? rozpoznajZlecenie(openMail) : null;
+  // Do okna wchodzi jako "dopnij" tylko dopasowanie PEWNE (numer zlecenia). Sam kontener bywa
+  // wspólny dla dwóch różnych zleceń po tygodniach, więc tam decyzję podejmuje dyspozytor w oknie.
+  const matchedLoad = rozpoznane?.pewne ? rozpoznane.load : undefined;
 
   return (
     <>
@@ -346,7 +373,8 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
           )}
 
           {messages?.map((mail) => {
-            const linkedLoad = mail.matched_load_id ? loads.find((l) => l.id === mail.matched_load_id) : undefined;
+            const znane = rozpoznajZlecenie(mail);
+            const linkedLoad = znane?.pewne ? znane.load : undefined;
             return (
               <div key={mail.id} className="border-b border-zinc-100 px-3 py-2 text-xs dark:border-zinc-900">
                 <div className="flex items-baseline justify-between gap-2">
@@ -409,6 +437,31 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
                       <li key={warning} className="break-words">⚠ {warning}</li>
                     ))}
                   </ul>
+                )}
+
+                {znane && (
+                  <div
+                    data-testid="juz-w-zestawieniu"
+                    className={`mt-1.5 rounded border px-2 py-1 text-[11px] ${
+                      znane.pewne
+                        ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                        : "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200"
+                    }`}
+                  >
+                    {znane.pewne ? (
+                      <>
+                        <b>Już w Zestawieniu</b> jako {znane.load.order_number || "zlecenie bez numeru"} ({znane.reason}).
+                        Mail ZOSTAJE — może nieść nowe informacje (zmiana terminu, dosłany dokument).
+                        „Dopnij" wypełni tylko PUSTE pola tego zlecenia i niczego nie nadpisze; drugiego
+                        rekordu nie twórz.
+                      </>
+                    ) : (
+                      <>
+                        Możliwe, że to zlecenie <b>{znane.load.order_number || "(bez numeru)"}</b> — {znane.reason}.
+                        Sprawdź w oknie, zanim utworzysz nowe.
+                      </>
+                    )}
+                  </div>
                 )}
 
                 <div className="mt-2 flex flex-wrap gap-2">
