@@ -68,14 +68,26 @@ export interface IsoTypeInfo {
   family: ContainerFamily | null;
 }
 
-/** Rozbiór kodu ISO 6346 typu "22G1", "45G1", "22U1", "L5G1". */
+// STARY, LICZBOWY zapis typu — tak podaje BCT ("2210" zamiast "22G1"). Dwa ostatnie znaki to
+// wtedy grupa typu wg ISO 6346 sprzed zapisu literowego. Mapujemy WYŁĄCZNIE dwie grupy, których
+// jesteśmy pewni (0x i 1x to kontenery uniwersalne, z wentylacją i bez) — reszta zostaje "nie
+// wiem". To nie jest ostrożność na wyrost: rodzina decyduje o tym, co appka wpisze w "Wielkość",
+// a zgadnięty open top pojechałby na dokumencie przewozowym.
+const ISO_NUMERIC_FAMILY: Record<string, ContainerFamily> = { "0": "DV", "1": "DV" };
+
+/** Rozbiór kodu ISO 6346 typu "22G1", "45G1", "22U1", "L5G1" oraz liczbowego "2210". */
 export function parseIsoType(raw: string | null | undefined): IsoTypeInfo {
   const code = cleanCode(raw);
   if (code.length < 2) return { lengthFeet: null, highCube: false, family: null };
+  const liczbowy = code.length >= 4 && /^[0-9]{2}$/.test(code.slice(2, 4));
   return {
     lengthFeet: ISO_LENGTH_FEET[code[0]] ?? null,
     highCube: ISO_HIGH_CUBE.has(code[1]),
-    family: code.length >= 3 ? (ISO_TYPE_FAMILY[code[2]] ?? null) : null,
+    family: liczbowy
+      ? (ISO_NUMERIC_FAMILY[code[2]] ?? null)
+      : code.length >= 3
+        ? (ISO_TYPE_FAMILY[code[2]] ?? null)
+        : null,
   };
 }
 
@@ -143,7 +155,7 @@ export function isoToOrderSize(raw: string | null | undefined): string | null {
   // („LINK") wychodziło jako kontener 45-stopowy, bo pierwszy znak „L" znaczy w normie 45 stóp.
   // Ta sama klasa błędu wpisała kiedyś do bazy „LINK" i „LEFT" jako typ kontenera (patrz ISO_CODE
   // w supabase/functions/bhub-status/parse.ts) — tu jest jej druga, niezależna straż.
-  if (!/^[24L][0-9CDEF][ABGHKNPRSTUV][0-9A-Z]$/.test(cleanCode(raw))) return null;
+  if (!/^[24L][0-9CDEF](?:[ABGHKNPRSTUV][0-9A-Z]|[0-9]{2})$/.test(cleanCode(raw))) return null;
   const { lengthFeet, highCube, family } = parseIsoType(raw);
   if (lengthFeet === null) return null;
   if (lengthFeet === 45) return "45";

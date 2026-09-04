@@ -1,11 +1,12 @@
-// Trzy kontrole na karcie kontenera z Baltic Hub — zgłoszenie właściciela:
+// Kontrole na karcie kontenera z terminala — zgłoszenia właściciela:
 //
 //   1. „Time Out" ma być PUSTY. Niepusty znaczy, że kontener opuścił już terminal, więc plan
 //      podjęcia jest nieaktualny → trójkącik przy numerze kontenera.
 //   2. „Commodity Weight" (waga zgłoszona do Urzędu Celnego) ma równać się „Cargo Weight" (waga
 //      towaru). Różnica to sprawa na odprawę → trójkącik przy numerze kontenera.
-//   3. Waga brutto i netto z terminala są nadrzędne: pogrubiamy je, a gdy ZLECENIE mówi co innego —
-//      dodatkowo trójkącik.
+//   3. „Wagi, gestie, wielkości NADPISUJEMY ale musimy alarmować że się nie pokrywają ze
+//      zleceniem" — wartość terminala wchodzi do kolumny, a to, co mówiło zlecenie, zostaje
+//      w `terminal_conflicts` (migracja 0032) i to ono zapala trójkącik.
 //
 // Osobny plik od `cellDecoration.ts`, bo to są reguły o DANYCH (dają się sprawdzić jedną tabelką
 // wejść i wyjść), a tamten mówi już o klasach CSS i dymkach.
@@ -26,8 +27,51 @@ export interface BhubWarning {
 
 type CheckedLoad = Pick<
   Load,
-  "bhub_time_out" | "bhub_net_weight_kg" | "bhub_commodity_weight_kg" | "bhub_gross_weight_kg" | "net_weight_kg" | "gross_weight"
+  | "bhub_time_out"
+  | "bhub_net_weight_kg"
+  | "bhub_commodity_weight_kg"
+  | "bhub_gross_weight_kg"
+  | "net_weight_kg"
+  | "gross_weight"
+  | "terminal_conflicts"
 >;
+
+/**
+ * Kolumny, które terminal NADPISUJE (właściciel: „Wagi, gestie, wielkości nadpisujemy ale musimy
+ * alarmować że się nie pokrywają ze zleceniem"). Wartość, którą miało zlecenie PRZED nadpisaniem,
+ * siedzi w `terminal_conflicts` (migracja 0032) — i to ona jest jedynym śladem rozbieżności,
+ * bo w samej kolumnie stoi już liczba terminala.
+ */
+export const NADPISYWANE_KOLUMNY = ["gross_weight", "net_weight_kg", "container_size", "shipping_line"] as const;
+export type NadpisywanaKolumna = (typeof NADPISYWANE_KOLUMNY)[number];
+
+export function jestNadpisywana(key: string): key is NadpisywanaKolumna {
+  return (NADPISYWANE_KOLUMNY as readonly string[]).includes(key);
+}
+
+/** Co mówiło ZLECENIE, zanim terminal nadpisał tę kolumnę. `null` = nie było rozbieżności. */
+export function wartoscZeZlecenia(load: Pick<Load, "terminal_conflicts">, key: string): string | null {
+  const konflikty = load.terminal_conflicts;
+  if (!konflikty || typeof konflikty !== "object") return null;
+  const wartosc = (konflikty as Record<string, unknown>)[key];
+  if (wartosc === null || wartosc === undefined) return null;
+  const tekst = String(wartosc).trim();
+  return tekst === "" ? null : tekst;
+}
+
+/**
+ * Konflikty bez kolumny, którą właśnie poprawia CZŁOWIEK — ręczna poprawka jest świadomym
+ * „widziałem, tak ma być", więc gasi alarm. To jedyne miejsce, które kasuje wpisy: gdyby robił to
+ * także terminal, alarm znikałby po kwadransie, zanim ktokolwiek zdążyłby go zobaczyć.
+ */
+export function bezKonfliktu(
+  load: Pick<Load, "terminal_conflicts">,
+  keys: readonly string[]
+): Record<string, unknown> {
+  const konflikty = { ...((load.terminal_conflicts ?? {}) as Record<string, unknown>) };
+  for (const key of keys) delete konflikty[key];
+  return konflikty;
+}
 
 /** Czy dwie wagi to ta sama waga. `null` po którejkolwiek stronie = „nie wiem", nigdy „różne". */
 export function compareWeights(a: number | null | undefined, b: number | null | undefined): WeightAgreement {

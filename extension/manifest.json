@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Grabowski — statusy kontenerów",
-  "version": "1.0.10",
+  "version": "1.1.0",
   "description": "Sprawdza statusy kontenerów w Baltic Hub z przeglądarki dyspozytora i zapisuje je przy zleceniach.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvZcpdVfasGSdEj+TIMo9dbV2IY5IIqsOu6/ebOktbzvNllpUfS7Ieoymi3fhxFCTpn8lMEWIOBie3Cvgn9gyRAxscEaUqCLm9leqzNej7XGP+zSdW9YzcSx+ttoCbc0FDTFizfuOg23tVUoJQGZH7hdccZwIS9E0EuvBtyMjatxBLrzi8gR0gYVsyzhG8C9+3sRsc0/WG6BWfZOh6qFph2oZKwhMBmuX8WUfVhTDUPBCnBQHh0pbeHGiNNifnHep4aONJ/HaT1fVdb1kHFAgucuJcIiAkJx2PtFOBNE+gidxGJZzkWjgtOxuHkakkcj9rRtpDhEzEUIBrrFQVETyYwIDAQAB",
   "permissions": ["storage", "alarms", "tabs", "scripting", "notifications", "debugger"],
   "host_permissions": [
     "https://baltichub.com/*",
+    "https://ebrama.bct.ictsi.com/*",
+    "https://terminal.gct.pl/*",
     "https://itlgexjhznjsbonzdxyg.supabase.co/*"
   ],
   "background": {

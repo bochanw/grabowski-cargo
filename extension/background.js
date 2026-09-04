@@ -17,6 +17,7 @@
 // ============================================================
 
 import { konto, ustawienia, wywolaj, zaloguj, wyloguj } from "./api.js";
+import { konfiguracjaTerminala } from "./config.js";
 import { wpiszJakCzlowiek } from "./input.js";
 import { odpowiedzDotyczyNas } from "./odpowiedz.js";
 
@@ -160,7 +161,8 @@ async function wejdzNaStrone(kartaId, adres, host) {
  * Podział jest celowy: reguły odczytu terminala mają być w JEDNYM miejscu, po stronie serwera,
  * żeby poprawka nie wymagała aktualizacji rozszerzenia na każdym komputerze.
  */
-async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
+async function zapytajTerminal(kartaId, terminal, numery, proba = 1) {
+  const adres = terminal.adres;
   // Czekamy na host Z USTAWIEŃ, nie na wpisane na sztywno "baltichub" — adres jest polem w oknie
   // rozszerzenia właśnie po to, żeby dało się go przestawić przy kolejnym terminalu.
   const host = new URL(adres).host;
@@ -216,14 +218,14 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   let wyslane;
   if (wsk.ok) {
     try {
-      const zaufane = await wpiszJakCzlowiek(kartaId, wsk, numery.join(", "), narzedzia);
+      const zaufane = await wpiszJakCzlowiek(kartaId, wsk, numery.join(terminal.rozdzielnik), narzedzia);
       wyslane = {
         wyslane: true,
         sposob: zaufane.sposob,
         tryb: `${ustawienie.opis ?? "?"} :: ${wsk.tryb ?? "?"}`,
         pole: wsk.opisPola,
         guzik: wsk.opisGuzika,
-        wpisano: numery.join(", "),
+        wpisano: numery.join(terminal.rozdzielnik),
         wpolu: zaufane.wpolu,
         fokusKarty: zaufane.fokusKarty,
         kandydaci: wsk.kandydaci,
@@ -260,7 +262,11 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   // i zabierał migawkę o sekundę za wcześnie — dane były na ekranie, a przy zleceniu lądowało
   // „Baltic Hub nie zna kontenera". Karta albo „Brak wyników dla: <nasz numer>" to jedyne dwa
   // stany, które faktycznie kończą wyszukiwanie.
-  const dotyczyNas = (s) => odpowiedzDotyczyNas(s.tekst ?? "", numery);
+  // Odpowiedź jest nasza, gdy widać NASZ numer ORAZ ślad, którego na pustej stronie nie ma
+  // (karta kontenera / nagłówek tabeli wyników — patrz `markerWynikow` w config.js). Sam numer nie
+  // wystarcza: u GCT numery wpisujemy w pole tekstowe, którego treść też jest w tekście strony.
+  const marker = new RegExp(terminal.markerWynikow, "i");
+  const dotyczyNas = (s) => odpowiedzDotyczyNas(s.tekst ?? "", numery) && marker.test(s.tekst ?? "");
   let wyniki = await czekaj(kartaId, "wyniki", dotyczyNas, CZEKANIE_NA_PIERWSZE_MS);
 
   // Drugie podejście: Enter w polu. Na tej stronie kontrolka uruchamiająca wyszukiwanie NIE jest
@@ -285,9 +291,9 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
     // nie zdążyła się uruchomić; terminal oddaje wtedy samo „Brak wyników:" bez numeru). Druga
     // próba na świeżo wczytanej stronie zwykle wraca z kartą, więc zanim zapiszemy błąd przy
     // zleceniu, próbujemy raz jeszcze. Przy zagadce nie ma sensu — tam czeka się na człowieka.
-    if (wyniki.stan.gotowe && !zagadka && !zgodaWisi && proba < 2) {
+    if (marker.test(wyniki.stan.tekst ?? "") && !zagadka && !zgodaWisi && proba < 2) {
       await spij(2000);
-      return zapytajTerminal(kartaId, adres, numery, proba + 1);
+      return zapytajTerminal(kartaId, terminal, numery, proba + 1);
     }
 
     throw bladZeSzczegolami(
@@ -318,7 +324,7 @@ async function zapytajTerminal(kartaId, adres, numery, proba = 1) {
   // w ogóle zadziałało — a to pierwsza rzecz, o którą trzeba zapytać, gdy odczyt zacznie się psuć.
   return {
     tekst: wyniki.stan.tekst ?? "",
-    sposob: wyslane.sposob ?? "?",
+    sposob: `${terminal.nazwa}: ${wyslane.sposob ?? "?"}`,
     wPolu: wyslane.poWyslaniu?.wartosc ?? null,
   };
 }
@@ -342,14 +348,40 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
       return { ok: true, checked: 0, stan };
     }
 
-    const kartaId = await dajKarte(cfg.adresTerminala);
+    // GRUPUJEMY PO TERMINALACH. Serwer przysyła przy każdym zleceniu nazwę terminala (z „Podjęcia"),
+    // a każdy terminal ma inny adres, inny rozmiar paczki i inny ślad gotowej odpowiedzi.
+    // Zlecenie z terminalem, którego rozszerzenie nie zna, NIE ginie po cichu — dostaje błąd.
+    const grupy = new Map();
+    const nieznane = [];
+    for (const i of items) {
+      const t = konfiguracjaTerminala((i.terminal ?? "BHub").trim(), cfg.zapisane);
+      if (!t) {
+        nieznane.push(i);
+        continue;
+      }
+      if (!grupy.has(t.nazwa)) grupy.set(t.nazwa, { terminal: t, zlecenia: [] });
+      grupy.get(t.nazwa).zlecenia.push(i);
+    }
 
-    for (const paczka of paczki(items, cfg.rozmiarPaczki)) {
+    if (nieznane.length) {
+      const powodBledu =
+        "Rozszerzenie nie zna tego terminala — zaktualizuj wtyczkę w chrome://extensions " +
+        "(guzik „Wtyczka" w appce).";
+      problemy.push(powodBledu);
+      await wywolaj("report", {
+        results: nieznane.map((i) => ({ loadId: i.loadId, container: i.container, error: powodBledu })),
+      }).catch(() => undefined);
+    }
+
+    const kartaId = await dajKarte([...grupy.values()][0]?.terminal.adres ?? "about:blank");
+
+    for (const { terminal, zlecenia } of grupy.values()) {
+    for (const paczka of paczki(zlecenia, Number(cfg.rozmiarPaczki) || terminal.rozmiarPaczki)) {
       const numery = paczka.map((i) => i.container);
       try {
         let wyniki;
         try {
-          const odp = await zapytajTerminal(kartaId, cfg.adresTerminala, numery);
+          const odp = await zapytajTerminal(kartaId, terminal, numery);
           wyniki = paczka.map((i) => ({ ...i, ...odp, text: odp.tekst, batchSize: numery.length }));
         } catch (e) {
           // Strona nie dała się przestawić na „wiele kontenerów" — pytamy po jednym. Wolniej
@@ -358,7 +390,7 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
           if (!e.trybNieustawiony || numery.length === 1) throw e;
           wyniki = [];
           for (const i of paczka) {
-            const odp = await zapytajTerminal(kartaId, cfg.adresTerminala, [i.container]);
+            const odp = await zapytajTerminal(kartaId, terminal, [i.container]);
             wyniki.push({ ...i, ...odp, text: odp.tekst, batchSize: 1 });
           }
         }
@@ -367,6 +399,7 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
           results: wyniki.map((i) => ({
             loadId: i.loadId,
             container: i.container,
+            terminal: terminal.nazwa,
             text: i.text,
             batchSize: i.batchSize,
             details: {
@@ -386,8 +419,9 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
           results: paczka.map((i) => ({
             loadId: i.loadId,
             container: i.container,
+            terminal: terminal.nazwa,
             error: e.message,
-            details: { ...(e.szczegoly ?? {}), _paczka: numery.join(", ") },
+            details: { ...(e.szczegoly ?? {}), _paczka: numery.join(", "), _terminal: terminal.nazwa },
           })),
         }).catch(() => undefined);
 
@@ -395,10 +429,11 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
           // Cloudflare albo zagadka: dalsze paczki odbiją się tak samo. Prosimy człowieka
           // i kończymy — reszta zleceń zachowuje stary `bhub_checked_at`, więc w kolejnym
           // przebiegu stoi pierwsza w kolejce.
-          powiadom("Baltic Hub czeka na Ciebie", e.message);
+          powiadom(`${terminal.nazwa} czeka na Ciebie`, e.message);
           break;
         }
       }
+    }
     }
 
     await wywolaj("heartbeat", { checked: sprawdzone, error: problemy[0] ?? null });

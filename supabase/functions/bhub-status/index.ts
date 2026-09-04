@@ -27,8 +27,8 @@
 // ============================================================
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.58.0";
-import { parseContainerPage } from "./parse.ts";
-import { isWithinPollingWindow, shouldTrackLoad } from "./shared/schedule.ts";
+import { parseTerminalPage } from "./parse.ts";
+import { isTerminalPickup, isWithinPollingWindow, shouldTrackLoad } from "./shared/schedule.ts";
 import { isoToOrderSize } from "./shared/isoType.ts";
 
 const CORS_HEADERS = {
@@ -73,6 +73,8 @@ interface ReportItem {
   text?: unknown;
   error?: unknown;
   details?: unknown;
+  /** Który terminal odpowiedział (BHub / BCT / GCT) — decyduje o wyborze parsera. */
+  terminal?: unknown;
   /** O ilu kontenerów pytano w tym samym zapytaniu — rozstrzyga znaczenie zdania „Brak wyników". */
   batchSize?: unknown;
 }
@@ -192,7 +194,9 @@ Deno.serve(async (req: Request) => {
     } else {
       const swieze = new Date(Date.now() - SWIEZOSC_MINUT * 60_000).toISOString();
       query = query
-        .eq("pickup_type", "BHub")
+        // Trzy terminale, nie jeden. O tym, gdzie pytać, decyduje "Podjęcie" — to samo pole,
+        // które dyspozytor już wypełnia (BHub / BCT / GCT; Poimport i Depot to nie terminale).
+        .in("pickup_type", ["BHub", "BCT", "GCT"])
         // "ZP już nie ruszamy (jest już zwolniony i nie ma to sensu)".
         .or("bhub_status.is.null,bhub_status.neq.ZP")
         .or(`bhub_checked_at.is.null,bhub_checked_at.lt.${swieze}`);
@@ -205,8 +209,18 @@ Deno.serve(async (req: Request) => {
     // SQL i kod nie mogły się rozjechać w tym, co znaczy "podlega śledzeniu". Przy pytaniu
     // o konkretne zlecenia straż jest wyłączona — patrz komentarz wyżej.
     const items = ((rows ?? []) as LoadRow[])
-      .filter((load) => (requestedIds ? Boolean((load.container_number ?? "").trim()) : shouldTrackLoad(load)))
-      .map((load) => ({ loadId: load.id, container: (load.container_number ?? "").trim().toUpperCase() }));
+      .filter((load) =>
+        requestedIds
+          ? Boolean((load.container_number ?? "").trim()) && isTerminalPickup(load.pickup_type)
+          : shouldTrackLoad(load),
+      )
+      .map((load) => ({
+        loadId: load.id,
+        container: (load.container_number ?? "").trim().toUpperCase(),
+        // Rozszerzenie samo nie wie, gdzie pytać — dostaje to razem z numerem. Dzięki temu dołożenie
+        // czwartego terminala jest zmianą po stronie serwera, a nie na komputerze każdego dyspozytora.
+        terminal: (load.pickup_type ?? "").trim(),
+      }));
 
     await touchAgent(admin, agent, userId, {});
     return json({ ok: true, window: true, items });
@@ -226,7 +240,8 @@ Deno.serve(async (req: Request) => {
       const container = text(item.container).trim().toUpperCase();
       if (!loadId) continue;
 
-      const details = { ...detailsOf(item.details), _container: container, _zrodlo: "rozszerzenie" };
+      const terminal = text(item.terminal).trim() || "BHub";
+      const details = { ...detailsOf(item.details), _container: container, _terminal: terminal, _zrodlo: "rozszerzenie" };
 
       // Rozszerzeniu nie udało się nawet dojść do wyników (Cloudflare, zagadka, brak pola).
       // Zapisujemy to przy KAŻDYM zleceniu z paczki — inaczej zlecenie zostaje bez sprawdzenia
@@ -246,15 +261,16 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      const parsed = parseContainerPage(pageText, container);
+      const parsed = parseTerminalPage(pageText, container, terminal);
       const fullDetails = { ...parsed.details, ...details, _dlugosc_odpowiedzi: String(pageText.length) };
 
       if (parsed.notFound) {
         await admin.rpc("apply_bhub_check", {
           p_load_id: loadId,
-          p_error: `Baltic Hub nie zna kontenera ${container}.`,
+          p_error: `${terminal} nie zna kontenera ${container}.`,
           p_parsed: true,
           p_details: fullDetails,
+          p_terminal: terminal,
         });
         continue;
       }
@@ -269,9 +285,10 @@ Deno.serve(async (req: Request) => {
       if (!parsed.recognised && brakJakichkolwiekKart && mowiBrakWynikow) {
         await admin.rpc("apply_bhub_check", {
           p_load_id: loadId,
-          p_error: `Baltic Hub nie zna kontenera ${container}.`,
+          p_error: `${terminal} nie zna kontenera ${container}.`,
           p_parsed: true,
           p_details: fullDetails,
+          p_terminal: terminal,
         });
         continue;
       }
@@ -281,7 +298,7 @@ Deno.serve(async (req: Request) => {
         // zapisujemy powód i migawkę, a dotychczasowe wartości przy zleceniu zostają nietknięte.
         const message =
           parsed.reason ??
-          `Nie rozpoznałem odpowiedzi Baltic Hub dla ${container} (${pageText.length} znaków). Migawka zapisana do diagnozy.`;
+          `Nie rozpoznałem odpowiedzi ${terminal} dla ${container} (${pageText.length} znaków). Migawka zapisana do diagnozy.`;
         problems.push(message);
         await admin.rpc("apply_bhub_check", { p_load_id: loadId, p_error: message, p_details: fullDetails });
         continue;
@@ -303,6 +320,7 @@ Deno.serve(async (req: Request) => {
         p_net_weight_kg: parsed.netWeightKg,
         p_commodity_weight_kg: parsed.commodityWeightKg,
         p_time_out: parsed.timeOut,
+        p_terminal: terminal,
         p_error: null,
         p_parsed: true,
         p_details: fullDetails,

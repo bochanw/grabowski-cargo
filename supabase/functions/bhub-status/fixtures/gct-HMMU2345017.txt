@@ -1,0 +1,19 @@
+
+
+
+
+
+Informacja o statusie kontenerów
+
+Można podać więcej niż jeden nr kontenera, oddzielonych spacjami, np. CBHU223344-5 CBHU2662447
+(max. 242 znaków)
+
+Nr kontenerów :
+
+
+
+
+LP	Nr kontenera	Rozmiar ISO	Status	Status celny	Podróż	Data/Czas złożenia	Data/Czas podjęcia
+1	HMMU2345017	22G1	na terminalu - w trakcie przyjęcia
+eksport - pełny	Do odprawy	2624S, Annalisa P
+ETA: 2026-09-10 10:00, ETD: 2026-09-11 15:00	 	 

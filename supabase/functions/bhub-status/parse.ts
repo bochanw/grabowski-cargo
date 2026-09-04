@@ -59,18 +59,23 @@ export interface ParsedContainer {
 // Dalsze warianty zostają na wypadek, gdyby strona (inaczej niż eksport) nazywała rubryki po polsku.
 const LABELS = {
   container: ["unitnbr", "numer", "nrkontenera", "containerno", "container"],
-  isoType: ["isotype", "typiso", "typkontenera", "containertype", "sizetype"],
+  // „rozmiariso" i „dataczaspodjecia" to kolumny GCT (po polsku) — patrz fixtures/gct-*.txt.
+  isoType: ["isotype", "typiso", "typkontenera", "containertype", "sizetype", "rozmiariso"],
   grossWeight: ["weightkg", "weight", "wagabrutto", "grossweight", "masabrutto", "vgm"],
   // KOLEJNOŚĆ I DOKŁADNOŚĆ MA ZNACZENIE: „Cargo Weight [KG]" zawiera w sobie „Weight [KG]", więc
   // przy niedokładnym dopasowaniu waga towaru zostałaby wzięta za brutto (patrz komentarz w `pick`).
   cargoWeight: ["cargoweightkg", "cargoweight", "waganetto", "wagatowaru"],
   commodityWeight: ["commodityweightkg", "commodityweight", "wagacelna"],
-  timeOut: ["timeout", "czaswyjazdu", "datawyjazdu"],
+  // GCT nie ma „Time Out", tylko „Data/Czas podjęcia" — ta sama informacja: kiedy kontener
+  // opuścił terminal. Pusta = wciąż stoi.
+  timeOut: ["timeout", "dataczaspodjecia", "czaswyjazdu", "datawyjazdu"],
   shippingLine: ["lineoperator", "armator", "operator", "shippingline", "carrier", "linia"],
   holds: ["stops", "stopki", "stopka", "blokady", "blokada", "holds", "hold"],
   location: ["tstate", "state", "lokalizacja", "polozenie", "location", "yard"],
   /** Osobna rubryka "status" bywa na stronie, w eksporcie jej nie ma — próbujemy jej najpierw. */
-  status: ["statuskontenera", "containerstatus", "statuscontainer"],
+  // „status" (samo) jest OSTATNIE: dopasowanie dokładne wygrywa nad zapasowym po początku nazwy,
+  // więc kolumna GCT „Status" trafia tutaj, a sąsiednia „Status celny" się pod nią nie podszyje.
+  status: ["statuskontenera", "containerstatus", "statuscontainer", "status"],
 } as const;
 
 function normalizeLabel(raw: string): string {
@@ -157,11 +162,22 @@ export function extractPairs(html: string): Record<string, string> {
  * Wartość rubryki. `undefined` = TAKIEJ KOLUMNY NIE MA (nie umieliśmy odczytać),
  * pusty tekst = kolumna jest, ale pusta. To rozróżnienie decyduje o tym, czy wolno nadać status.
  */
+/**
+ * Zapis „nic tu nie ma" bywa różny: Baltic Hub zostawia pustkę, BCT wpisuje „--", GCT twardą
+ * spację. Dla nas wszystkie znaczą to samo — inaczej „--" w rubryce „Stops" zostałoby wzięte za
+ * BLOKADĘ na kontenerze, a to jest różnica między „można zabierać" a „nie wolno".
+ */
+export function pusteJakoPuste(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const v = value.replace(/\u00A0/g, " ").trim();
+  return /^(-{1,3}|\u2013|\u2014|n\/?a|brak)$/i.test(v) ? "" : v;
+}
+
 export function pick(row: Record<string, string>, candidates: readonly string[]): string | undefined {
   const normalized = new Map(Object.entries(row).map(([k, v]) => [normalizeLabel(k), v]));
   for (const candidate of candidates) {
     const hit = normalized.get(candidate);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) return pusteJakoPuste(hit);
   }
   // Dopasowanie zapasowe tylko po POCZĄTKU nazwy ("Waga brutto [kg]" → "wagabrutto"), nigdy po
   // dowolnym fragmencie. Fragment byłby niebezpieczny właśnie przy wadze: "Cargo Weight [KG]"
@@ -169,7 +185,7 @@ export function pick(row: Record<string, string>, candidates: readonly string[])
   // brutto i zapisała ją przy zleceniu jako nadrzędną — cicho i bez śladu.
   for (const candidate of candidates) {
     for (const [key, value] of normalized) {
-      if (key.startsWith(candidate)) return value;
+      if (key.startsWith(candidate)) return pusteJakoPuste(value);
     }
   }
   return undefined;
@@ -199,13 +215,18 @@ export function parseWeight(raw: string | undefined): number | null {
  *   3. rodzina  (G general, U open top, R chłodnia, T cysterna, P platforma …)
  * "LINK" odpada na drugim znaku, "LEFT" na trzecim.
  */
-const ISO_CODE = /^[24L][0-9CDEF][ABGHKNPRSTUV][0-9A-Z]$/;
+//
+// DWA ZAPISY, oba spotkane na produkcji: literowy („22G1" — Baltic Hub, GCT) i STARY LICZBOWY
+// („2210" — tak podaje BCT). W obu długość niesie pierwszy znak, a różni je trzeci: litera rodziny
+// albo dwie cyfry grupy typu. Wariant liczbowy jest bezpieczny dla tej samej pułapki co literowy —
+// angielskie słowo nie ma cyfr na dwóch ostatnich pozycjach.
+const ISO_CODE = /^[24L][0-9CDEF](?:[ABGHKNPRSTUV][0-9A-Z]|[0-9]{2})$/;
 
 export function parseIsoCode(raw: string | undefined): string | null {
   const value = (raw ?? "").trim().toUpperCase();
   if (!value) return null;
   if (ISO_CODE.test(value)) return value;
-  const match = value.match(/\b([24L][0-9CDEF][ABGHKNPRSTUV][0-9A-Z])\b/);
+  const match = value.match(/\b([24L][0-9CDEF](?:[ABGHKNPRSTUV][0-9A-Z]|[0-9]{2}))\b/);
   return match ? match[1] : null;
 }
 
@@ -365,6 +386,13 @@ const KARTA_LABELS = [
   "DSK Number", "CEN Number", "Commodity Weight [KG]", "Cargo Weight [KG]", "Weight [KG]",
   "Class", "POD", "Inbound Mode", "Carrier Seal", "Shipper Seal", "Customs Seal", "Vet Seal",
   "T-State", "OH (cm)", "OL-B (cm)", "OL-F (cm)", "OW-L (cm)", "OW-R (cm)",
+  // Warianty z KARTY BCT (przepisane z prawdziwej odpowiedzi — patrz fixtures/bct-*.txt).
+  // Oba terminale chodzą na Navisie N4, więc rubryki są te same; różni je wielkość liter w „[kg]",
+  // brak gwiazdki przy „Stops" oraz nazwy plomb i ponadgabarytów. Dopasowanie jest CASE-SENSITIVE
+  // (żeby „POD" nie łapało się w „Podróż"), więc oba zapisy muszą stać na liście osobno.
+  "Commodity Weight [kg]", "Cargo Weight [kg]", "Weight [kg]", "Stops",
+  "Seal 1", "Seal 2", "Seal 3", "Seal 4", "Seal 5", "Seal 6",
+  "OH-B (cm)", "OH-F (cm)", "OH-L (cm)", "OH-R (cm)",
 ];
 
 function escapeRegex(s: string): string {
@@ -376,8 +404,18 @@ function escapeRegex(s: string): string {
  * "Weight [KG]", więc przy odwrotnej kolejności waga TOWARU zostałaby odczytana jako waga brutto —
  * a ta z terminala nadpisuje zlecenie, więc byłby to cichy błąd na dokumencie przewozowym.
  */
-const ETYKIETA = new RegExp(
+const ETYKIETA_Z_DWUKROPKIEM = new RegExp(
   `(${[...KARTA_LABELS].sort((a, b) => b.length - a.length).map(escapeRegex).join("|")})\\s*:`,
+  "g",
+);
+
+/**
+ * Ta sama lista, ale BEZ wymaganego dwukropka — tak wygląda karta BCT, gdzie etykieta i wartość
+ * siedzą w dwóch komórkach tabeli, więc w tekście strony rozdziela je sam odstęp. Zamiast
+ * dwukropka pilnuje nas granica z prawej: bez niej „Class" łapałoby się w środku dłuższego wyrazu.
+ */
+const ETYKIETA_BEZ_DWUKROPKA = new RegExp(
+  `(${[...KARTA_LABELS].sort((a, b) => b.length - a.length).map(escapeRegex).join("|")})\\s*:?(?![\\w-])`,
   "g",
 );
 
@@ -411,8 +449,8 @@ export function wytnijKarte(tekst: string, numer: string): string | null {
 }
 
 /** Karta → pary etykieta/wartość. Pusta wartość ZOSTAJE pustym tekstem (patrz wyżej). */
-export function paryZKarty(karta: string): Record<string, string> {
-  const trafienia = [...karta.matchAll(ETYKIETA)];
+export function paryZKarty(karta: string, dwukropek = true): Record<string, string> {
+  const trafienia = [...karta.matchAll(dwukropek ? ETYKIETA_Z_DWUKROPKIEM : ETYKIETA_BEZ_DWUKROPKA)];
   const pary: Record<string, string> = {};
   trafienia.forEach((m, i) => {
     const od = (m.index ?? 0) + m[0].length;
@@ -486,5 +524,122 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
     recognised: false,
     reason,
     details: { ...describePage(html, text), _container: containerNumber },
+  };
+}
+
+// ============================================================
+// TRZY TERMINALE — jeden odczyt, trzy układy strony.
+//
+// Właściciel: „analogicznie dla BCT sprawdzimy stan kontenera tym samym sposobem […] dla GCT będzie
+// to […] nasza appka będzie sprawdzać stany na 3 terminalach".
+//
+// Wszystkie układy są przepisane z PRAWDZIWYCH odpowiedzi (katalog `fixtures/`), nie z domysłu.
+// Co je różni:
+//   BHub  karta „etykieta: wartość", puste rubryki naprawdę puste,
+//   BCT   ta sama karta Navisa, ale w TABELI: etykieta i wartość w dwóch komórkach, bez
+//         dwukropka, a „nic tu nie ma" zapisane jako „--". Typ kontenera w starym, liczbowym
+//         zapisie ISO („2210" zamiast „22G1"),
+//   GCT   inny układ: JEDNA tabela z nagłówkiem, wiersz na kontener, kolumny po polsku.
+//         Nie podaje ani wagi, ani armatora — tylko status, typ i daty.
+// ============================================================
+
+export type TerminalName = "BHub" | "BCT" | "GCT";
+
+/** Czy tę nazwę terminala umiemy odczytać (reszta „Podjęć" — Poimport, Depot — to nie terminale). */
+export function isTerminalName(value: unknown): value is TerminalName {
+  return value === "BHub" || value === "BCT" || value === "GCT";
+}
+
+/**
+ * BCT: karta jednego kontenera w tabeli etykieta|wartość. Wycinamy od nagłówka „Karta kontenera"
+ * (przed nim stoi menu strony i zgoda na ciasteczka) do przycisku zamykającego okno.
+ */
+export function parseBct(text: string, containerNumber: string): ParsedContainer {
+  const plaski = stripTags(text);
+  if (brakWynikowDla(plaski, containerNumber)) {
+    return { ...PUSTE, notFound: true, recognised: true, details: { _container: containerNumber, _uklad: "brak wyników" } };
+  }
+
+  const od = plaski.search(/Karta kontenera/i);
+  if (od < 0) {
+    return {
+      ...PUSTE, notFound: false, recognised: false,
+      details: { ...describePage(text, plaski), _container: containerNumber, _uklad: "BCT: brak karty" },
+    };
+  }
+  const doKonca = plaski.slice(od);
+  const zamkniecie = doKonca.search(/\bZamknij\b/);
+  const karta = zamkniecie > 0 ? doKonca.slice(0, zamkniecie) : doKonca;
+
+  // Numer kontenera stoi w NAGŁÓWKU karty, nie w rubryce — BCT nie ma „Unit Nbr". Bez tego
+  // sprawdzenia karta poprzedniego kontenera zostałaby zapisana przy cudzym zleceniu.
+  if (!key(karta).includes(key(containerNumber))) {
+    return {
+      ...PUSTE, notFound: false, recognised: false,
+      details: { ...describePage(text, plaski), _container: containerNumber, _uklad: "BCT: karta innego kontenera" },
+    };
+  }
+
+  const pary = paryZKarty(karta, false);
+  if (Object.keys(pary).length < 3) {
+    return {
+      ...PUSTE, notFound: false, recognised: false,
+      details: { ...describePage(text, plaski), _container: containerNumber, _uklad: "BCT: nie rozpoznałem rubryk" },
+    };
+  }
+  return { ...interpretRow(pary), details: { ...pary, _container: containerNumber, _uklad: "BCT: karta" } };
+}
+
+/**
+ * GCT: jedna tabela, wiersz na kontener. Czytamy z TEKSTU Z TABULATORAMI, a nie ze sklejonego
+ * w jedną linię — tylko tabulator mówi, gdzie kończy się „Status", a zaczyna „Status celny"
+ * (obie wartości to wolny tekst ze spacjami). Wartości potrafią mieć w środku ZŁAMANIE LINII
+ * (w jednej komórce status i stan ładunku, w innej statek i ETA/ETD), więc wiersz składamy
+ * z PÓL rozdzielonych tabulatorem, a nie z linii.
+ */
+export function parseGct(text: string, containerNumber: string): ParsedContainer {
+  const linie = text.split("\n");
+  const naglowek = linie.findIndex((l) => l.includes("\t") && /Nr\s+kontenera/i.test(l));
+  if (naglowek < 0) {
+    const plaski = stripTags(text);
+    const nieZna = /nie znaleziono|brak wynik|no results/i.test(plaski);
+    return {
+      ...PUSTE, notFound: nieZna, recognised: nieZna,
+      details: { ...describePage(text, plaski), _container: containerNumber, _uklad: "GCT: brak tabeli" },
+    };
+  }
+
+  const kolumny = linie[naglowek].split("\t").map((c) => c.trim());
+  const pola = linie.slice(naglowek + 1).join("\n").split("\t");
+  const szukany = key(containerNumber);
+
+  for (let i = 0; i < pola.length; i += kolumny.length) {
+    const wiersz: Record<string, string> = {};
+    kolumny.forEach((nazwa, j) => {
+      if (nazwa) wiersz[nazwa] = (pola[i + j] ?? "").replace(/ /g, " ").trim();
+    });
+    if (key(wiersz["Nr kontenera"] ?? "") !== szukany) continue;
+    return { ...interpretRow(wiersz), details: { ...wiersz, _container: containerNumber, _uklad: "GCT: tabela" } };
+  }
+
+  // Tabela jest, ale naszego numeru w niej nie ma — terminal go nie zna.
+  return {
+    ...PUSTE, notFound: true, recognised: true,
+    details: { _container: containerNumber, _uklad: "GCT: brak w tabeli", _kolumny: kolumny.join(" | ") },
+  };
+}
+
+/**
+ * Odczyt odpowiedzi WŁAŚCIWEGO terminala. Nieznana nazwa nie jest błędem odczytu, tylko błędem
+ * konfiguracji — mówimy to wprost, zamiast czytać stronę cudzym parserem.
+ */
+export function parseTerminalPage(text: string, containerNumber: string, terminal: string): ParsedContainer {
+  if (terminal === "BCT") return parseBct(text, containerNumber);
+  if (terminal === "GCT") return parseGct(text, containerNumber);
+  if (terminal === "BHub" || !terminal) return parseContainerPage(text, containerNumber);
+  return {
+    ...PUSTE, notFound: false, recognised: false,
+    reason: `Nie znam terminala „${terminal}" — appka umie czytać BHub, BCT i GCT.`,
+    details: { _container: containerNumber, _terminal: terminal },
   };
 }

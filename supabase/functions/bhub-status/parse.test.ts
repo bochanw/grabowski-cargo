@@ -8,7 +8,7 @@
 // odczytu, która szukała tabeli z nagłówkiem.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { parseContainerPage } from "./parse.ts";
+import { parseContainerPage, parseTerminalPage } from "./parse.ts";
 
 /** Karta jednego kontenera. `timeOut` pusty = kontener stoi na terminalu. */
 function karta(opts: { numer: string; timeOut?: string; cargo?: string; commodity?: string; weight?: string }): string {
@@ -91,4 +91,78 @@ Deno.test("paczka kilku kart: każdy kontener dostaje SWOJE rubryki", () => {
   assertEquals(drugi.netWeightKg, 18000);
   assertEquals(drugi.commodityWeightKg, 17200);
   assertEquals(drugi.grossWeightKg, 20200);
+});
+
+// ============================================================
+// BCT i GCT — na PRAWDZIWYCH odpowiedziach terminali (katalog `fixtures/`).
+//
+// Skąd fixtury: zapytanie poszło do terminala naprawdę (BCT: POST z tokenem `__RequestVerification
+// Token`, GCT: POST z `PRADO_PAGESTATE`), a odpowiedź została zrenderowana w prawdziwym Chromium
+// i zapisana jako `document.body.innerText` — czyli DOKŁADNIE to, co wtyczka przysyła serwerowi.
+// ============================================================
+
+const BCT = Deno.readTextFileSync(new URL("./fixtures/bct-MSBU3142439.txt", import.meta.url));
+const GCT = Deno.readTextFileSync(new URL("./fixtures/gct-HMMU2345017.txt", import.meta.url));
+
+Deno.test("BCT: karta kontenera odczytana z prawdziwej odpowiedzi", () => {
+  const p = parseTerminalPage(BCT, "MSBU3142439", "BCT");
+  assertEquals(p.recognised, true);
+  assertEquals(p.notFound, false);
+  assertEquals(p.grossWeightKg, 10250); // Weight [kg]
+  assertEquals(p.netWeightKg, 8150); // Cargo Weight [kg]
+  assertEquals(p.shippingLine, "MSC");
+  assertEquals(p.isoType, "2210"); // stary, LICZBOWY zapis ISO — BCT tak podaje
+  assertEquals(p.timeOut, "04.09.2026 01:21"); // niepusty → kontener opuścił terminal
+});
+
+Deno.test("BCT: mysliniki znacza PUSTO, nie blokade", () => {
+  const p = parseTerminalPage(BCT, "MSBU3142439", "BCT");
+  // Rubryka „Stops" ma w odpowiedzi „--". Gdyby przeszło to jako wartość, kontener wyszedłby
+  // jako zablokowany — czyli „nie wolno zabierać" zamiast „brak blokad".
+  assertEquals((p.details["Stops"] ?? "").trim(), "--");
+  assertEquals(/stopk|hold/i.test(p.statusRaw ?? ""), false);
+});
+
+Deno.test("BCT: karta INNEGO kontenera nie jest naszą odpowiedzią", () => {
+  const p = parseTerminalPage(BCT, "TEMU1234567", "BCT");
+  assertEquals(p.recognised, false);
+  assertEquals(p.notFound, false); // to NIE jest „terminal go nie zna"
+});
+
+Deno.test("GCT: wiersz tabeli odczytany z prawdziwej odpowiedzi", () => {
+  const p = parseTerminalPage(GCT, "HMMU2345017", "GCT");
+  assertEquals(p.recognised, true);
+  assertEquals(p.notFound, false);
+  assertEquals(p.isoType, "22G1");
+  assertEquals(p.details["Status"], "na terminalu - w trakcie przyjęcia\neksport - pełny");
+  assertEquals(p.details["Status celny"], "Do odprawy");
+  assertEquals(p.details["Podróż"], "2624S, Annalisa P\nETA: 2026-09-10 10:00, ETD: 2026-09-11 15:00");
+  // Kolumny sąsiadujące ze „Statusem" NIE mogą się w niego wlać — o granicy decyduje tabulator.
+  assertEquals(p.details["Status"].includes("Do odprawy"), false);
+});
+
+Deno.test("GCT: Data/Czas podjecia to odpowiednik Time Out; twarda spacja = pusto", () => {
+  const p = parseTerminalPage(GCT, "HMMU2345017", "GCT");
+  assertEquals(p.timeOut, ""); // kontener jeszcze nie podjęty
+  assertEquals(p.grossWeightKg, null); // GCT nie podaje wag
+  assertEquals(p.shippingLine, null); // ani armatora
+});
+
+Deno.test("GCT: numeru spoza tabeli terminal nie zna", () => {
+  const p = parseTerminalPage(GCT, "TEMU1234567", "GCT");
+  assertEquals(p.notFound, true);
+  assertEquals(p.recognised, true);
+});
+
+Deno.test("STRAŻ: cudzy parser nie czyta cudzej strony", () => {
+  // Karta BCT przepuszczona parserem Baltic Hubu nie ma „Unit Nbr:", więc nie zostanie odczytana
+  // jako komplet danych — zamiast wpisać przy zleceniu byle co, mówimy „nie rozpoznałem".
+  assertEquals(parseTerminalPage(BCT, "MSBU3142439", "BHub").recognised, false);
+  assertEquals(parseTerminalPage(GCT, "HMMU2345017", "BHub").recognised, false);
+});
+
+Deno.test("nieznany terminal = błąd konfiguracji, nazwany wprost", () => {
+  const p = parseTerminalPage(BCT, "MSBU3142439", "DCT Gdańsk");
+  assertEquals(p.recognised, false);
+  assertEquals((p.reason ?? "").includes("DCT Gdańsk"), true);
 });

@@ -111,6 +111,12 @@ export interface Load {
   bhub_checked_at: string | null;
   bhub_error: string | null;
   bhub_details: Record<string, unknown> | null;
+  /**
+   * Migracja 0032 — co mówiło ZLECENIE, zanim terminal nadpisał daną kolumnę (klucz = nazwa
+   * kolumny). Terminal nadpisuje wagi, wielkość i gestię, więc bez tej migawki rozbieżność
+   * znikałaby razem z wartością i nie było by o czym alarmować. Kasuje ją ręczna poprawka.
+   */
+  terminal_conflicts: Record<string, unknown> | null;
 
   // Plan wspaniały — migracja 0025. Miejsce na zestawie; kontener 40/45 zajmuje oba i jest
   // zapisywany jako "tyl" (o zajęciu całości decyduje `container_size`, nie osobna wartość).

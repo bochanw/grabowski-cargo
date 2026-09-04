@@ -43,6 +43,18 @@ export function isWithinPollingWindow(now: Date): boolean {
   return hour >= POLL_START_HOUR && hour < POLL_END_HOUR;
 }
 
+/**
+ * Terminale, których stan umiemy sprawdzić. Nazwy są DOKŁADNIE tymi z listy "Podjęcie"
+ * (`pickupLocations.ts`), więc o terminalu decyduje to samo pole, które dyspozytor już wypełnia.
+ * "Poimport" i "Depot" to nie terminale — tam nie ma czego odpytywać.
+ */
+export const TERMINALE = ["BHub", "BCT", "GCT"] as const;
+export type TerminalName = (typeof TERMINALE)[number];
+
+export function isTerminalPickup(pickup: string | null | undefined): pickup is TerminalName {
+  return (TERMINALE as readonly string[]).includes((pickup ?? "").trim());
+}
+
 export interface TrackableLoad {
   pickup_type: string | null;
   container_number: string | null;
@@ -54,7 +66,7 @@ export interface TrackableLoad {
  * kontener podejmowany z BHub, znany numer kontenera, status inny niż ZP.
  */
 export function shouldTrackLoad(load: TrackableLoad): boolean {
-  if (load.pickup_type !== "BHub") return false;
+  if (!isTerminalPickup(load.pickup_type)) return false;
   if (!(load.container_number ?? "").trim()) return false;
   return !isFinalStatus(load.bhub_status);
 }

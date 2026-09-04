@@ -1,8 +1,8 @@
-// Okno rozszerzenia: logowanie, stan ostatniego przebiegu, „Sprawdź teraz" i dwa ustawienia.
+// Okno rozszerzenia: logowanie, stan ostatniego przebiegu, „Sprawdź teraz" i ustawienia.
 // Cała robota dzieje się w `background.js` — tutaj są wyłącznie wiadomości do niego, żeby jedna
 // i ta sama ścieżka obsługiwała klik z okna i prośbę z appki.
 
-import { ustawienia } from "./config.js";
+import { TERMINALE, ustawienia } from "./config.js";
 
 const $ = (id) => document.getElementById(id);
 const wyslij = (wiadomosc) => chrome.runtime.sendMessage(wiadomosc);
@@ -70,12 +70,20 @@ $("karta").addEventListener("click", async () => {
       return;
     }
   }
-  await chrome.tabs.create({ url: cfg.adresTerminala, pinned: true });
+  await chrome.tabs.create({ url: $("adresBHub").value.trim() || TERMINALE.BHub.adres, pinned: true });
   window.close();
 });
 
 $("zapisz").addEventListener("click", async () => {
-  await wyslij({ typ: "ustaw", wartosci: { adresTerminala: $("adres").value.trim(), etykieta: $("etykieta").value.trim() } });
+  await wyslij({
+    typ: "ustaw",
+    wartosci: {
+      adresBHub: $("adresBHub").value.trim(),
+      adresBCT: $("adresBCT").value.trim(),
+      adresGCT: $("adresGCT").value.trim(),
+      etykieta: $("etykieta").value.trim(),
+    },
+  });
   await odswiez();
 });
 
@@ -86,7 +94,9 @@ $("wyloguj").addEventListener("click", async () => {
 
 (async () => {
   const cfg = await ustawienia();
-  $("adres").value = cfg.adresTerminala;
+  for (const nazwa of ["BHub", "BCT", "GCT"]) {
+    $(`adres${nazwa}`).value = cfg[`adres${nazwa}`] ?? TERMINALE[nazwa].adres;
+  }
   $("etykieta").value = cfg.etykieta ?? "";
   await odswiez();
 })();

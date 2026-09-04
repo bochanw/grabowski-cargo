@@ -12,6 +12,7 @@ import { shippingLineForNotes } from "@/lib/loads/leasing";
 import { DIRECTION_LABELS, DIRECTION_OPTIONS, DIRECTION_ORDER } from "@/lib/loads/direction";
 import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { ALARM_PREFIX, bhubCellDecoration, isAlarm } from "@/lib/bhub/cellDecoration";
+import { bezKonfliktu, jestNadpisywana } from "@/lib/bhub/checks";
 import { BHUB_STATUSES, BHUB_STATUS_LABELS } from "@/lib/bhub/status";
 import { shouldTrackLoad } from "@/lib/bhub/schedule";
 import { PLAN_SLOTS, PLAN_SLOT_LABELS, type PlanSlot } from "@/lib/plan/slots";
@@ -1196,6 +1197,13 @@ function buildPatch(
   if (load && column.key === "driver_rate") {
     patch.driver_rate_source = "manual";
     patch.driver_rate_code = null;
+  }
+
+  // Ręczna poprawka kolumny, którą nadpisał terminal, gasi ostrzeżenie o rozbieżności — to jest
+  // świadome „widziałem, tak ma być". Kasujemy WSZYSTKIE poprawiane w tym zapisie kolumny, bo
+  // patch bywa szerszy niż jedna komórka (zmiana wagi netto przelicza też brutto).
+  if (load && Object.keys(patch).some(jestNadpisywana)) {
+    patch.terminal_conflicts = bezKonfliktu(load, Object.keys(patch));
   }
   return patch;
 }

@@ -1,0 +1,44 @@
+Login
+Język
+English
+Polski
+Yкраїнська
+  Strona główna Sprawdź kontener
+W celu wyszukania wielu kontenerów wprowadź wszystkie numery po przecinku np. KONTENER1, KONTENER2, KONTENER3
+Sprawdź
+Używamy plików cookie na naszej stronie internetowej, aby zapewnić jej prawidłowe działanie.
+Rozumiem Więcej informacji
+Karta kontenera
+
+MSBU3142439  Drukuj wybraną
+
+
+Class	CONTAINER
+T-State	DEPARTED
+ISO Type	2210
+Frght Kind	FCL
+Inbound Carrier	MSADYA_GA635E
+DSK Number	1012337
+Outbound Carrier	WPR6852V
+POD	GDY
+Weight [kg]	10250
+Cargo Weight [kg]	8150
+Inbound Mode	VESSEL
+Stops	--
+Time In	30.08.2026 11:37
+Time Out	04.09.2026 01:21
+Category	IMPORT
+Line Operator	MSC
+Seal 1	LG00757796
+Seal 2	--
+Seal 3	--
+Seal 4	--
+Seal 5	--
+Seal 6	--
+CEN Number	26PL321030NSRA38K0
+OH (cm)	--
+OH-B (cm)	--
+OH-F (cm)	--
+OH-L (cm)	--
+OH-R (cm)	--
+Zamknij

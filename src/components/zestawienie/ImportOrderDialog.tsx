@@ -25,6 +25,7 @@ import { parseAdrSent, withAdrSent } from "@/lib/loads/adrSent";
 import { DIRECTION_OPTIONS, isDirection, isExportSide } from "@/lib/loads/direction";
 import { matchExistingLoad, type LoadMatch } from "@/lib/loads/orderNumber";
 import { loadToForm } from "@/lib/loads/loadToForm";
+import { bezKonfliktu, NADPISYWANE_KOLUMNY } from "@/lib/bhub/checks";
 import { groupDocumentsByOrder, type ParsedDocument } from "@/lib/loads/documentGroups";
 import { useUploadLoadDocument } from "@/hooks/useLoadDocuments";
 import { DOCUMENT_KINDS, DOCUMENT_KIND_LABELS, guessDocumentKind, type DocumentKind } from "@/types/loadDocument";
@@ -639,7 +640,12 @@ export function ImportOrderDialog({
     const row = formToRow(form, carrierName, ensured.id, ratePatch);
     let loadId = target?.id ?? "";
     if (target) {
-      const { error } = await supabase.from("loads").update(row).eq("id", target.id);
+      // Zapis formularza przez CZŁOWIEKA gasi ostrzeżenia o rozbieżności z terminalem: dyspozytor
+      // właśnie obejrzał te pola i zatwierdził ich treść (patrz migracja 0032).
+      const { error } = await supabase
+        .from("loads")
+        .update({ ...row, terminal_conflicts: bezKonfliktu(target, NADPISYWANE_KOLUMNY) })
+        .eq("id", target.id);
       if (error) {
         setSaveError(error.message);
         setStage("review");
