@@ -1171,6 +1171,25 @@ zlecenia jednorazowy przez AI był traktowany jako znany szablon, taka auto-nauk
   zachowuje się jak dotąd (ręczne szablony + guzik „Odczytaj przez Claude").
 
 **Do zrobienia w kolejnej sesji:**
+1. **NAJPIERW: wdrożyć `mail-poll`** (właściciel: „wdroz mail-poll w kolejnej sesji"). Kod jest
+   w repo i przetestowany, brakuje tylko wdrożenia — dziś produkcja czyta maile bez nauczonych
+   szablonów, więc załącznik od znanego już spedytora niepotrzebnie czeka na płatny odczyt.
+   - Zrobić to JAKO PIERWSZE w sesji, zanim urośnie kontekst: `deploy_edge_function` przez MCP
+     wymaga wysłania KOMPLETU 16 plików w jednym wywołaniu (~100 kB) i pod koniec długiej sesji
+     nie mieści się w limicie jednej odpowiedzi. Wysyłać z polskimi znakami DOSŁOWNIE, nie jako
+     `\uXXXX` — sekwencje ucieczki puchną 4-krotnie i to one wysadziły poprzednią próbę.
+   - Pliki: `supabase/functions/mail-poll/` — `deno.json`, `index.ts`, `graph.ts`, `imap.ts`,
+     `imapSource.ts`, `mailSource.ts`, `pdfText.ts`, `relevance.ts` + `shared/` (7 plików:
+     `orderNumber`, `orderTemplates`, `parsedOrder`, `pickupLocations`, `q4road`, `readTemplate`,
+     `tare`). BEZ plików `*.test.ts`. `verify_jwt: false` (funkcja autoryzuje sama:
+     `x-ingest-secret` z crona albo sesja dyspozytora).
+   - Przed wdrożeniem: `node scripts/build-edge-shared.mjs` (gdyby `src/lib` się zmieniło) +
+     `deno check supabase/functions/mail-poll/index.ts`.
+   - Po wdrożeniu sprawdzić: strzał kluczem publishable ma dać 401 „Brak uprawnień do uruchomienia
+     odczytu skrzynki" (czyli funkcja wstała i chodzi po naszym kodzie), a `email_ingest_state`
+     po najbliższym przebiegu crona ma mieć świeże `last_ok_at` i `last_error = null`.
+   - Alternatywa dla właściciela, jeśli woli sam: `supabase functions deploy mail-poll
+     --project-ref itlgexjhznjsbonzdxyg`.
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
    żeby opłacał się deterministyczny szablon zamiast płatnego odczytu.
