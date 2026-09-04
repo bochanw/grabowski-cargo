@@ -298,6 +298,11 @@ Deno.serve(async (req: Request) => {
         // pole „Wielkość" — przy rozbieżności appka i tak alarmuje w kolumnie statusu, a cicha
         // podmiana tego, co wpisał dyspozytor albo dokument, byłaby gorsza niż widoczna sprzeczność.
         p_container_size: isoToOrderSize(parsed.isoType),
+        // Trzy rubryki, o które poprosił właściciel (migracja 0031). `p_time_out` niesie PUSTY
+        // TEKST, gdy rubryka jest pusta — to informacja „kontener stoi", nie brak informacji.
+        p_net_weight_kg: parsed.netWeightKg,
+        p_commodity_weight_kg: parsed.commodityWeightKg,
+        p_time_out: parsed.timeOut,
         p_error: null,
         p_parsed: true,
         p_details: fullDetails,

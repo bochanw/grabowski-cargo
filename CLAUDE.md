@@ -1172,6 +1172,56 @@ jak ma sama sprawdzić kilka"):**
   Gdyby odczyt nadal się psuł: w `bhub_details` przy zleceniu stoi teraz WPROST, co było w polu —
   to pierwsza rubryka do obejrzenia, zamiast zgadywania.
 
+**TRZY KONTROLE Z KARTY KONTENERA — Time Out, waga celna, wagi ze zlecenia** (właściciel: „sprawdzić
+czy Time out jest na pewno pusty (jak nie jest pusty, trójkącik przy numerze kontenera), sprawdzić
+czy commodity weight = cargo weight (tak samo trójkącik). Możemy także odczytać masę brutto i netto
+w ten sposób (i pogrubić, ona jest zawsze nadrzędna — chyba że w zleceniu jest różnica to poza
+pogrubieniem trójkącik)"):
+- Odczyt karty (`parse.ts`) bierze teraz `Time Out`, `Cargo Weight [KG]` (= waga TOWARU, u nas
+  „Waga netto") i `Commodity Weight [KG]` (waga celna). Brutto (`Weight [KG]` = VGM) czytaliśmy
+  wcześniej. **`Time Out` niesie PUSTY TEKST, gdy rubryka jest pusta, i `null`, gdy nie odczytaliśmy**
+  — bez tego rozróżnienia nieudany odczyt wyglądałby jak spokojne „kontener stoi".
+- Migracja **0031** (ZAAPLIKOWANA przez MCP): kolumny `bhub_time_out`, `bhub_net_weight_kg`,
+  `bhub_commodity_weight_kg` + nowe parametry RPC `apply_bhub_check`.
+- **ZMIENIONA ZASADA PRZY WADZE BRUTTO, świadomie.** Do tej pory RPC NADPISYWAŁO `loads.gross_weight`
+  wagą z terminala. Nie da się jednocześnie nadpisać wartości i pokazać, że się różni — więc terminal
+  wpisuje wagi WYŁĄCZNIE W PUSTE POLA (jak wielkość w 0020 i gestia w 0021), a jego własne liczby
+  siedzą w `bhub_*`. „Nadrzędność" nie znika: `effectiveGrossWeightKg()` (`src/lib/bhub/checks.ts`)
+  daje pierwszeństwo terminalowi i to jego pyta stawka kierowcy oraz kafelek Planu. Przy okazji
+  naprawione: `to_char(...)` kasowało też ręczny tekst „według armatora", którego appka w swojej
+  regule `canOverwriteGrossWeight` świadomie nie rusza.
+- Wygląd: **trójkącik przy NUMERZE KONTENERA** (niepusty Time Out, waga celna ≠ waga towaru) jest
+  bursztynowy, nie czerwony — to nie sprzeczność z naszym zleceniem, tylko coś, co mówi terminal.
+  Czerwień zostaje dla niezgodności ze zleceniem (wielkość, gestia, teraz też wagi). `CellDecoration`
+  ma jawne pole `alarm` zamiast porównywania nazw klas CSS — dzięki temu są dwa poziomy ostrzeżenia.
+- **ZALEGŁOŚĆ ZNALEZIONA PRZY OKAZJI: na produkcji stały DWIE wersje `apply_bhub_check`.** Dodanie
+  parametru do funkcji Postgresa NIE zastępuje jej, tylko tworzy PRZECIĄŻENIE — więc od 0020 obok
+  nowej wisiała stara, 9-argumentowa, a wywołania bez `p_container_size` (ścieżki błędu) pasowały do
+  obu. Usunięte; migracja ma teraz DWA `drop`. **Wniosek: po `apply_migration` sprawdzać `pg_proc`,
+  a nie poprzestawać na „success".**
+- `revoke execute ... from anon, authenticated, public` + **jawny `grant ... to service_role`** —
+  samo odebranie PUBLIC odcięłoby funkcję brzegowej, która jako jedyna ją woła.
+- **Zweryfikowane, każde na właściwej ścieżce:** odczyt karty — 7 testów Deno (`parse.test.ts`,
+  W REPO, nie scratch: treść w kształcie prawdziwej odpowiedzi `/multi`, w tym straż na to, że
+  „Cargo/Commodity Weight" nie podszyje się pod brutto). RPC — odpalona NA ŻYWEJ BAZIE w transakcji
+  cofniętej wyjątkiem: brutto „według armatora" NIE zostało nadpisane, puste netto uzupełnione,
+  `bhub_time_out` wróciło jako pusty tekst (nie null), aktor `bot:baltichub`, a powtórka tego samego
+  odczytu NIE dopisała drugiego wpisu do dziennika. Logika appki — 26 sprawdzeń
+  (`scratch-kontrole.test.mts`). Przeglądarka (Playwright, tymczasowa strona `/test-kontrole`,
+  skasowana po teście) — 22 sprawdzenia na prawdziwej ścieżce REST → `useLoads` → tabela.
+- **PUŁAPKA (trzecia z tej rodziny): `toLocaleString("pl-PL")` rozdziela tysiące SPACJĄ NIEŁAMLIWĄ
+  (U+00A0)** — porównanie z „24 000" napisanym zwykłą spacją cicho nie przechodzi. Tak samo jak bajty
+  NUL w `imap.ts` i ` ` w `readTemplate.ts`.
+- **Pułapka testu, nie kodu**: pierwsza wersja testu w przeglądarce zakładała, że `45G1` kłóci się
+  z „40HC" — a to ta sama długość (45G1 = 40 stóp high cube). Straż zadziałała poprawnie, złe były
+  dane testowe.
+- **Funkcja `bhub-status` wdrożona (v38) i ZWERYFIKOWANA MASZYNOWO**: `get_edge_function` zapisuje
+  odpowiedź do pliku, więc wdrożone pliki dało się porównać z lokalnymi CO DO ZNAKU zamiast na oko.
+  Wyszło 5 z 6 zgodnych, a w `parse.ts` przy przepisywaniu zgubiła się martwa stała
+  `NUMER_KONTENERA` (nieużywana — usunięta też z repo, żeby repo i produkcja mówiły to samo).
+  **To jest sposób na weryfikację wdrożenia przez MCP: deploy → `get_edge_function` → porównanie
+  plików skryptem, nie wzrokiem.**
+
 **Odczyt maili wyczerpał środki w Claude Console — naprawione (właściciel: „w nocy program
 wykorzystał wszystkie fundusze Claude Console — odczytem zleceń; niech odczyt PDF (płatny) będzie
 dopiero po moim kliknięciu"):**

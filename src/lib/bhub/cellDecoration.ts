@@ -13,6 +13,7 @@ import type { Load } from "@/types/load";
 import { BHUB_STATUS_CLASSES, BHUB_STATUS_LABELS, isBhubStatus } from "./status";
 import { compareIsoFamily, compareIsoLength, describeIsoType, FAMILY_LABELS, orderSizeFamily } from "./isoType";
 import { compareShippingLine } from "./shippingLine";
+import { containerWarnings, formatKg, weightAgreement } from "./checks";
 
 export interface CellDecoration {
   /** Treść do wyświetlenia zamiast surowej wartości pola (null = zostaw domyślną). */
@@ -20,11 +21,16 @@ export interface CellDecoration {
   /** Dodatkowe klasy dla bloku z treścią komórki. */
   className: string;
   title?: string;
+  /** Czy przed wartością ma stanąć trójkącik ostrzegawczy. */
+  alarm?: boolean;
 }
 
 const MATCH_CLASS = "font-bold";
 // Alarm musi być widoczny bez czytania: pogrubienie + czerwień + znak ostrzegawczy przed wartością.
 const ALARM_CLASS = "font-bold text-red-700 bg-red-50 dark:bg-red-950/60 dark:text-red-300";
+// Uwaga o samym kontenerze (Time Out, waga celna) — trójkącik, ale BEZ czerwieni: to nie jest
+// sprzeczność z naszym zleceniem, tylko coś, o czym mówi terminal i co dyspozytor ma zobaczyć.
+const UWAGA_CLASS = "font-bold text-amber-700 dark:text-amber-400";
 
 function checkedAtNote(load: Pick<Load, "bhub_checked_at" | "bhub_error">, now: Date): string {
   if (load.bhub_error) return `Ostatnie sprawdzenie nie powiodło się: ${load.bhub_error}`;
@@ -46,10 +52,15 @@ type DecoratedLoad = Pick<
   | "bhub_iso_type"
   | "bhub_shipping_line"
   | "bhub_gross_weight_kg"
+  | "bhub_net_weight_kg"
+  | "bhub_commodity_weight_kg"
+  | "bhub_time_out"
   | "bhub_checked_at"
   | "bhub_error"
   | "container_size"
   | "shipping_line"
+  | "net_weight_kg"
+  | "gross_weight"
 >;
 
 /**
@@ -64,7 +75,59 @@ export function bhubCellDecoration(
   if (columnKey === "bhub_status") return statusDecoration(load, now);
   if (columnKey === "container_size") return sizeDecoration(load, now);
   if (columnKey === "shipping_line") return lineDecoration(load, now);
+  if (columnKey === "container_number") return containerDecoration(load, now);
+  if (columnKey === "gross_weight" || columnKey === "net_weight_kg") return weightDecoration(load, columnKey, now);
   return null;
+}
+
+/**
+ * Numer kontenera — tu wiszą uwagi o SAMYM kontenerze, nie o polu zlecenia: niepusty „Time Out"
+ * i rozjazd wagi celnej z wagą towaru. Numer jest jedynym miejscem, przy którym obie mają sens,
+ * bo nie dotyczą żadnej konkretnej rubryki zlecenia.
+ */
+function containerDecoration(load: DecoratedLoad, now: Date): CellDecoration | null {
+  const uwagi = containerWarnings(load);
+  if (uwagi.length === 0) return null;
+  return {
+    className: UWAGA_CLASS,
+    alarm: true,
+    title: [...uwagi.map((u) => u.text), checkedAtNote(load, now)].filter(Boolean).join("\n"),
+  };
+}
+
+/**
+ * Waga brutto i netto: terminal jest nadrzędny, więc zgodność POGRUBIAMY, a różnicę pokazujemy
+ * trójkącikiem z obiema liczbami w dymku. Wartości ze zlecenia NIE nadpisujemy (patrz migracja
+ * 0031) — inaczej nie byłoby już czego porównywać i różnica znikałaby razem z ostrzeżeniem.
+ */
+function weightDecoration(
+  load: DecoratedLoad,
+  columnKey: "gross_weight" | "net_weight_kg",
+  now: Date
+): CellDecoration | null {
+  const { agreement, terminal, zlecenie } = weightAgreement(load, columnKey);
+  if (terminal === null) return null;
+
+  const nazwa = columnKey === "gross_weight" ? "brutto" : "netto";
+  const note = checkedAtNote(load, now);
+  if (agreement === "match") {
+    return { className: MATCH_CLASS, title: `Waga ${nazwa} potwierdzona przez Baltic Hub (${formatKg(terminal)}).\n${note}` };
+  }
+  if (agreement === "unknown") {
+    // Zlecenie nie ma tej wagi (albo ma tekst typu „według armatora"). Nie ma sprzeczności —
+    // pokazujemy tylko, co mówi terminal, żeby dyspozytor wiedział, że jest skąd ją wziąć.
+    return {
+      className: "",
+      title: `Baltic Hub podaje wagę ${nazwa}: ${formatKg(terminal)}.\n${note}`,
+    };
+  }
+  return {
+    className: ALARM_CLASS,
+    alarm: true,
+    title:
+      `NIEZGODNOŚĆ wagi ${nazwa}: Baltic Hub podaje ${formatKg(terminal)}, a zlecenie ` +
+      `${zlecenie === null ? "nic" : formatKg(zlecenie)}. Waga z terminala jest nadrzędna.\n${note}`,
+  };
 }
 
 function statusDecoration(load: DecoratedLoad, now: Date): CellDecoration {
@@ -124,6 +187,7 @@ function sizeDecoration(load: DecoratedLoad, now: Date): CellDecoration | null {
   }
   return {
     className: ALARM_CLASS,
+    alarm: true,
     title: `NIEZGODNOŚĆ: Baltic Hub podaje ${isoLabel}, a zlecenie ma „${load.container_size ?? ""}”.\n${note}`,
   };
 }
@@ -138,6 +202,7 @@ function lineDecoration(load: DecoratedLoad, now: Date): CellDecoration | null {
   }
   return {
     className: ALARM_CLASS,
+    alarm: true,
     title: `NIEZGODNOŚĆ: Baltic Hub podaje armatora „${load.bhub_shipping_line}”, a zlecenie ma „${load.shipping_line ?? ""}”.\n${note}`,
   };
 }
@@ -146,5 +211,5 @@ function lineDecoration(load: DecoratedLoad, now: Date): CellDecoration | null {
 export const ALARM_PREFIX = "⚠ ";
 
 export function isAlarm(decoration: CellDecoration | null): boolean {
-  return decoration?.className === ALARM_CLASS;
+  return decoration?.alarm === true;
 }

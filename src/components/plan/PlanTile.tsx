@@ -2,6 +2,7 @@
 
 import type { Load } from "@/types/load";
 import { containerSizeFamily } from "@/lib/containers/tare";
+import { effectiveGrossWeightKg } from "@/lib/bhub/checks";
 import { EMPTY_DROP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { withCurrentOption } from "@/lib/fleet/fleetStore";
 import { isDomestic } from "@/lib/loads/direction";
@@ -76,13 +77,15 @@ export function PlanCarryTile({
   );
 }
 
-/** Waga brutto bywa tekstem ("według armatora"), więc formatujemy tylko czystą liczbę. */
-function formatGrossWeight(raw: string | null): string {
-  const value = (raw ?? "").trim();
-  if (!value) return "";
-  const match = value.match(/^\d+(?:[.,]\d+)?$/);
-  if (!match) return value;
-  return `${Number(value.replace(",", ".")).toLocaleString("pl-PL")} kg`;
+/**
+ * Waga brutto na kafelku. Pierwszeństwo ma waga z Baltic Hubu — jest nadrzędna, a od migracji 0031
+ * nie nadpisuje już pola zlecenia (żeby dało się pokazać różnicę), więc trzeba o nią zapytać
+ * WPROST. Waga ze zlecenia bywa tekstem ("według armatora") i wtedy zostaje jak stoi.
+ */
+function formatGrossWeight(load: Pick<Load, "gross_weight" | "bhub_gross_weight_kg">): string {
+  const zTerminala = effectiveGrossWeightKg(load);
+  if (zTerminala !== null) return `${zTerminala.toLocaleString("pl-PL")} kg`;
+  return (load.gross_weight ?? "").trim();
 }
 
 export function PlanTile({
@@ -111,7 +114,7 @@ export function PlanTile({
   // Import ma nieść komplet informacji o ładunku — eksport zostaje zwięzły.
   const isImport = direction === "I";
   const adr = (load.adr_flag ?? "").trim();
-  const brutto = isImport ? formatGrossWeight(load.gross_weight) : "";
+  const brutto = isImport ? formatGrossWeight(load) : "";
   const odprawa = isImport ? (load.customs_status ?? "").trim() : "";
   const spedycja = isImport ? (load.forwarder ?? "").trim() : "";
   const gdzie = [load.city, load.company_name].map((v) => (v ?? "").trim()).filter(Boolean).join(", ");

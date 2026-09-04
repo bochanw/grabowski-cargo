@@ -101,7 +101,13 @@ export interface Load {
   bhub_status_raw: string | null;
   bhub_iso_type: string | null;
   bhub_shipping_line: string | null;
-  bhub_gross_weight_kg: number | null;
+  bhub_gross_weight_kg: number | null; // Weight [KG] = VGM, czyli brutto
+  // Migracja 0031. Cargo Weight = waga towaru (u nas "netto"), Commodity = waga celna; różnica
+  // między nimi to ostrzeżenie. "Time Out": PUSTY TEKST = rubryka jest i jest pusta (kontener
+  // stoi), null = nie odczytano — z braku wiedzy nie wolno robić alarmu.
+  bhub_net_weight_kg: number | null;
+  bhub_commodity_weight_kg: number | null;
+  bhub_time_out: string | null;
   bhub_checked_at: string | null;
   bhub_error: string | null;
   bhub_details: Record<string, unknown> | null;

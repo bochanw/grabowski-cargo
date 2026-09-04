@@ -27,7 +27,18 @@ export interface ParsedContainer {
   statusRaw: string | null;
   isoType: string | null;
   shippingLine: string | null;
+  /** `Weight [KG]` — waga VGM, czyli brutto. */
   grossWeightKg: number | null;
+  /** `Cargo Weight [KG]` — VGM minus tara, czyli waga samego towaru (u nas „Waga netto"). */
+  netWeightKg: number | null;
+  /** `Commodity Weight [KG]` — waga zgłoszona do Urzędu Celnego; powinna równać się `Cargo Weight`. */
+  commodityWeightKg: number | null;
+  /**
+   * `Time Out` — kiedy kontener opuścił terminal. PUSTY TEKST znaczy „rubryka jest i jest pusta"
+   * (czyli kontener stoi), `null` — „nie odczytałem". To rozróżnienie decyduje o ostrzeżeniu,
+   * więc nie wolno go zgubić: brak odczytu nie może wyglądać jak spokojne „pusto".
+   */
+  timeOut: string | null;
   /** Komplet odczytanych pól. */
   details: Record<string, string>;
   /** Terminal odpowiedział, ale kontenera nie zna. */
@@ -50,6 +61,11 @@ const LABELS = {
   container: ["unitnbr", "numer", "nrkontenera", "containerno", "container"],
   isoType: ["isotype", "typiso", "typkontenera", "containertype", "sizetype"],
   grossWeight: ["weightkg", "weight", "wagabrutto", "grossweight", "masabrutto", "vgm"],
+  // KOLEJNOŚĆ I DOKŁADNOŚĆ MA ZNACZENIE: „Cargo Weight [KG]" zawiera w sobie „Weight [KG]", więc
+  // przy niedokładnym dopasowaniu waga towaru zostałaby wzięta za brutto (patrz komentarz w `pick`).
+  cargoWeight: ["cargoweightkg", "cargoweight", "waganetto", "wagatowaru"],
+  commodityWeight: ["commodityweightkg", "commodityweight", "wagacelna"],
+  timeOut: ["timeout", "czaswyjazdu", "datawyjazdu"],
   shippingLine: ["lineoperator", "armator", "operator", "shippingline", "carrier", "linia"],
   holds: ["stops", "stopki", "stopka", "blokady", "blokada", "holds", "hold"],
   location: ["tstate", "state", "lokalizacja", "polozenie", "location", "yard"],
@@ -253,7 +269,7 @@ export function locationFromTState(raw: string): boolean | null {
 export function interpretRow(row: Record<string, string>): Omit<ParsedContainer, "details"> {
   const containerCell = pick(row, LABELS.container) ?? "";
   if (NOT_FOUND.test(containerCell) || Object.values(row).every((v) => !v.trim())) {
-    return { status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null, notFound: true, recognised: true };
+    return { ...PUSTE, notFound: true, recognised: true };
   }
 
   const location = pick(row, LABELS.location);
@@ -274,6 +290,7 @@ export function interpretRow(row: Record<string, string>): Omit<ParsedContainer,
   }
 
   const statusRaw = [statusCell, location, holds].filter((v) => v && v.trim()).join(" / ") || null;
+  const timeOut = pick(row, LABELS.timeOut);
 
   return {
     status,
@@ -281,10 +298,29 @@ export function interpretRow(row: Record<string, string>): Omit<ParsedContainer,
     isoType: parseIsoCode(pick(row, LABELS.isoType)),
     shippingLine: (pick(row, LABELS.shippingLine) ?? "").trim() || null,
     grossWeightKg: parseWeight(pick(row, LABELS.grossWeight)),
+    netWeightKg: parseWeight(pick(row, LABELS.cargoWeight)),
+    commodityWeightKg: parseWeight(pick(row, LABELS.commodityWeight)),
+    // `undefined` (rubryki nie ma) → null „nie wiem"; pusty tekst zostaje pustym tekstem.
+    timeOut: timeOut === undefined ? null : timeOut.trim(),
     notFound: false,
     recognised: true,
   };
 }
+
+/**
+ * „Nic nie odczytano" — wspólna podstawa dla odpowiedzi bez danych. Osobna stała, bo tych miejsc
+ * są cztery: dopisanie pola i przeoczenie jednego z nich to cichy `undefined` w zapisie do bazy.
+ */
+const PUSTE: Omit<ParsedContainer, "details" | "notFound" | "recognised"> = {
+  status: null,
+  statusRaw: null,
+  isoType: null,
+  shippingLine: null,
+  grossWeightKg: null,
+  netWeightKg: null,
+  commodityWeightKg: null,
+  timeOut: null,
+};
 
 /**
  * Migawka diagnostyczna nierozpoznanej strony — wszystko, czego trzeba, żeby ustalić, jak ta strona
@@ -344,9 +380,6 @@ const ETYKIETA = new RegExp(
   `(${[...KARTA_LABELS].sort((a, b) => b.length - a.length).map(escapeRegex).join("|")})\\s*:`,
   "g",
 );
-
-/** Numer kontenera wg ISO 6346: cztery litery i sześć-siedem cyfr. */
-const NUMER_KONTENERA = /\b[A-Z]{4}\s*\d{6,7}\b/g;
 
 /**
  * Wycina kartę JEDNEGO kontenera. Odpowiedź niesie karty wszystkich kontenerów z paczki naraz,
@@ -416,7 +449,7 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
   // 1. Terminal wprost mówi, że nie zna tego kontenera. To nie jest błąd odczytu.
   if (brakWynikowDla(text, containerNumber)) {
     return {
-      status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null,
+      ...PUSTE,
       notFound: true, recognised: true,
       details: { _container: containerNumber, _uklad: "brak wyników" },
     };
@@ -448,7 +481,7 @@ export function parseContainerPage(html: string, containerNumber: string): Parse
       "wcześniej ze strony."
     : undefined;
   return {
-    status: null, statusRaw: null, isoType: null, shippingLine: null, grossWeightKg: null,
+    ...PUSTE,
     notFound: false,
     recognised: false,
     reason,
