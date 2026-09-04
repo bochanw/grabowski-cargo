@@ -14,7 +14,8 @@ export interface ColumnDef {
   // "contractor": wartość to id z public.contractors, wyświetlana/edytowana przez nazwę.
   // "bhub_status": jeden z pięciu kodów Baltic Hub — lista rozwijana, bo kolumna ma w bazie CHECK
   // (wpisana ręcznie literówka zostałaby odrzucona przez bazę zamiast się zapisać).
-  kind?: "number" | "date" | "contractor" | "bhub_status";
+  // "plan_slot": miejsce na zestawie w Planie wspaniałym — też lista, też przez CHECK w bazie.
+  kind?: "number" | "date" | "contractor" | "bhub_status" | "plan_slot";
 }
 
 export const COLUMNS: ColumnDef[] = [
@@ -56,6 +57,9 @@ export const COLUMNS: ColumnDef[] = [
   { key: "vehicle_plate", label: "Pojazd", block: "ladunek" },
   { key: "trailer_plate", label: "Naczepa", block: "ladunek" },
   { key: "driver_phone", label: "Telefon kierowcy", block: "ladunek" },
+  // Plan wspaniały i Zestawienie to ten sam `loads`, więc miejsce na zestawie da się ustawić także
+  // stąd. Lista, nie wolny tekst — w bazie stoi CHECK na dwie wartości.
+  { key: "plan_slot", label: "Miejsce (plan)", block: "ladunek", kind: "plan_slot" },
 
   { key: "carrier_name", label: "Przewoźnik", block: "rozliczenie" },
   { key: "documents_received_date", label: "Dokumenty otrzymano", block: "rozliczenie", kind: "date" },
@@ -85,6 +89,7 @@ export const COLUMNS: ColumnDef[] = [
   { key: "payment_terms_days", label: "Termin płatności (dni)", block: "fakturowanie", align: "right", kind: "number" },
   { key: "payment_terms_note", label: "Warunek płatności", block: "fakturowanie" },
 
+  { key: "plan_prev_note", label: "Po jakim imporcie", block: "inne" },
   { key: "correct_data_flag", label: "Poprawne dane", block: "inne" },
   { key: "loading_number", label: "Nr załad.", block: "inne" },
   { key: "wants_own_cmr", label: "Kto chce swój list", block: "inne" },

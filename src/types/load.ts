@@ -79,6 +79,12 @@ export interface Load {
   bhub_error: string | null;
   bhub_details: Record<string, unknown> | null;
 
+  // Plan wspaniały — migracja 0025. Miejsce na zestawie; kontener 40/45 zajmuje oba i jest
+  // zapisywany jako "tyl" (o zajęciu całości decyduje `container_size`, nie osobna wartość).
+  plan_slot: "tyl" | "przod" | null;
+  // Ręczne nadpisanie linii "po jakim imporcie" w kafelku eksportu. Puste = appka wylicza z planu.
+  plan_prev_note: string | null;
+
   correct_data_flag: string | null;
   loading_number: string | null;
   wants_own_cmr: string | null;

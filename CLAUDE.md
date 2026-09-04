@@ -290,6 +290,9 @@ z dowolnymi wartościami; jeżeli nie uda się dopasować — zassij z poprzedni
   ciagnik/naczepa/solowka, `assignedTrailerPlate`; kierowca: `name`; dokument: `{driverId,
   docNumber}`). **Panel floty NIE MA telefonu kierowcy** — telefon zostaje z dokumentu zlecenia albo
   z poprzedniego zlecenia; jeśli właściciel chce go trzymać we flocie, to zmiana po stronie DAB.
+  **SPROSTOWANIE (sesja z Planem wspaniałym, sprawdzone zapytaniem do `fleet_store`): rekord
+  kierowcy MA pole `phone`** — tylko jest puste u obu kierowców, więc appka dalej bierze telefon z
+  dokumentu. Gdyby właściciel zaczął je wypełniać, `reconcileWithFleet` warto o nie rozszerzyć.
   Normalizacja tablic/nazwisk skopiowana z `21-rent-narzedzia-parsery.js` (bez aliasów literówek —
   `plate_aliases` tej appki nie dotyczy).
 - `reconcileWithFleet(parsed, fleet, recentLoads)` — reguła właściciela wprost: (1) dopasuj do
@@ -1283,6 +1286,69 @@ aktualną wersję wtyczki"):
 - **Nauczonych szablonów jest na razie ZERO** (`order_templates` puste) — auto-nauka czeka na
   pierwsze zlecenia zapisane przez appkę od czasu jej wdrożenia. Do tego czasu poller czyta za
   darmo tylko dokumenty Q4Road (szablon z kodu), reszta czeka na guzik „Odczytaj przez Claude".
+
+**„PLAN WSPANIAŁY" — DRUGI WIDOK NA TE SAME ZLECENIA** (właściciel: „dodamy oprócz głównego widoku
+zestawienie widok plan wspaniały; jedno wynika z drugiego, więc zmiany w jednym wpływają
+automatycznie na drugie"; służy do planowania tras kierowców i umiejscowienia kontenerów na
+pojazdach):
+- **Kształt wprost z opisu właściciela**: pięć kolumn — (1) pojazd + kierowca, a pod nimi ładowność;
+  (2,3) EKSPORT z danego dnia roboczego, najpierw tył naczepy/przyczepa, potem przód
+  naczepy/solówka; (4,5) IMPORT z NASTĘPNEGO dnia roboczego, analogicznie. W eksporcie kafelek ma
+  dolną linię „po jakim imporcie jest kontener"; **w imporcie tej linii NIE MA** — właściciel:
+  „import jest prosty, tam są tylko realne ładunki z informacjami o nich".
+- **Bez własnego zbioru danych.** Plan czyta `loads` i tylko inaczej je układa: wiersz z
+  `vehicle_plate`, kolumna z `direction` + `load_date`, a jedyne, czego brakowało, to MIEJSCE na
+  zestawie. Stąd `loads.plan_slot` (`tyl`/`przod`) i `loads.plan_prev_note` (ręczne nadpisanie
+  pamiątki) — migracja **0025** (ZAAPLIKOWANA przez MCP + `notify pgrst`), a nie osobna tabela
+  przypisań: dwie kopie tej samej prawdy rozjechałyby się przy pierwszej edycji w Zestawieniu.
+  Obie kolumny są też w Zestawieniu („Miejsce (plan)" listą, bo w bazie stoi CHECK; „Po jakim
+  imporcie" w bloku Inne), więc plan da się poprawić z obu stron.
+- **40/45 nie dostało trzeciej wartości `plan_slot`** — o zajęciu całego zestawu decyduje
+  `container_size`, czyli ta sama dana, którą widzi Zestawienie; kafelek scala wtedy obie kolumny
+  wiersza (`colSpan=2`), a zapis idzie zawsze jako `tyl`. Reguła (a) właściciela pilnowana osobno:
+  **40/45 na solówkę = odmowa z komunikatem**, nie cichy zapis. **Nieznana wielkość NIE blokuje
+  drugiego miejsca** (w danych klienta puste „Wielkość" jest częste — blokada odbierałaby pół
+  zestawu przy każdym niedoczytanym dokumencie).
+- **Nic nie ginie**: kontener wypchnięty przez czterdziestkę i „trzeci na zestawie" lądują w
+  czerwonym pasku „Nie mieści się na zestawie" przy kafelku; pojazd z tablicy, której nie ma w
+  Panelu floty, dostaje własny wiersz („spoza Panelu floty"); **zlecenie BEZ DATY** trafia do
+  bocznej listy z plakietką „bez daty", a położenie go na miejscu USTAWIA datę tej kolumny.
+- Wstawianie **przeciąganiem I klikiem** (właściciel wybrał oba): przeciągnij z listy „Do
+  zaplanowania" albo kliknij zlecenie i kliknij wolne miejsce. Upuszczenie zapisuje pojazd, naczepę
+  z Panelu floty, kierowcę etatowego wiersza i jego nr dowodu — ale **pustym ustawieniem wiersza nie
+  kasujemy kierowcy odczytanego z dokumentu**. „×" na kafelku zdejmuje zlecenie z planu.
+- **Pamiątka „po:" wyliczana + do nadpisania ręcznie** (wybór właściciela): najpóźniejszy import
+  tego pojazdu z datą nie późniejszą niż eksport (ten sam slot ma pierwszeństwo), nigdy z
+  przyszłości. Klik w linię otwiera okno; wpisany tekst siada w `plan_prev_note` i wygrywa.
+- **Wiersze to WSZYSTKIE auta z Panelu floty** (ciągniki i solówki; na produkcji 40 ciągników, 0
+  solówek, 43 naczepy) plus „opcja wpisania urlopu połączona z panelem floty". Urlopy kierowców SĄ
+  w Panelu floty (`drivers[].vacations` = `[{startDate,endDate}]`) i appka je czyta, **nigdy tam nie
+  pisząc**; własna tabela `plan_absences` obok dokłada nieobecność samego auta (awaria, serwis).
+  Druga tabela, `plan_vehicles`, trzyma to, czego Panel floty NIE MA: **kierowcę etatowego** (rekord
+  pojazdu we flocie nie wiąże kierowcy — sprawdzone) i **ładowność** (właściciel zapowiedział
+  dodanie pola we flocie; `fleetStore` czyta już kilka możliwych nazw i weźmie wartość stamtąd, gdy
+  się pojawi, a wpis w planie zostaje nadpisaniem) plus kolejność wierszy i ukrycie auta.
+- **PUŁAPKA złapana zapytaniem, nie samym „success": `revoke execute ... from anon, authenticated`
+  NIE odbiera prawa do funkcji** — Postgres nadaje EXECUTE roli PUBLIC z automatu, więc funkcja
+  triggerowa dalej stała w API jako `/rest/v1/rpc/`. Trzeba `from anon, authenticated, public` (to
+  samo, co 0006). Sprawdzone `has_function_privilege` po zaaplikowaniu.
+- Zakładki „Zestawienie / Plan wspaniały" (`src/components/AppViews.tsx`). Synchronizacji nie ma i
+  nie trzeba: oba widoki czytają ten sam cache TanStack Query odświeżany przez Realtime.
+- **Zweryfikowane**: logika — 36 sprawdzeń (`scratch-plan.test.mts`, plik tymczasowy; jedno złapało
+  realny błąd: kontener wypchnięty przez czterdziestkę liczył się dwa razy). Przeglądarka
+  (Playwright, `next dev`, tymczasowe strony `/test-plan` i `/test-widoki`, usunięte po teście) —
+  19 + 6 sprawdzeń **z podstawionym REST-em, nie z atrapą hooków**, więc szła ta sama ścieżka co w
+  appce (fetch → TanStack Query → widok → PATCH): scalenie kolumn przy 40HC, brak drugiego miejsca,
+  pamiątka wyliczona i nadpisana, odmowa 40HC na solówkę BEZ zapisu, 20DV na solówce zapisane,
+  prawdziwe przeciąganie, zdjęcie z planu, upsert ładowności, przełączanie zakładek bez błędu
+  strony. Baza — REST widzi nowe tabele i kolumny (brak PGRST204), insert bez sesji odbity przez
+  RLS (42501), `loads` przez klucz publishable wraca puste mimo 6 wierszy (RLS działa).
+  **NIE zweryfikowane na żywym koncie** — pierwsze planowanie u właściciela pokaże resztę
+  (środowisko sesji nie ma konta do zalogowania).
+- **Do dopytania właściciela przy pierwszym użyciu**: w arkuszu przy miejscowości stoi liczba
+  („2 Łódź", „1 Warszawa") — nie wiadomo, co znaczy, więc kafelek jej nie pokazuje. Do tego dobór
+  pól na kafelku (dziś: wielkość, miejscowość + firma, nr kontenera · wielkość · gestia, podjęcie ·
+  godzina · nr zlecenia) jest propozycją, nie ustaleniem.
 
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje

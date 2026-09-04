@@ -5,13 +5,25 @@
 // 20 → 2200. Nieznany typ = null (brutto nie liczymy, zamiast zgadywać).
 const TARE_KG = { "20": 2200, "40": 3700, "40HC": 3900, "45": 4800 } as const;
 
-export function containerTareKg(containerSize: string | null | undefined): number | null {
+export type ContainerFamily = keyof typeof TARE_KG;
+
+/**
+ * Rodzina kontenera z zapisu ze zlecenia ("20DV", "40 HC", "40HQ", "45HC"). Nieznany zapis = null
+ * (nie zgadujemy). Poza tarą korzysta z tego Plan wspaniały: 40/45 zajmuje CAŁY zestaw, więc od tej
+ * odpowiedzi zależy, czy kafelek scala obie kolumny wiersza i czy kontener wolno dać na solówkę.
+ */
+export function containerSizeFamily(containerSize: string | null | undefined): ContainerFamily | null {
   const size = (containerSize ?? "").toUpperCase().replace(/[\s'"’-]/g, "");
   if (!size) return null;
-  if (size.startsWith("45")) return TARE_KG["45"];
-  if (size.startsWith("40")) return /H[CQ]/.test(size) ? TARE_KG["40HC"] : TARE_KG["40"];
-  if (size.startsWith("20")) return TARE_KG["20"];
+  if (size.startsWith("45")) return "45";
+  if (size.startsWith("40")) return /H[CQ]/.test(size) ? "40HC" : "40";
+  if (size.startsWith("20")) return "20";
   return null;
+}
+
+export function containerTareKg(containerSize: string | null | undefined): number | null {
+  const family = containerSizeFamily(containerSize);
+  return family === null ? null : TARE_KG[family];
 }
 
 export function computeGrossWeightKg(netWeightKg: number | null | undefined, containerSize: string | null | undefined): number | null {

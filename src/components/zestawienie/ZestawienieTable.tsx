@@ -13,6 +13,7 @@ import { loadSearchText, matchesQuery } from "@/lib/search/loadSearch";
 import { ALARM_PREFIX, bhubCellDecoration, isAlarm } from "@/lib/bhub/cellDecoration";
 import { BHUB_STATUSES, BHUB_STATUS_LABELS } from "@/lib/bhub/status";
 import { shouldTrackLoad } from "@/lib/bhub/schedule";
+import { PLAN_SLOTS, PLAN_SLOT_LABELS, type PlanSlot } from "@/lib/plan/slots";
 import { useBhubCheck } from "@/hooks/useBhubCheck";
 import { useBhubAgent } from "@/hooks/useBhubAgent";
 import { opisOstatniegoSprawdzenia } from "@/lib/bhub/agentStatus";
@@ -62,6 +63,8 @@ function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Ma
     return value.toLocaleString("pl-PL");
   }
   if (kind === "contractor") return contractorNames.get(String(value)) ?? "(nieznany kontrahent)";
+  // W bazie siedzi kod ('tyl'/'przod'), w tabeli ma stać nazwa miejsca — ta sama, co w Planie.
+  if (kind === "plan_slot") return PLAN_SLOT_LABELS[value as PlanSlot] ?? String(value);
   return String(value);
 }
 
@@ -1058,6 +1061,9 @@ function selectOptionsFor(
     // wróciłaby błędem zapisu zamiast się zapisać).
     case "bhub_status":
       return BHUB_STATUSES.map((code) => ({ value: code, label: `${code} — ${BHUB_STATUS_LABELS[code]}` }));
+    // Miejsce na zestawie z Planu wspaniałego — też lista, bo i tu w bazie stoi CHECK.
+    case "plan_slot":
+      return PLAN_SLOTS.map((slot) => ({ value: slot, label: PLAN_SLOT_LABELS[slot] }));
     case "driver_name":
       return withCurrentOption(fleet.drivers.map((d) => d.name), current);
     case "vehicle_plate":

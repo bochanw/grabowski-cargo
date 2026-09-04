@@ -22,12 +22,26 @@ export interface FleetVehicle {
   brand: string;
   type: string;
   assignedTrailerPlate: string;
+  /**
+   * Ładowność do Planu wspaniałego. Panel floty TEJ kolumny jeszcze nie ma (sprawdzone na żywym
+   * `fleet_store.vehicles`) — właściciel zapowiedział jej dodanie. Czytamy więc kilka możliwych
+   * nazw i zwracamy null, dopóki żadnej nie ma; do tego czasu wartość wpisuje się w `plan_vehicles`.
+   */
+  payloadKg: number | null;
+}
+
+/** Urlop kierowcy z Panelu floty — `drivers[].vacations`, zakładka "Urlopy". Tylko do odczytu. */
+export interface FleetVacation {
+  startDate: string;
+  endDate: string;
 }
 
 export interface FleetDriver {
   id: string;
   name: string;
   docNumber: string;
+  phone: string;
+  vacations: FleetVacation[];
 }
 
 export interface Fleet {
@@ -63,6 +77,15 @@ function str(value: unknown): string {
   return typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
 }
 
+function num(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/\s/g, "").replace(",", "."));
+    return Number.isFinite(parsed) && value.trim() !== "" ? parsed : null;
+  }
+  return null;
+}
+
 function asArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
 }
@@ -82,12 +105,17 @@ async function fetchFleet(): Promise<Fleet> {
     brand: str(v.brand),
     type: str(v.type),
     assignedTrailerPlate: str(v.assignedTrailerPlate),
+    payloadKg: num(v.payloadKg ?? v.payload ?? v.ladownosc ?? v.loadCapacity ?? v.maxLoad),
   }));
   const docByDriver = new Map(asArray(byKey.get("driver_documents")).map((d) => [str(d.driverId), str(d.docNumber)]));
   const drivers = asArray(byKey.get("drivers")).map<FleetDriver>((d) => ({
     id: str(d.id),
     name: str(d.name),
     docNumber: docByDriver.get(str(d.id)) ?? "",
+    phone: str(d.phone),
+    vacations: asArray(d.vacations)
+      .map((v) => ({ startDate: str(v.startDate), endDate: str(v.endDate) }))
+      .filter((v) => v.startDate && v.endDate),
   }));
 
   return {
