@@ -1309,12 +1309,19 @@ pojazdach):
 - **Dni idą JEDEN POD DRUGIM, nie w bok** (właściciel po zobaczeniu pierwszej wersji: „przewijanie
   jest w tej chwili lewo-prawo dni, a ma być góra-dół"). Pierwsza wersja rozkładała okno poziomo
   (4 dni × 4 kolumny = 16 kolumn) — teraz kolumny są CZTERY i stałe, a każdy dzień to sekcja
-  z własnym nagłówkiem („czwartek, 29.01 · import: piątek, 30.01"), pod którym stoją wszystkie
-  auta. Stąd `PlanRow.blocks[]` (ten sam pojazd w kolejnych dniach) zamiast kolejnych kolumn
-  w wierszu; wiersz pojazdu powtarza się w każdej sekcji, więc selektory w testach muszą podawać
-  `data-dzien`. Napis w nagłówku sekcji jest w `<div class="sticky left-2">` — ta sama sztuczka
-  co przy nagłówkach dnia w Zestawieniu. Jest test-straż na sam układ: cztery nagłówki slotów,
-  zero nagłówków dnia w `<thead>`, każda kolejna sekcja niżej od poprzedniej i w tej samej kolumnie.
+  z własnym nagłówkiem, pod którym stoją wszystkie auta. Stąd `PlanRow.blocks[]` (ten sam pojazd
+  w kolejnych dniach) zamiast kolejnych kolumn w wierszu; wiersz pojazdu powtarza się w każdej
+  sekcji, więc selektory w testach muszą podawać `data-dzien`. Jest test-straż na sam układ:
+  cztery nagłówki slotów, zero nagłówków dnia w `<thead>`, każda kolejna sekcja niżej od
+  poprzedniej i w tej samej kolumnie.
+- **Daty stoją NAD swoimi kolumnami, nie w jednym pasku** (właściciel: „miał być eksport załóżmy
+  03.09, import 04.09 i to mieliśmy przewijać góra-dół, czyli wyżej zobaczę 02.09 > 03.09"). Nagłówek
+  sekcji to trzy komórki: „dzień planu / dzień wstecz / +N dzień" nad kolumną pojazdu, **EKSPORT
+  <data>** nad kolumnami eksportu i **IMPORT <data następnego dnia roboczego>** nad kolumnami
+  importu. W `<thead>` tych dat być NIE MOŻE — kolumny są wspólne dla wszystkich sekcji; pierwsza
+  wersja pionowa trzymała obie daty w jednym pasku na całą szerokość i para „eksport → import"
+  przestała być widoczna nad właściwymi kolumnami. Test sprawdza teraz same PARY dat sekcji
+  (02.09→03.09, 03.09→04.09, 04.09→07.09, 07.09→08.09), czyli dokładnie to, co opisał właściciel.
 - Przy czterech dniach × kilkudziesięciu autach lista robi się długa, więc doszły dwa sposoby jej
   skrócenia: przełącznik **„tylko auta z ładunkiem"** w pasku (domyślnie WYŁĄCZONY — właściciel
   prosił o „wszystkie auta", bo z pustych wierszy widać wolne moce) i **„Ukryj to auto w planie"**

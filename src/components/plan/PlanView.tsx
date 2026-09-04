@@ -293,13 +293,13 @@ export function PlanView() {
                   colSpan={2}
                   className="border-b border-r-2 border-zinc-300 bg-emerald-50 px-2 py-1 text-center font-semibold text-emerald-900 dark:border-zinc-700 dark:bg-emerald-950 dark:text-emerald-100"
                 >
-                  EKSPORT — dzień z nagłówka sekcji
+                  EKSPORT
                 </th>
                 <th
                   colSpan={2}
                   className="border-b border-zinc-300 bg-sky-50 px-2 py-1 text-center font-semibold text-sky-900 dark:border-zinc-700 dark:bg-sky-950 dark:text-sky-100"
                 >
-                  IMPORT — następny dzień roboczy po nim
+                  IMPORT
                 </th>
               </tr>
               <tr>
@@ -322,28 +322,40 @@ export function PlanView() {
               {board.days.map((planDay, dayIndex) => (
                 <Fragment key={planDay.dayExport}>
                   {/* Dni idą jeden pod drugim — nagłówek sekcji zamiast kolejnych kolumn w bok.
-                      Sam napis jest przyklejony do lewej, żeby nie uciekał przy przewijaniu w bok
-                      (ta sama sztuczka co przy nagłówkach dnia w Zestawieniu). */}
-                  <tr>
+                      Daty stoją NAD swoimi kolumnami (eksport nad eksportem, import nad importem),
+                      bo para "eksport 03.09 → import 04.09" to sedno tego widoku i musi być widoczna
+                      w każdej sekcji z osobna. W nagłówku tabeli tych dat być nie może — kolumny są
+                      wspólne dla wszystkich dni. Napis w kolumnie pojazdu jest przyklejony do lewej,
+                      żeby nie uciekał przy przewijaniu w bok. */}
+                  <tr data-testid="naglowek-dnia" data-dzien={planDay.dayExport}>
                     <td
-                      colSpan={5}
-                      data-testid="naglowek-dnia"
-                      data-dzien={planDay.dayExport}
-                      className={`border-y border-zinc-300 px-2 py-1 text-sm font-semibold dark:border-zinc-700 ${dayHeaderClass(
+                      className={`sticky left-0 z-10 border-y border-r border-zinc-300 px-2 py-1 text-sm font-semibold dark:border-zinc-700 ${dayHeaderClass(
                         planDay
                       )} ${dayIndex > 0 ? "border-t-4 border-t-zinc-400 dark:border-t-zinc-600" : ""}`}
                     >
-                      <div className="sticky left-2 w-fit">
-                        {formatDay(planDay.dayExport)}
-                        {planDay.offset !== 0 && (
-                          <span className="ml-1 font-normal opacity-70">
-                            ({planDay.offset > 0 ? `+${planDay.offset}` : planDay.offset})
-                          </span>
-                        )}
-                        <span className="ml-2 font-normal opacity-70">
-                          · import: {formatDay(planDay.dayImport)}
-                        </span>
+                      <div className="w-fit">
+                        {planDay.offset === 0 ? "dzień planu" : planDay.offset > 0 ? `+${planDay.offset} dzień` : "dzień wstecz"}
                       </div>
+                    </td>
+                    <td
+                      colSpan={2}
+                      data-testid="naglowek-eksportu"
+                      data-dzien={planDay.dayExport}
+                      className={`border-y border-r-2 border-zinc-300 bg-emerald-100 px-2 py-1 text-sm font-semibold text-emerald-900 dark:border-zinc-700 dark:bg-emerald-900 dark:text-emerald-50 ${
+                        dayIndex > 0 ? "border-t-4 border-t-zinc-400 dark:border-t-zinc-600" : ""
+                      }`}
+                    >
+                      EKSPORT {formatDay(planDay.dayExport)}
+                    </td>
+                    <td
+                      colSpan={2}
+                      data-testid="naglowek-importu"
+                      data-dzien={planDay.dayImport}
+                      className={`border-y border-zinc-300 bg-sky-100 px-2 py-1 text-sm font-semibold text-sky-900 dark:border-zinc-700 dark:bg-sky-900 dark:text-sky-50 ${
+                        dayIndex > 0 ? "border-t-4 border-t-zinc-400 dark:border-t-zinc-600" : ""
+                      }`}
+                    >
+                      IMPORT {formatDay(planDay.dayImport)}
                     </td>
                   </tr>
                   {board.rows.map((row) => {
