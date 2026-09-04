@@ -1111,6 +1111,65 @@ dopiero po moim kliknięciu"):**
   `not_a_user`, zero zapytań do modelu), `mail-poll` v15 (wstaje i odpowiada z naszego kodu),
   cron `mail-poll-co-2-min` aktywny.
 
+**AUTO-NAUKA SZABLONÓW — ZROBIONA** (właściciel: „pomyśl jak to zrobić, żeby automatycznie odczyt
+zlecenia jednorazowy przez AI był traktowany jako znany szablon, taka auto-nauka"):
+- **Skąd bierze się prawda: z pól ZATWIERDZONYCH przez dyspozytora przy zapisie zlecenia, nie z
+  odpowiedzi modelu.** Model czyta, człowiek poprawia, a appka dopiero POTEM szuka zapisanych
+  wartości w tekście dokumentu i zapamiętuje kotwice „co stoi przed" / „co stoi po" — czyli to samo,
+  co ręcznie pisany `q4road.ts` robi przez `between()`.
+- **Decyzje właściciela (AskUserQuestion):** (1) uczymy się z pierwszego dokumentu, ale szablon
+  wchodzi do gry dopiero, gdy DRUGI dokument tego układu potwierdzi kotwice; (2) zastępuje płatny
+  odczyt tylko wtedy, gdy odtworzy KOMPLET kluczowych pól (nr zlecenia, kierunek, kontener, data,
+  stawka, spedytor) — inaczej dokument idzie do Claude jak dotąd.
+- **Dlaczego dopiero drugi dokument jest w ogóle sensowny technicznie**: z jednego nie da się
+  odróżnić etykiety od sąsiedniej wartości. Mając dwa, bierzemy to, co w obu jest STAŁE — reszta
+  odpada sama, bez zgadywania.
+- Kolejność odczytu: ręczny szablon z kodu → **szablon nauczony** → Claude → ręcznie. Ta sama
+  w oknie importu i w `mail-poll`.
+- **Dwie rzeczy zmienione przez TESTY NA PRAWDZIWYCH PDF-ach, nie przy pisaniu:**
+  1. Wspólna część dwóch dokumentów WCIĄŻ bywa daną (ta sama data, ta sama agencja celna) i wchodziła
+     do kotwicy — działało na obu dokumentach, z których się uczyliśmy, i rozsypywało się na trzecim.
+     Z kotwic wycinamy więc wszystko, co wygląda na daną (znane wartości, także urwane na brzegu
+     okna, oraz daty/kwoty/długie liczby, których appka w ogóle nie zapisuje).
+  2. Data i godzina stoją w TABELI, gdzie obok wartości nie ma żadnej etykiety. Reguła może więc
+     przeskoczyć zmienną zawartość: kotwiczy na najbliższej stałej etykiecie i bierze n-te
+     dopasowanie danego KSZTAŁTU (data, godzina, kwota, kierunek, kontener). Dla pól tekstowych
+     jest to zabronione — „n-ty tekst z kawałka" nic nie znaczy.
+  Do tego: kwota musi uczyć się jako „3296,00", nie „3296" z kotwicą „,00" (inaczej zlecenie za
+  1875,50 przestaje się czytać), a „wspólna końcówka okna" nie sięga etykiety, gdy przed wartością
+  stoi INNA wartość — etykiet szukamy osobno w każdym dokumencie i dopiero potem zestawiamy.
+- **Straże**: każda reguła musi odtworzyć zatwierdzone wartości w OBU dokumentach co do znaku,
+  inaczej nie trafia do szablonu; kotwica trafiająca dwa razy w dokument jest pomijana (pole zostaje
+  puste, zamiast wziąć wartość z przypadkowego miejsca); dwie poprawki dyspozytora na polu wyrzucają
+  regułę; szablon wyłączony ręcznie NIE wraca sam.
+- `supabase/migrations/0023_order_templates.sql` (**ZAAPLIKOWANA przez MCP**): szablony w BAZIE,
+  nie w kodzie — nowy spedytor nie wymaga wtedy wdrożenia, a nauka jednej osoby działa od razu
+  u wszystkich i w skrzynce. Kształt `rules` zna wyłącznie appka (jak `user_view_settings`).
+- Podział plików: `readTemplate.ts` (czytanie — jedzie do Deno przez `build-edge-shared.mjs`)
+  i `learn.ts` (uczenie — tylko przeglądarka; serwer ma stosować gotowe reguły, nie wyprowadzać
+  nowych). `autoLearn.ts` to czysta decyzja „załóż / potwierdź / doucz / nic", testowalna bez bazy.
+  Świadomie BEZ `export *` między nimi — re-eksport gubił się w tsx.
+- UI: guzik **„Szablony (N)"** w pasku + `OrderTemplatesDialog` (co appka rozpoznaje, ile razy
+  użyła, co poprawiał dyspozytor, „Co czyta" z podglądem kotwic, Wyłącz/Usuń). Po zapisie zlecenia
+  w pasku staje zielony komunikat, czego appka się nauczyła — nauka nie dzieje się w ukryciu.
+- **Skrzynka też uczy i korzysta**: `readEmailWithClaude` wyciąga tekst załączników przy okazji
+  pobrania ich do odczytu, więc zlecenie z maila uczy appkę tak samo jak wgrane ręcznie.
+- **Zweryfikowane na PRAWDZIWYCH dokumentach Q4Road** (drugi dokument układu powstawał przez
+  podmianę wartości w prawdziwym tekście — tak właśnie różni się kolejne zlecenie): 57 sprawdzeń
+  (`scratch-learn.test.mts`, plik tymczasowy) — nauka z pary daje 10 pól ze zlecenia i 15 z listu
+  przewozowego, trzeci (niewidziany) dokument czytany ZGODNIE CO DO ZNAKU z ręcznym parserem, obcy
+  układ i cudzy NIP odrzucone, pełny cykl życia szablonu z wycofaniem reguły po dwóch poprawkach.
+  Przeglądarka (Playwright, prawdziwy PDF): kandydat → aktywny (10 pól) → odczyt kolejnego zlecenia
+  bez modelu. **Kluczowy pomiar: tekst tego samego PDF-a z przeglądarki i z Deno jest IDENTYCZNY**
+  (6089 znaków, ten sam skrót) — kotwice nauczone u dyspozytora trafiają tak samo po stronie serwera.
+- **JEDYNY KROK NIEDOKOŃCZONY: `mail-poll` NIE ZOSTAŁA WDROŻONA** z obsługą nauczonych szablonów
+  (kod w repo, `deno check` przechodzi, `shared/readTemplate.ts` wygenerowany). Powód jest
+  narzędziowy, nie merytoryczny: `deploy_edge_function` przez MCP wymaga wysłania KOMPLETU 16 plików
+  w jednym wywołaniu, a to przekracza limit jednej odpowiedzi. Do zrobienia: `supabase functions
+  deploy mail-poll --project-ref itlgexjhznjsbonzdxyg` albo wdrożenie z sesji, w której to jedyne
+  zadanie. Do tego czasu appka uczy się i czyta nauczonymi szablonami w PRZEGLĄDARCE, a skrzynka
+  zachowuje się jak dotąd (ręczne szablony + guzik „Odczytaj przez Claude").
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
