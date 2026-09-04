@@ -55,7 +55,9 @@ import {
 //  • load_date i gross_weight — appka je WYLICZA (dzień roboczy przed rozładunkiem, towar + tara),
 //    więc w dokumencie ich nie ma i szukanie ich byłoby szukaniem czegoś, czego nikt nie napisał;
 //  • baf_percentage i rate_includes_baf — to interpretacja zdania ("w tym BAF"), nie wartość
-//    stojąca w rubryce; od takiego rozumienia jest model.
+//    stojąca w rubryce; od takiego rozumienia jest model;
+//  • weighing_required — z tego samego powodu: dokument pisze "ważenie w porcie", a nie "tak".
+//    Samo MIEJSCE ważenia (weighing_place) stoi w rubryce i uczy się normalnie.
 const LEARNABLE: Partial<Record<LearnedField, LearnKind>> = {
   order_number: "text",
   forwarder: "text",
@@ -70,6 +72,7 @@ const LEARNABLE: Partial<Record<LearnedField, LearnKind>> = {
   company_name: "text",
   address: "text",
   city: "text",
+  postal_code: "text",
   delivery_date: "date",
   delivery_time: "time",
   customs_location_or_status: "text",
@@ -82,6 +85,7 @@ const LEARNABLE: Partial<Record<LearnedField, LearnKind>> = {
   pin_booking: "text",
   seal_number: "text",
   goods_name: "text",
+  weighing_place: "text",
   net_weight_kg: "amount",
   submitted_when: "text",
   submitted_where: "text",

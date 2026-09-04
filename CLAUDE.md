@@ -1650,6 +1650,230 @@ sa one odczytywane z maila? nie mozemy zrobic jakiegos obejscia na czas nauki"):
 - **NIE zweryfikowane na żywym koncie**: samo pobranie z prywatnego bucketa (środowisko sesji nie ma
   konta) — pierwsze kliknięcie właściciela pokaże, czy podpis do `order-emails` przechodzi.
 
+**WAŻENIE — „czy wymagane" i „gdzie" (właściciel: „przy imporcie zleceń brakuje opcji zaciągania /
+dopisania gdzie i czy wymagane jest ważenie"; w trakcie sesji doprecyzował: „jest Ważenie (export)
+kolumna na to"):**
+- **Miejsce ważenia zostaje w ISTNIEJĄCEJ kolumnie `weighing_export`** (kolumna R arkusza, „Ważenie
+  (tylko export)") — na produkcji była pusta we wszystkich wierszach, więc nic nie trzeba było
+  przenosić. Nazwa kolumny NIE zmieniona (siedzi w `activity_log` i w zapisanych ustawieniach widoku
+  każdego użytkownika — ta sama zasada, co przy „Złożone kiedy" → „Data złożenia”), zmieniła się
+  tylko etykieta: **„Ważenie gdzie”**. NOWA jest wyłącznie odpowiedź „czy”: `loads.weighing_required
+  boolean` (migracja **0029**, ZAAPLIKOWANA przez MCP + `notify pgrst`).
+- **Dlaczego osobna kolumna, a nie słowo doklejone do miejsca**: po „czy” dyspozytor filtruje dzień
+  („które zlecenia trzeba zważyć”), a „tak” wpisane w tekst miejsca do niczego takiego się nie nadaje.
+  Typ NULLOWALNY, bo trzy stany znaczą co innego: `true` = wymagane, `false` = wprost niewymagane,
+  `null` = **dokument o tym nie mówi**. Wymuszenie `false` na braku informacji kazałoby dyspozytorowi
+  ufać czemuś, czego nikt nie napisał (ta sama zasada, co przy `rate_includes_baf`).
+- **Zaciąganie z dokumentu**: `parse-order-pdf` **wdrożona (v24)** — schemat ma `weighing_required` +
+  `weighing_place`, doszła zasada 12 promptu (ważenie bywa jednym słowem w uwagach; wskazanie miejsca
+  samo w sobie znaczy, że ważenie jest; nie mylić z wagą towaru ani z miejscem podjęcia/zdania).
+  **Opis pola `notes` przestał zbierać ważenie** — dotąd stało tam wprost „np. nietypowe wymagania,
+  ważenie”, i faktycznie tam lądowało: na produkcji zlecenie 441/1130/2026/KK/E ma w uwagach
+  „…odprawa Piła, ważenie w porcie”, bo pola na to nie było.
+- Reguła „**miejsce znaczy, że ważenie jest**" siedzi w `src/lib/loads/prepareOrder.ts`, czyli w tym
+  JEDNYM miejscu, przez które przechodzi każde wejście pól do formularza (wgrany plik, kolejka
+  dokumentów, Skrzynka, ręczne wpisanie) — dokładnie z powodu opisanego przy regresji domyślnej daty.
+  Odwrotnie NIE działa: brak miejsca nie znaczy „niewymagane”, a świadome „nie” dyspozytora nie jest
+  nadpisywane. Zmiana jest widoczna: okno pisze, że appka to zaznaczyła.
+- **Naprawione przy okazji (dziura sprzed tej zmiany): na drodze ze SKRZYNKI ostrzeżenia
+  `applyOrderDefaults` GINĘŁY.** Okno rozpakowywało wynik do samego `.order`, więc dyspozytor
+  otwierający zlecenie z maila nie dowiadywał się, że appka przestawiła mu gestię na „Leasing”
+  (a teraz — że zaznaczyła ważenie); przy wgranym pliku te same ostrzeżenia były pokazywane.
+- **Pierwsza kolumna LOGICZNA w Zestawieniu** — `kind: "boolean"` w `columns.ts`: w komórce „Tak”/
+  „Nie” (nigdy „true”), edycja listą z pustą opcją wracającą do „nie wiadomo”. Pusta komórka to brak
+  informacji, nie „Nie”.
+- **PUŁAPKA złapana testem, nie przy pisaniu: wyszukiwarka dopasowuje po FRAGMENCIE słowa**, więc
+  „ważenie niewymagane” w indeksie sprawiało, że zapytanie „ważenie wymagane" wyciągało dokładnie te
+  zlecenia, których dyspozytor wtedy NIE szuka („wymagane” siedzi w środku „niewymagane”). Zlecenie
+  zwolnione opisujemy więc „bez ważenia”; jest test-straż na tę klasę błędu.
+- **Zweryfikowane**: logika — 13 sprawdzeń (`scratch-wazenie.test.mts`, plik tymczasowy: normalizacja
+  odpowiedzi modelu, scalanie dwóch dokumentów z zachowanym `false`, reguła miejsca, round-trip
+  zapisane zlecenie → formularz, wyszukiwarka). Przeglądarka (Playwright, `next dev`, tymczasowa
+  strona `/test-wazenie`, skasowana po teście) — 17 sprawdzeń **na prawdziwej ścieżce danych**
+  (REST → `useLoads` → tabela → PATCH; podstawiony wyłącznie `fetch`, bo środowisko sesji nie ma
+  konta): obie kolumny w tabeli, „Tak” zamiast „true”, pusta komórka przy braku informacji, edycja
+  listą, zapis `false` i powrót do `null`, pola w oknie zlecenia, miejsce z dokumentu zaznaczające
+  „wymagane” wraz z komunikatem. Baza — REST widzi nową kolumnę (brak PGRST204), filtr
+  `weighing_required=is.true` działa; dziennik zmian obejmuje ją bez zmian w triggerze (0016 liczy
+  diff generycznie z `to_jsonb`, pomijając tylko `updated_at`/`bhub_*`).
+- **NIE zweryfikowane**: realny odczyt ważenia z dokumentu przez model. Od wersji v21 funkcja odrzuca
+  wszystko, co nie jest tokenem ZALOGOWANEGO człowieka (blokada kosztowa po incydencie z Claude
+  Console), a to środowisko konta nie ma — więc strzał curl-em potwierdza tylko, że funkcja wstała i
+  chodzi po naszym kodzie (405 / `not_a_user`, polskie znaki całe). Pierwsze zlecenie z ważeniem
+  u właściciela pokaże resztę.
+- **`mail-poll` ŚWIADOMIE nie przewdrażana** (wdrożona v18 nie zna tych pól). Dziś nie ma to
+  praktycznego skutku: poller nie woła modelu, szablon Q4Road ważenia nie czyta, a nauczonych
+  szablonów jest zero. `shared/parsedOrder.ts` jest już przegenerowane, więc przy najbliższym
+  wdrożeniu tej funkcji z innego powodu pola wejdą same.
+
+**STAWKI DLA KIEROWCÓW — cennik po kodzie pocztowym i tonażu + miesięczne rozliczenie** (właściciel
+przysłał arkusz „Zeszyt1.xlsx": Arkusz 1 to 283 wiersze `Kod / Miejscowość / do 15t / pow. 15t /
+pow. 22t`; „potrzebuję żebyś dobudował funkcjonalność która automatycznie przypisze stawkę dla
+kierowcy w zależności od zlecenia (kodu pocztowego/wagi) i potem pozwoli łatwo w skali miesiąca
+pokazać stawki kierowcy w zestawieniu"). **Arkusze 2 i 3 świadomie nietknięte — właściciel:
+„na razie nie zaglądaj, to z czasem wytłumaczę".**
+
+**Decyzje właściciela (AskUserQuestion, ta sesja):**
+- **O progu tonażu decyduje waga Z TERMINALA (Baltic Hub), gdy jest**, a gdy jej nie ma — waga
+  z dokumentu. Kolejność w `weightForRate`: `bhub_gross_weight_kg` → liczbowa „Waga brutto" → towar
+  + tara wg typu kontenera → sama waga towaru (ta ostatnia zaniża wagę o 2,2-4,8 t, więc jest
+  ostrzeżeniem przy stawce, nie cichym założeniem).
+- **Zlecenie wielopunktowe: liczy się NAJWYŻSZA stawka ze wszystkich miejsc** („kierowca jedzie
+  najdalej"). Miejsce bez stawki w cenniku nie kasuje kwoty — dokłada ostrzeżenie.
+- **Osobna zakładka „Stawki kierowców"** obok Zestawienia i Planu wspaniałego.
+
+**Migracja 0030 (ZAAPLIKOWANA przez MCP w dwóch krokach — schemat i cennik — + `notify pgrst`):**
+- `driver_rates`: `prefix` to SAME CYFRY, 2 albo 3 („06" i „061"), bo dopasowanie do kodu pocztowego
+  zlecenia jest porównaniem prefiksu („80-299" → „80299" → próbuj „802", potem „80"). Zapis z arkusza
+  („06-1") odtwarza UI (`formatRatePrefix`). Sprawdzone po zaaplikowaniu zapytaniem: 283 wiersze,
+  220 trzycyfrowych, polskie znaki całe.
+- **Cennik w BAZIE, nie w kodzie**: stawki się zmieniają (paliwo, nowa umowa), a wtedy zmiana ma być
+  kliknięciem w appce, nie wdrożeniem — to samo rozstrzygnięcie co przy `contractors`
+  i `order_templates`. RLS „wymaga logowania", Realtime włączony (dwóch dyspozytorów, jedna prawda).
+- `loads.postal_code` — appka NIE MIAŁA gdzie trzymać kodu pocztowego (adres to wolny tekst, a w
+  danych produkcyjnych nie było ani jednego kodu), a to on decyduje o stawce.
+- **`loads.driver_rate` (kolumna Y arkusza) zmieniła TYP z text na numeric**, nie nazwę — nazwa siedzi
+  w `activity_log` i w zapisanych ustawieniach widoku każdego użytkownika (ta sama zasada co przy
+  „Złożone kiedy" i „Ważenie gdzie"). Konwersja bezpieczna: sprawdzone zapytaniem, że na produkcji
+  nie było ani jednej wypełnionej wartości. Do tego `driver_rate_code` (z którego wiersza cennika)
+  i `driver_rate_source` (`auto`/`manual`).
+
+**Reguły dopasowania (`src/lib/driverRates/rates.ts`) — appka NIGDY nie zgaduje:**
+- Bardziej szczegółowy wiersz wygrywa: najpierw 3 cyfry („06-1" Pułtusk), potem 2 („06" Mława).
+  Arkusz ma sześć prefiksów z jednym i drugim naraz, więc to nie jest teoria.
+- **Kod spoza cennika = BRAK stawki + powód wypisany wprost**, nigdy stawka sąsiada. Arkusz ma
+  08-1…08-5 i NIE ma ogólnego „08", a prefiksu 79 nie ma w ogóle — podstawienie sąsiedniego wiersza
+  byłoby kwotą do wypłaty wziętą z sufitu.
+- Kod pocztowy wyłuskiwany z adresu, gdy nie ma go w polu („Słoneczna 42 A, 05-500 Piaseczno") —
+  w `prepareOrder.ts`, czyli w tym jednym lejku, przez który przechodzi każde wejście pól do
+  formularza. Wymagany PEŁNY kształt NN-NNN: „Sygnały 62" nie jest kodem.
+- **Nazwa miejscowości to ostatnia deska ratunku i tylko wtedy, gdy WSZYSTKIE trafione wiersze mają
+  identyczne stawki** (Warszawa 00-04 i Łódź 90-94 — tak; miasto rozstrzelone po różnych stawkach —
+  nie). Kolumna „Miejscowość" jest opisem prefiksu, nie adresem („Mława/Przasnysz", „Okolice
+  Warszawy"), więc każde inne użycie byłoby zgadywaniem. Wynik jest oznaczony jako słabsze
+  dopasowanie i pisze wprost, żeby wpisać kod.
+- Progi: „do 15t" obejmuje RÓWNE 15 t, „pow. 22t" to dopiero > 22 t. W arkuszu pierwsze dwie kolumny
+  są często równe, więc pomyłka na tej granicy byłaby długo niewidoczna — stąd osobne testy.
+
+**Kiedy appce wolno ruszyć stawkę (`assign.ts`)** — jedno miejsce na tę granicę: tylko gdy
+`driver_rate_source` NIE jest `manual`. Kwota wpisana ręcznie w tabeli albo w formularzu jest
+nietykalna, a **świadome wyczyszczenie pola też jest decyzją człowieka** i nie wraca (formularz
+wtedy nie podpowiada). Źródło rozstrzyga porównanie z wyliczeniem: kwota równa podpowiedzi to
+`auto`, każda inna `manual` — dzięki temu nie ma osobnego pola „czy to ja wpisałem", którego
+dyspozytor musiałby pilnować.
+
+**Gdzie siedzi reguła — i dlaczego NIE w `prepareOrder.ts`.** Wszystkie trzy drogi (podpowiedź
+w oknie zlecenia, edycja inline w tabeli, przeliczanie zbiorcze) wołają `computeDriverRate`.
+Kuszące było dołożyć stawkę do `applyOrderDefaults` (tam siedzą domyślna data, brutto z tary
+i gestia z uwag), ale cennik przychodzi z bazy ASYNCHRONICZNIE, a `applyOrderDefaults` bywa wołane
+w inicjalizatorze stanu okna — czyli czasem zanim cennik dojedzie, i stawka wychodziłaby raz tak,
+raz tak. Okno liczy ją więc na żywo (`useMemo`), co przy okazji pokazuje kwotę od razu po poprawce
+kodu czy wagi. W `prepareOrder.ts` stoi komentarz, żeby nikt tego nie „naprawił".
+
+**Co się dzieje samo:** import/ręczne zlecenie podpowiada stawkę w formularzu (z jednym zdaniem
+„skąd ta kwota"), a zapis niesie ją razem z kodem cennika i źródłem. Edycja inline kodu pocztowego,
+wagi netto, brutto, typu kontenera albo kolejnych miejsc przelicza stawkę W TYM SAMYM zapisie —
+dokładnie tak, jak zmiana wagi przelicza brutto.
+
+**Zakładka „Stawki kierowców"** (`src/components/stawki/`): wybór miesiąca (po kolumnie „Data",
+bo to dzień, na który zlecenie jest zaplanowane; zlecenia bez daty mają własną szufladę „Bez daty"),
+wiersz per kierowca z sumą i licznikiem „bez stawki"/„ręcznie", po rozwinięciu jego zlecenia
+z wyjaśnieniem przy każdym. Do tego „Przelicz stawki z cennika" (pomija ręczne i mówi o tym wprost),
+„Pobierz CSV" (średnik + przecinek dziesiętny + BOM, żeby polski Excel otworzył to bez rozsypanych
+ogonków) i boczny „Cennik stawek" — podgląd, poprawianie kwot i dopisanie kodu bez wdrożenia.
+
+**`parse-order-pdf` wdrożona (v25)**: schemat ma `postal_code` (i to samo pole przy każdym kolejnym
+miejscu w `extra_stops`), a zasada 13 promptu mówi wprost, żeby brać kod z adresu DOSTAWY, nie
+z nagłówka zleceniodawcy, i nie zgadywać go z nazwy miasta. Wdrożenie sprawdzone: `get_edge_function`
+zwraca wysłaną treść, a strzały curl-em dają NASZE komunikaty (405, `not_a_user`) z całymi polskimi
+znakami.
+
+**Dwa błędy złapane testem w przeglądarce, nie przy pisaniu:**
+1. Filtr cennika po nazwie miasta nie zawężał NICZEGO: warunek `prefix.startsWith(szukaj bez cyfr)`
+   przy zapytaniu „Rybnik" sprowadzał się do `startsWith("")`, czyli „pasuje każdy wiersz". Cyfry
+   porównujemy teraz tylko wtedy, gdy zapytanie w ogóle jakieś ma.
+2. Zlecenie bez stawki, dla której cennik MA odpowiedź, pokazywało pustą rubrykę „skąd" — czyli
+   dyspozytor nie miał skąd wiedzieć, że wystarczy kliknąć „Przelicz". Teraz pisze wprost, ile by
+   wyszło.
+
+**Zweryfikowane:** logika — 61 sprawdzeń (`scratch-stawki.test.mts`, plik tymczasowy), przy czym
+**cennik do testów czytany jest z migracji 0030**, czyli z tych samych 283 wierszy arkusza, które
+poszły na produkcję (test na trzech wymyślonych wierszach potwierdzałby wyłącznie sam siebie).
+Przeglądarka (Playwright, `next dev`, tymczasowa strona `/test-stawki`, skasowana po teście) —
+33 sprawdzenia NA PRAWDZIWEJ ŚCIEŻCE (podstawiony wyłącznie `fetch`, bo środowisko sesji nie ma
+konta): obie nowe kolumny w Zestawieniu, edycja kodu i wagi przeliczająca stawkę w jednym PATCH-u,
+ręczna kwota oznaczona jako `manual`, formularz nowego zlecenia podpowiadający 550 zł i zapisujący
+je razem z kodem `44-2`, przeliczanie miesiąca dotykające dokładnie jednego zlecenia (ręcznego nie
+tknęło), sumy per kierowca i per miesiąc, cennik z filtrowaniem. Baza — REST widzi nowe kolumny
+(brak PGRST204), zapis bez sesji odbity przez RLS.
+**NIE zweryfikowane na żywym koncie** (środowisko sesji nie ma konta): zapis stawki z przeglądarki
+na produkcji oraz to, czy model faktycznie zwraca `postal_code` z prawdziwego dokumentu — pierwsze
+zlecenie u właściciela to pokaże. Sześć zleceń, które są dziś w bazie, nie ma kodów pocztowych;
+część z nich złapie się po nazwie miasta (Rybnik, Łódź, Jasło), reszta czeka na wpisanie kodu.
+**`mail-poll` NIE przewdrożona** (wdrożona v18 nie zna `postal_code`) — propozycje ze skrzynki
+przychodzą bez kodu, dyspozytor uzupełnia go w formularzu albo appka wyłuskuje go z adresu.
+`shared/` jest już przegenerowane, więc wystarczy `supabase functions deploy mail-poll
+--project-ref itlgexjhznjsbonzdxyg` (przez MCP trzeba by wklejać cały bundle).
+
+**Skąd biorą się KODY POCZTOWE — bo „przecież są zawsze w zleceniach"** (pytanie właściciela po
+pierwszej wersji stawek; słuszne):
+- **Zmierzona przyczyna, nie domysł: na 115 dokumentów odczytanych przez Claude PRZED tą sesją tylko
+  11 miało kod pocztowy w polu adresu (`email_attachments.parsed`), a w polu miejscowości — zero.**
+  Kod stoi w dokumentach, ale appka o niego NIE PYTAŁA: schemat funkcji nie miał takiego pola, więc
+  model oddawał samą ulicę. Szablon Q4Road kod widzi (jego regex wyłuskuje z niego miejscowość),
+  ale też nie zapisywał go osobno.
+- Stąd trzy drogi, w tej kolejności, wszystkie darmowe poza pierwszą:
+  1. `parse-order-pdf` v25 pyta o `postal_code` wprost (i o kod przy każdym kolejnym miejscu).
+  2. `applyOrderDefaults` wyłuskuje kod z pola adresu („RYDZYNSKA 24F 64-125", „ul. Magazynowa 3,
+     55-080 Kąty Wrocławskie" — obie formy są w danych klienta).
+  3. **`postalCodeNearCity` — kod z SUROWEGO TEKSTU dokumentu, szukany PRZY nazwie miejscowości,
+     którą już znamy z odczytu.** To nie jest „znajdź jakiś kod w PDF-ie": w dokumencie stoją też
+     kody spedytora i agencji celnej. Gdy przy tej samej miejscowości stoją RÓŻNE kody, appka nie
+     wybiera żadnego. Działa przy wgrywaniu pliku ORAZ przy zleceniu ze Skrzynki (teksty załączników
+     i tak są pobierane do nauki szablonów).
+- **Guzik „Uzupełnij kody z dokumentów (N)"** w zakładce Stawki kierowców robi to samo dla zleceń
+  JUŻ ZAPISANYCH: pobiera ich PDF-y ze Storage, wyciąga tekst przez pdf.js i uzupełnia kod razem
+  z przeliczoną stawką. Nie woła modelu, więc nic nie kosztuje.
+- **Przy okazji poprawione: `learningDocsFromStorage` miało wpisany na sztywno próg 300 znaków
+  tekstu** („skan bez warstwy tekstowej"). To reguła NAUKI (kotwice potrzebują sensownego kawałka
+  tekstu), a nie własność pliku — krótkie jednostronicowe zlecenie ma pełnoprawny adres z kodem.
+  Próg jest teraz parametrem; uzupełnianie kodów podaje własny. Złapane testem w przeglądarce:
+  pierwszy przebieg raportował „bez kodu przy miejscowości", choć kod w dokumencie stał.
+- Zweryfikowane: 18 sprawdzeń logiki (`scratch-kody.test.mts`, plik tymczasowy) na formatach
+  WZIĘTYCH Z PRODUKCJI (zapytanie do `email_attachments`), w tym kod w kolejnej linii pod etykietą,
+  dwa różne kody przy tej samej nazwie (= brak odpowiedzi) i nazwa miasta w środku innego słowa
+  („Ujazdowskich" ≠ „Ujazd"). Przeglądarka (Playwright, tymczasowa strona `/test-kody`, skasowana
+  po teście) — 11 sprawdzeń na CAŁEJ drodze: prawdziwy (wygenerowany) PDF z warstwą tekstową
+  podstawiony jako plik ze Storage → pdf.js → kod 44-200 zapisany przy zleceniu → stawka 500 zł
+  przeliczona w tym samym zapisie → guzik znika, bo nie ma już zleceń bez kodu.
+- **Pułapka środowiska sesji** (nie appki): w przeglądarce testowej KAŻDE prawdziwe wyjście w sieć
+  wisi bez błędu (mock obejmuje tylko `/rest/v1/`), więc pobranie ze Storage nie kończyło się ani
+  sukcesem, ani błędem. Stąd podstawienie `/storage/v1/object` w mocku — bez tego test wyglądałby
+  na zawieszenie appki.
+
+**`mail-poll` WDROŻONA (v19) — skrzynka też bierze kody pocztowe:**
+- Poller ma teraz tę samą regułę co przeglądarka (`shared/postalFromText.ts` z
+  `scripts/build-edge-shared.mjs`): po odczycie dokumentu szuka kodu PRZY miejscowości z tego
+  dokumentu, a po scaleniu załączników jeszcze raz — bo miasto bywa w zleceniu, a kod w liście
+  przewozowym. Propozycja w Skrzynce przychodzi więc z kodem, a nie dopiero po otwarciu okna.
+- **Szablon Q4Road zapisuje kod osobno** (`parseUnloadingRow`): ten sam regex widział go od zawsze,
+  ale służył wyłącznie do odcięcia miejscowości. Sprawdzone na wierszu w kształcie, jaki produkuje
+  pdf.js: „ul. Zwirowa 73, 54-029 Wrocław" → kod 54-029, miasto „Wrocław".
+- **Dwie pułapki wdrożenia, obie potwierdzone w praktyce w tej sesji:**
+  1. `verify_jwt` MUSI iść jawnie jako `false` (cron woła funkcję sekretem `x-ingest-secret`, bez
+     JWT) — domyślka MCP to `true` i odcina odczyt skrzynki.
+  2. Pominięcie `import_map_path` kończy się błędem „import map path does not exist" ze SKLEJONĄ
+     ścieżką z poprzedniej wersji (dosłownie: `…_19/source/file:///…_18/source/deno.json`).
+     Podawać `import_map_path: "deno.json"` i dołączać `deno.json` do plików.
+- Wdrożone jako bundle (esbuild, `--charset=utf8`, 48 kB) — `bundle.js` jest artefaktem i wchodzi
+  do `.gitignore`; źródłem prawdy zostają pliki `.ts`. Przed wdrożeniem: `deno check` + 26 testów
+  Deno przechodzi.
+- Sprawdzone po wdrożeniu: strzał curl-em daje NASZE komunikaty (405 i 401, polskie znaki całe),
+  a przebieg crona po wdrożeniu kończy się bez błędu (`email_ingest_state.last_error` puste,
+  `seen_total` rośnie). **Czego nie da się sprawdzić z tej sesji: czy kod faktycznie wyszedł
+  z prawdziwego maila** — potrzeba nowego zlecenia w skrzynce; widać to będzie w Skrzynce przy
+  pierwszej propozycji (pole „Kod pocztowy" w oknie zlecenia).
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
@@ -1684,6 +1908,15 @@ sa one odczytywane z maila? nie mozemy zrobic jakiegos obejscia na czas nauki"):
 10. Wielopunktówka a Plan wspaniały: dziś zlecenie stoi w kolumnie swojej JEDNEJ daty, a kolejne
    miejsca są tylko opisem na kafelku („+ N miejsc"). Gdyby okazało się, że wielopunktowe zlecenie
    ma zajmować auto w kilku dniach, to osobna decyzja z właścicielem — nie zakładać jej z góry.
+12. Ważenie: kafelek „Planu wspaniałego" go nie pokazuje, a ważenie zajmuje kierowcy czas w dniu —
+   do rozważenia z właścicielem, czy ma tam stać (dziś widać je tylko w Zestawieniu i w oknie
+   zlecenia). Szablon Q4Road (`q4road.ts`) też nie czyta ważenia — do dopisania, gdy pojawi się ich
+   zlecenie z taką rubryką (nie zgadywać regexa bez dokumentu, patrz pułapka z kotwicą `$`).
+13. Stawki kierowców: Arkusz 2 i 3 przysłanego pliku czekają na wyjaśnienie właściciela („z czasem
+   wytłumaczę") — NIE otwierać ich bez tego. Do dopytania przy pierwszym rozliczeniu miesiąca: czy
+   ktoś ma dostawać dodatek za ważenie/wielopunktówkę (dziś stawka zależy wyłącznie od kodu i wagi)
+   i czy cennik ma mieć wersje (od kiedy obowiązuje) — dziś poprawka stawki działa wstecz na
+   przeliczane zlecenia, a zapisane kwoty zostają.
 11. Krajówka na fakturze: trasa to dziś same miejscowości (`buildRoute`), bo zlecenie nie ma pola
    „miejsce załadunku" osobno od miejsca rozładunku. Jeśli właściciel będzie chciał pełną trasę
    „skąd — dokąd", potrzebne będzie to pole (albo pierwsze miejsce z listy jako załadunek).

@@ -34,9 +34,21 @@ export function loadSearchText(load: Load, contractorName?: string): string {
       }
       continue;
     }
+    // Kolumny logiczne (ważenie) — "true"/"false" w indeksie nie da się wyszukać po polsku, a
+    // dyspozytor szuka słowa. Nazwy dokładamy niżej, przy konkretnym polu.
+    if (typeof value === "boolean") continue;
     parts.push(String(value));
   }
   if (contractorName) parts.push(contractorName);
+  // Ważenie: szukane słowem ("ważenie"), nie wartością logiczną. Zlecenie bez informacji nie dostaje
+  // żadnego z tych słów — puste pole nie jest odpowiedzią "nie".
+  //
+  // Zlecenie zwolnione z ważenia opisujemy „bez ważenia", a NIE „ważenie niewymagane": dopasowanie
+  // jest po fragmencie słowa, więc „wymagane" siedzi w środku „niewymagane" i zapytanie „ważenie
+  // wymagane" wyciągałoby dokładnie te zlecenia, których dyspozytor wtedy NIE szuka (złapane testem).
+  if (load.weighing_required !== null) {
+    parts.push(load.weighing_required ? "ważenie wymagane" : "bez ważenia");
+  }
   // Kierunek siedzi w rekordzie jako kod (I/E/K) — bez nazwy nie dałoby się wyszukać "krajówka"
   // ani "eksport", a to pierwsze, czego dyspozytor szuka po dodaniu trzeciego typu zlecenia.
   parts.push(DIRECTION_LABELS[load.direction] ?? "");

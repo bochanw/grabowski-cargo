@@ -26,6 +26,7 @@ export function loadToForm(load: Load): ParsedOrder {
     company_name: load.company_name ?? "",
     address: load.address ?? "",
     city: load.city ?? "",
+    postal_code: load.postal_code ?? "",
     contact_phone: load.contact_phone ?? "",
     extra_stops: normalizeStops(load.stops),
     load_date: load.load_date ?? "",
@@ -46,6 +47,8 @@ export function loadToForm(load: Load): ParsedOrder {
     seal_number: load.seal_number ?? "",
     goods_name: load.goods_name ?? "",
     adr_sent: load.adr_flag ?? "",
+    weighing_required: load.weighing_required,
+    weighing_place: load.weighing_export ?? "",
     net_weight_kg: load.net_weight_kg,
     gross_weight: load.gross_weight ?? "",
     submitted_when: load.submitted_when ?? "",
@@ -55,5 +58,6 @@ export function loadToForm(load: Load): ParsedOrder {
     vehicle_plate: load.vehicle_plate ?? "",
     trailer_plate: load.trailer_plate ?? "",
     driver_phone: load.driver_phone ?? "",
+    driver_rate: load.driver_rate,
   };
 }

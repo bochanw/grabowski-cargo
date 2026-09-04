@@ -38,6 +38,9 @@ import { normalizeStops, summarizeStops } from "@/types/loadStop";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { ViewSettingsDialog } from "./ViewSettingsDialog";
 import { useContractors } from "@/hooks/useContractors";
+import { useDriverRates } from "@/hooks/useDriverRates";
+import { autoDriverRate } from "@/lib/driverRates/assign";
+import type { DriverRateRow } from "@/lib/driverRates/rates";
 import { useSaveViewSettings, useViewSettings } from "@/hooks/useViewSettings";
 import {
   clampColumnWidth,
@@ -88,6 +91,9 @@ function formatCell(value: unknown, kind: ColumnDef["kind"], contractorNames: Ma
   if (kind === "direction") return DIRECTION_LABELS[value as Direction] ?? String(value);
   // Kolejne miejsca: w komórce skrót ("Łódź; Warszawa"), pełna lista w oknie po kliknięciu.
   if (kind === "stops") return summarizeStops(normalizeStops(value));
+  // Kolumna logiczna: pusta komórka znaczy "nie wiadomo" (wartość null nigdy tu nie dojdzie —
+  // odsiewa ją warunek wyżej), więc "Nie" widać tylko tam, gdzie ktoś je świadomie ustawił.
+  if (kind === "boolean") return value === true ? "Tak" : value === false ? "Nie" : String(value);
   return String(value);
 }
 
@@ -198,6 +204,9 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   const { data: fleetData } = useFleet();
   const fleet = fleetData ?? EMPTY_FLEET;
   const { data: contractors = [] } = useContractors();
+  // Cennik stawek dla kierowców — potrzebny przy edycji inline: zmiana kodu pocztowego albo wagi
+  // przelicza stawkę w tym samym zapisie.
+  const { data: rates = [] } = useDriverRates();
   const contractorNames = useMemo(() => new Map(contractors.map((c) => [c.id, c.name])), [contractors]);
 
   // Załączniki (oryginalne PDF-y zlecenia, POD/CMR, inne) — licznik przy każdym wierszu.
@@ -415,7 +424,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
   async function commitCell(load: Load, column: ColumnDef, raw: string) {
     setEditingCell(null);
     setSaveError(null);
-    const patch = buildPatch(column, raw, fleet, contractors, load);
+    const patch = buildPatch(column, raw, fleet, contractors, load, rates);
     if (patch[column.key] === load[column.key]) return;
     const error = await updateLoad(load.id, patch);
     if (error) setSaveError(`Nie udało się zapisać pola "${column.label}": ${error}`);
@@ -1076,6 +1085,14 @@ function selectOptionsFor(
   fleet: Fleet,
   contractors: Contractor[]
 ): { value: string; label: string }[] | null {
+  // Kolumna logiczna nie ma czego wpisywać z klawiatury — Tak/Nie z listy, a pusta opcja (dokładana
+  // w CellEditor) wraca do "nie wiadomo".
+  if (column.kind === "boolean") {
+    return [
+      { value: "true", label: "Tak" },
+      { value: "false", label: "Nie" },
+    ];
+  }
   switch (column.key) {
     case "contractor_id":
       return contractors.map((c) => ({ value: c.id, label: c.name }));
@@ -1104,7 +1121,14 @@ function selectOptionsFor(
 
 // Wybór kierowcy z Panelu floty ustawia też nr dowodu (z `driver_documents`), jeśli Panel go zna.
 // Wybór kontrahenta podstawia jego domyślny termin płatności TYLKO gdy zlecenie jeszcze go nie ma.
-function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: Contractor[], load?: Load): Partial<Load> {
+function buildPatch(
+  column: ColumnDef,
+  raw: string,
+  fleet: Fleet,
+  contractors: Contractor[],
+  load?: Load,
+  rates: DriverRateRow[] = []
+): Partial<Load> {
   const value = coerceCellValue(column, raw);
   const patch: Partial<Load> = { [column.key]: value } as Partial<Load>;
   if (column.key === "driver_name" && typeof value === "string") {
@@ -1129,7 +1153,7 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
   // KTÓREJKOLWIEK z nich przelicza pozostałe — inaczej kolumny rozjechałyby się po pierwszej
   // ręcznej poprawce, a faktura poszłaby ze starym rozbiciem.
   if (load && (column.key === "freight_base_amount" || column.key === "baf_percentage" || column.key === "total_amount")) {
-    const numberOrNull = (candidate: string | number | null) => (typeof candidate === "number" ? candidate : null);
+    const numberOrNull = (candidate: string | number | boolean | null) => (typeof candidate === "number" ? candidate : null);
     const percent = column.key === "baf_percentage" ? numberOrNull(value) : load.baf_percentage;
     // Edycja SUMY liczy w drugą stronę (od kwoty z BAF-em w dół), pozostałe — od bazy w górę.
     // Zmiana samego procentu przy pustej bazie też liczy od sumy: to jest wtedy jedyna znana kwota.
@@ -1156,11 +1180,33 @@ function buildPatch(column: ColumnDef, raw: string, fleet: Fleet, contractors: C
       patch.gross_weight = String(gross);
     }
   }
+
+  // Stawka dla kierowcy zależy od kodu pocztowego, wagi i typu kontenera (tara decyduje o progu
+  // tonażu) oraz od kolejnych miejsc — więc każda zmiana KTÓREGOKOLWIEK z tych pól przelicza ją,
+  // tak samo jak zmiana wagi przelicza brutto. Ręcznie wpisana stawka jest nietykalna:
+  // `autoDriverRate` zwraca wtedy null (patrz src/lib/driverRates/assign.ts).
+  const polaStawki: (keyof Load)[] = ["postal_code", "address", "city", "net_weight_kg", "gross_weight", "container_size", "stops"];
+  if (load && polaStawki.includes(column.key)) {
+    const auto = autoDriverRate({ ...load, ...patch } as Load, rates);
+    if (auto.patch) Object.assign(patch, auto.patch);
+  }
+
+  // Wpisanie kwoty wprost w tabeli to decyzja człowieka — od tej chwili appka tej stawki nie
+  // rusza (także wtedy, gdy komórkę wyczyszczono: "bez stawki" też jest decyzją).
+  if (load && column.key === "driver_rate") {
+    patch.driver_rate_source = "manual";
+    patch.driver_rate_code = null;
+  }
   return patch;
 }
 
-function coerceCellValue(column: ColumnDef, raw: string): string | number | null {
+function coerceCellValue(column: ColumnDef, raw: string): string | number | boolean | null {
   const trimmed = raw.trim();
+  // Pusty wybór w kolumnie logicznej to null ("nie wiadomo"), nie false — inaczej wyczyszczenie
+  // komórki twierdziłoby, że ważenie NIE jest wymagane.
+  if (column.kind === "boolean") {
+    return trimmed === "" ? null : trimmed === "true";
+  }
   if (column.kind === "number") {
     if (trimmed === "") return null;
     const value = Number(trimmed.replace(",", "."));

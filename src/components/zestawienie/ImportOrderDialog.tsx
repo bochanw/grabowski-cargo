@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { extractPdfText } from "@/lib/pdf/extractPdfText";
 import { parseOrderPdf } from "@/lib/supabase/parseOrderPdf";
@@ -12,6 +12,10 @@ import { PICKUP_LOCATIONS } from "@/lib/orderTemplates/pickupLocations";
 import { applyOrderDefaults } from "@/lib/loads/prepareOrder";
 import { EMPTY_FLEET, reconcileWithFleet, useFleet, withCurrentOption, type Fleet } from "@/lib/fleet/fleetStore";
 import { useContractors } from "@/hooks/useContractors";
+import { useDriverRates } from "@/hooks/useDriverRates";
+import { computeDriverRate } from "@/lib/driverRates/rates";
+import { postalCodeNearCity } from "@/lib/driverRates/postalFromText";
+import { driverRatePatchFromForm, type DriverRatePatch } from "@/lib/driverRates/assign";
 import { findContractorByName, type Contractor } from "@/types/contractor";
 import { EMPTY_PARSED_ORDER, mergeParsedOrders, type ParsedOrder } from "@/types/parsedOrder";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
@@ -64,7 +68,22 @@ const EMPTY_PENDING: Omit<PendingOrder, "parsed"> = {
 
 const DEFAULT_CARRIER = "Grabowski Mariusz Sp. z o.o.";
 
-function formToRow(form: ParsedOrder, carrierName: string, contractorId: string) {
+/**
+ * Kod pocztowy z tekstów dokumentów, gdy odczyt go nie oddał. Ta sama reguła co przy wgrywaniu
+ * pliku (kod PRZY miejscowości, nie „gdziekolwiek w dokumencie") — tylko materiał przychodzi
+ * skądinąd: przy zleceniu ze Skrzynki teksty załączników są pobierane z bucketa, żeby appka
+ * mogła się z nich uczyć, więc kod pocztowy da się z nich wziąć bez ponownego czytania pliku.
+ */
+function uzupelnijKodZDokumentow(order: ParsedOrder, docs: LearningDocument[]): ParsedOrder {
+  if (order.postal_code || !order.city) return order;
+  for (const document of docs) {
+    const kod = postalCodeNearCity(document.text, order.city);
+    if (kod) return { ...order, postal_code: kod };
+  }
+  return order;
+}
+
+function formToRow(form: ParsedOrder, carrierName: string, contractorId: string, rate: DriverRatePatch) {
   // BAF: dokument podaje albo stawkę Z dodatkiem ("3 000, w tym BAF 13%"), albo bazę + procent —
   // do bazy idzie zawsze rozbicie, żeby faktura mogła pokazać BAF osobną pozycją, gdy kontrahent
   // tak ma ustawione. `invoice_amount` (kwota do zafakturowania) zostaje kwotą RAZEM.
@@ -80,6 +99,7 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     company_name: form.company_name || null,
     address: form.address || null,
     city: form.city || null,
+    postal_code: form.postal_code || null,
     contact_phone: form.contact_phone || null,
     // Kolejne miejsca (2., 3., …) — pierwsze zostaje w polach wyżej, patrz src/types/loadStop.ts.
     stops: form.extra_stops.filter((stop) => !isStopEmpty(stop)),
@@ -101,6 +121,11 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     seal_number: form.seal_number || null,
     goods_name: form.goods_name || null,
     adr_flag: form.adr_sent || null,
+    // Ważenie: "czy" i "gdzie" osobno — `weighing_export` to kolumna R arkusza (miejsce), patrz
+    // migracja 0029. `weighing_required` przechodzi wprost, bo null ("dokument nie mówi") jest tu
+    // wartością samą w sobie i `|| null` zamieniłoby świadome "nie" w brak informacji.
+    weighing_required: form.weighing_required,
+    weighing_export: form.weighing_place || null,
     net_weight_kg: form.net_weight_kg,
     gross_weight: form.gross_weight || null,
     submitted_when: form.submitted_when || null,
@@ -110,6 +135,9 @@ function formToRow(form: ParsedOrder, carrierName: string, contractorId: string)
     vehicle_plate: form.vehicle_plate || null,
     trailer_plate: form.trailer_plate || null,
     driver_phone: form.driver_phone || null,
+    // Stawka dla kierowcy razem z tym, SKĄD się wzięła: 'auto' wolno appce przeliczyć przy zmianie
+    // wagi czy kodu, 'manual' nie wolno nigdy (patrz src/lib/driverRates/assign.ts).
+    ...rate,
   };
 }
 
@@ -165,11 +193,16 @@ export function ImportOrderDialog({
   const { data: fleetData } = useFleet();
   const fleet: Fleet = fleetData ?? EMPTY_FLEET;
   const { data: contractors = [] } = useContractors();
+  const { data: rates = [] } = useDriverRates();
   // Pola ze Skrzynki są już odczytane, więc ekran wyboru pliku byłby tylko przeszkodą.
   const [stage, setStage] = useState<Stage>(
     mode === "edit" || initialParsed || (initialOrders?.length ?? 0) > 0 ? "review" : "pick"
   );
-  const [form, setForm] = useState<ParsedOrder>(() => {
+  // Pola, z którymi okno startuje, LICZONE RAZ — razem z tym, co appka dołożyła sama. Wynik
+  // `applyOrderDefaults` był tu wcześniej rozpakowywany do samego `.order`, więc na drodze ze
+  // Skrzynki ostrzeżenia ginęły: dyspozytor nie dowiadywał się, że appka przestawiła mu gestię na
+  // „Leasing" albo zaznaczyła ważenie. Przy wgranym pliku (niżej) te same ostrzeżenia były pokazywane.
+  const [wejscie] = useState(() => {
     const base = existingLoad ? loadToForm(existingLoad) : EMPTY_PARSED_ORDER;
     // Te same reguły scalania co przy dopinaniu drugiego dokumentu: dane z maila wypełniają TYLKO
     // puste pola, nigdy nie nadpisują tego, co już stoi na zleceniu.
@@ -177,8 +210,11 @@ export function ImportOrderDialog({
     // Pola ze Skrzynki wchodzą tą samą drogą co wgrany plik: `mail-poll` zapisuje przy KAŻDYM
     // załączniku surowy odczyt (bez wyliczanej daty), a od kiedy okno bierze pola per załącznik
     // — żeby rozdzielić kilka zleceń z jednego maila — musi te reguły dołożyć samo.
-    return pierwsze ? applyOrderDefaults(mergeParsedOrders(base, pierwsze)).order : base;
+    if (!pierwsze) return { order: base, warnings: [] };
+    const przygotowane = applyOrderDefaults(mergeParsedOrders(base, pierwsze));
+    return { ...przygotowane, order: uzupelnijKodZDokumentow(przygotowane.order, initialLearningDocs) };
   });
+  const [form, setForm] = useState<ParsedOrder>(wejscie.order);
   // Zlecenia czekające w kolejce (drugie i dalsze z tej samej paczki dokumentów/maila) oraz licznik
   // już zapisanych — z tego bierze się pasek „Zlecenie 2 z 3".
   const [queue, setQueue] = useState<PendingOrder[]>(() =>
@@ -196,7 +232,7 @@ export function ImportOrderDialog({
   const [contractorId, setContractorId] = useState(existingLoad?.contractor_id ?? "");
   const [recognized, setRecognized] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>(initialOrders?.[0]?.warnings ?? []);
+  const [warnings, setWarnings] = useState<string[]>([...(initialOrders?.[0]?.warnings ?? []), ...wejscie.warnings]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -222,6 +258,33 @@ export function ImportOrderDialog({
   // porównał pole z dokumentem, a nie zgadywał, skąd wzięła się wartość.
   const [pokazZrodlo, setPokazZrodlo] = useState(true);
 
+  // Stawka dla kierowcy z cennika — liczona NA ŻYWO z pól formularza, nie raz przy wczytaniu:
+  // dyspozytor poprawia kod pocztowy albo wagę i musi od razu widzieć, jak zmienia się kwota.
+  // Waga z terminala (Baltic Hub) jest przy tym nadrzędna, ale zna ją tylko zapisane zlecenie —
+  // przy nowym zleceniu jej po prostu nie ma.
+  const stawkaZCennika = useMemo(
+    () =>
+      computeDriverRate(
+        {
+          postal_code: form.postal_code,
+          address: form.address,
+          city: form.city,
+          stops: form.extra_stops,
+          bhub_gross_weight_kg: (existingLoad ?? matchedLoad)?.bhub_gross_weight_kg ?? null,
+          gross_weight: form.gross_weight,
+          net_weight_kg: form.net_weight_kg,
+          container_size: form.container_size,
+        },
+        rates
+      ),
+    [form, rates, existingLoad, matchedLoad]
+  );
+  // Zlecenie, przy którym dyspozytor ŚWIADOMIE wyczyścił stawkę ('manual' + brak kwoty), nie
+  // dostaje podpowiedzi z powrotem — inaczej edycja czegokolwiek innego cicho by ją wskrzesiła.
+  const stawkaSkasowanaRecznie =
+    (existingLoad ?? matchedLoad)?.driver_rate_source === "manual" && (existingLoad ?? matchedLoad)?.driver_rate === null;
+  const sugestiaStawki = stawkaSkasowanaRecznie ? null : stawkaZCennika.suggestion;
+
   /**
    * Wczytuje JEDNO zlecenie do formularza: domyślna data, brutto, gestia z uwag, rozpoznanie
    * zlecenia już zapisanego, dopasowanie do Panelu floty i kontrahenta. Ta sama droga dla
@@ -232,7 +295,9 @@ export function ImportOrderDialog({
     // Domyślna data, brutto z tary i gestia z uwag — jedno miejsce dla wszystkich dróg odczytu
     // (src/lib/loads/prepareOrder.ts; wcześniej reguły siedziały tutaj i gubiły się w innych drogach).
     const przygotowane = applyOrderDefaults(mergeParsedOrders(base, pending.parsed));
-    let merged = przygotowane.order;
+    // Kod pocztowy bywa w dokumencie, choć odczyt go nie oddał (starsze odczyty w ogóle o niego nie
+    // pytały) — bierzemy go z tekstu, jeśli stoi przy miejscowości tego zlecenia.
+    let merged = uzupelnijKodZDokumentow(przygotowane.order, learningDocs);
     const newWarnings = [...pending.warnings, ...przygotowane.warnings];
 
     // ROZPOZNANIE ZLECENIA PO NUMERZE (właściciel: "każde zlecenie jest rozpoznawane do nr
@@ -370,6 +435,17 @@ export function ImportOrderDialog({
                 : `${file.name}: nie rozpoznano znanego szablonu, a odczyt przez Claude nie zadziałał (${result.error}) — wpisz pola z tego dokumentu ręcznie.`
             );
           }
+        }
+      }
+      // Kod pocztowy: model i szablony oddają zwykle sam adres, a kod stoi w dokumencie tuż przy
+      // miejscowości. Szukamy go PRZY NAZWIE MIASTA, którą już odczytaliśmy — nie „gdziekolwiek
+      // w dokumencie", bo tam stoją też kody spedytora i agencji celnej. Od kodu zależy stawka
+      // wypłacana kierowcy, więc niejednoznaczny wynik zostaje pusty.
+      if (!parsed.postal_code && text) {
+        const kod = postalCodeNearCity(text, parsed.city);
+        if (kod) {
+          parsed = { ...parsed, postal_code: kod };
+          globalWarnings.push(`${file.name}: kod pocztowy ${kod} odczytany z dokumentu przy miejscowości „${parsed.city}" — sprawdź, czy to ten adres.`);
         }
       }
       if (parsed.rate_currency && parsed.rate_currency.toUpperCase() !== "PLN") {
@@ -557,7 +633,10 @@ export function ImportOrderDialog({
     }
     if (ensured.id && ensured.id !== contractorId) setContractorId(ensured.id);
 
-    const row = formToRow(form, carrierName, ensured.id);
+    // Kwota pokazana w pustym polu (podpowiedź z cennika) jest tym, co dyspozytor widział przed
+    // kliknięciem "Zapisz" — więc to ona idzie do bazy, a nie null.
+    const ratePatch = driverRatePatchFromForm(form.driver_rate ?? sugestiaStawki?.amount ?? null, stawkaZCennika.suggestion);
+    const row = formToRow(form, carrierName, ensured.id, ratePatch);
     let loadId = target?.id ?? "";
     if (target) {
       const { error } = await supabase.from("loads").update(row).eq("id", target.id);
@@ -988,6 +1067,17 @@ export function ImportOrderDialog({
                 <Field label="Adres">
                   <input className={inputClass} value={form.address} onChange={(e) => updateField("address", e.target.value)} />
                 </Field>
+                {/* Kod pocztowy stoi przy adresie, bo stamtąd się bierze — ale jest osobnym polem,
+                    bo to on decyduje o stawce dla kierowcy (cennik `driver_rates`). */}
+                <Field label={`Kod pocztowy (${stopLabel})`}>
+                  <input
+                    data-testid="pole-kod-pocztowy"
+                    className={inputClass}
+                    value={form.postal_code}
+                    onChange={(e) => updateField("postal_code", e.target.value)}
+                    placeholder="np. 05-500"
+                  />
+                </Field>
                 {/* Telefon ODBIORCY (nie kierowcy) — bywa w zleceniu i wtedy jest jedynym sposobem,
                     żeby kierowca dodzwonił się na miejsce rozładunku. */}
                 <Field label="Telefon odbiorcy / kontakt na miejscu">
@@ -1084,6 +1174,58 @@ export function ImportOrderDialog({
                 </Field>
                 <Field label="Waga brutto (towar + tara kontenera)">
                   <input className={inputClass} value={form.gross_weight} onChange={(e) => updateField("gross_weight", e.target.value)} placeholder="liczone z typu kontenera" />
+                </Field>
+
+                {/* Stawka dla kierowcy: appka podpowiada ją z cennika (kod pocztowy + tonaż), ale
+                    pole zostaje zwykłym inputem — kwota wpisana ręcznie wygrywa i nie jest już
+                    przez appkę przeliczana (patrz src/lib/driverRates/assign.ts). Puste pole
+                    pokazuje podpowiedź, więc dyspozytor widzi kwotę PRZED zapisem, a nie dopiero
+                    w tabeli. */}
+                <Field label="Stawka dla kierowcy (zł)">
+                  <input
+                    data-testid="pole-stawka-kierowcy"
+                    type="number"
+                    step="any"
+                    className={inputClass}
+                    value={form.driver_rate ?? sugestiaStawki?.amount ?? ""}
+                    onChange={(e) => updateField("driver_rate", e.target.value === "" ? null : Number(e.target.value))}
+                    placeholder={rates.length === 0 ? "cennik nie wczytany" : "z cennika"}
+                  />
+                  <p className="mt-0.5 text-[11px] leading-snug text-zinc-500" data-testid="opis-stawki-kierowcy">
+                    {sugestiaStawki
+                      ? `Z cennika: ${sugestiaStawki.amount} zł — ${sugestiaStawki.explanation}`
+                      : stawkaSkasowanaRecznie
+                        ? "Stawka była wyczyszczona ręcznie — appka jej nie podpowiada."
+                        : (stawkaZCennika.reason ?? "")}
+                  </p>
+                </Field>
+
+                {/* Ważenie (właściciel: „brakuje opcji zaciągania / dopisania gdzie i czy wymagane
+                    jest ważenie"). Trzy stany, nie checkbox: „—" znaczy, że dokument o ważeniu nie
+                    mówi, i to co innego niż świadome „nie". Miejsce wpisywane jest wolnym tekstem,
+                    bo w dokumentach bywa i adresem wagi, i samą wskazówką („w porcie"). */}
+                <Field label="Ważenie wymagane">
+                  <select
+                    data-testid="pole-wazenie-wymagane"
+                    className={inputClass}
+                    value={form.weighing_required === null ? "" : form.weighing_required ? "true" : "false"}
+                    onChange={(e) =>
+                      updateField("weighing_required", e.target.value === "" ? null : e.target.value === "true")
+                    }
+                  >
+                    <option value="">— dokument nie mówi —</option>
+                    <option value="true">Tak — wymagane</option>
+                    <option value="false">Nie</option>
+                  </select>
+                </Field>
+                <Field label="Ważenie gdzie">
+                  <input
+                    data-testid="pole-wazenie-gdzie"
+                    className={inputClass}
+                    value={form.weighing_place}
+                    onChange={(e) => updateField("weighing_place", e.target.value)}
+                    placeholder="np. w porcie, waga miejska Gdynia, SGS"
+                  />
                 </Field>
 
                 <Field label={handoverLabel} full>

@@ -28,6 +28,12 @@ export interface ParsedOrder {
   address: string;
   city: string;
   /**
+   * Kod pocztowy miejsca dostawy/załadunku. Wygląda jak drobiazg, ale to od niego zależy stawka
+   * dla kierowcy (cennik `driver_rates`, migracja 0030) — dlatego jest osobnym polem, a nie
+   * kawałkiem `address`: adres z dokumentu bywa jednym ciągiem, a bywa bez kodu w ogóle.
+   */
+  postal_code: string;
+  /**
    * Telefon do ODBIORCY / osoby w miejscu rozładunku (kolumna `loads.contact_phone`) — bywa podany
    * w zleceniu i jest wtedy jedynym sposobem, żeby kierowca dodzwonił się na miejsce. To NIE jest
    * telefon kierowcy (`driver_phone`).
@@ -65,6 +71,16 @@ export interface ParsedOrder {
    * checkboxy, tłumaczenie siedzi w src/lib/loads/adrSent.ts.
    */
   adr_sent: string;
+  /**
+   * Ważenie kontenera (właściciel: „brakuje opcji zaciągania / dopisania gdzie i czy wymagane jest
+   * ważenie"). Dwa pola, bo to dwie różne informacje: `weighing_required` to odpowiedź tak/nie,
+   * po której planuje się dzień (i którą da się filtrować), a `weighing_place` mówi GDZIE — bywa
+   * miejscem („waga miejska w Gdyni"), a bywa samą wskazówką („ważenie w porcie").
+   * `weighing_required === null` znaczy „dokument o tym nie mówi", nie „niewymagane" — tak samo jak
+   * przy `rate_includes_baf`. Do bazy: `loads.weighing_required` i `loads.weighing_export`.
+   */
+  weighing_required: boolean | null;
+  weighing_place: string;
   net_weight_kg: number | null; // waga towaru z dokumentu ("Waga towaru brutto" na liście przewozowym)
   gross_weight: string; // wyliczane: net_weight_kg + tara kontenera (src/lib/containers/tare.ts); text, bo bywa "według armatora"
   // Kiedy kontener ma być złożony — w dokumentach zwykle "cut off". Text, nie data: bywa podany z
@@ -77,6 +93,12 @@ export interface ParsedOrder {
   vehicle_plate: string;
   trailer_plate: string;
   driver_phone: string;
+  /**
+   * Stawka dla kierowcy. NIE pochodzi z dokumentu (to koszt własny firmy, nie treść zlecenia) —
+   * appka wylicza ją z cennika po kodzie pocztowym i tonażu, a dyspozytor może ją nadpisać
+   * w formularzu. Jest w tym kształcie, bo formularz zlecenia to `ParsedOrder`.
+   */
+  driver_rate: number | null;
 }
 
 export const EMPTY_PARSED_ORDER: ParsedOrder = {
@@ -93,6 +115,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   company_name: "",
   address: "",
   city: "",
+  postal_code: "",
   contact_phone: "",
   extra_stops: [],
   load_date: "",
@@ -111,6 +134,8 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   seal_number: "",
   goods_name: "",
   adr_sent: "",
+  weighing_required: null,
+  weighing_place: "",
   net_weight_kg: null,
   gross_weight: "",
   submitted_when: "",
@@ -120,6 +145,7 @@ export const EMPTY_PARSED_ORDER: ParsedOrder = {
   vehicle_plate: "",
   trailer_plate: "",
   driver_phone: "",
+  driver_rate: null,
 };
 
 // `false` (np. "stawka NIE zawiera BAF-u") jest wartością, nie brakiem — puste jest tylko null i "".
@@ -195,6 +221,7 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     company_name: text("company_name"),
     address: text("address"),
     city: text("city"),
+    postal_code: text("postal_code"),
     contact_phone: text("contact_phone"),
     // Model potrafi zwrócić listę miejsc w dowolnym kształcie (albo wcale) — `normalizeStops`
     // przycina ją do tego, co appka umie zapisać, i wyrzuca puste wiersze.
@@ -215,6 +242,10 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     seal_number: text("seal_number"),
     goods_name: text("goods_name"),
     adr_sent: text("adr_sent"),
+    // "czy wymagane" przechodzi przez ten sam `bool` co BAF: model bywa odpowiada "tak"/1, a brak
+    // klucza MUSI zostać nullem — false znaczyłoby "dokument mówi, że ważenie nie jest wymagane".
+    weighing_required: bool("weighing_required"),
+    weighing_place: text("weighing_place"),
     net_weight_kg: num("net_weight_kg"),
     gross_weight: text("gross_weight"),
     // Terminale bywają w dokumentach pełną nazwą ("Gdynia Container Terminal" = GCT — zgłoszenie
@@ -229,6 +260,9 @@ export function normalizeParsedOrder(raw: unknown): ParsedOrder {
     vehicle_plate: text("vehicle_plate"),
     trailer_plate: text("trailer_plate"),
     driver_phone: text("driver_phone"),
+    // Model o stawce dla kierowcy nic nie wie i nie ma jej w schemacie narzędzia — czytamy ją tu
+    // tylko po to, żeby przejście przez normalizację nie gubiło wartości wyliczonej wcześniej.
+    driver_rate: num("driver_rate"),
   };
 }
 

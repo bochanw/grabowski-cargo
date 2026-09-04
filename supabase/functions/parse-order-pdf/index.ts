@@ -78,6 +78,7 @@ const EXTRACT_TOOL = {
       company_name: { type: 'string', description: 'Nazwa firmy/miejsca, DO KTÓREGO jedzie samochód (magazyn, zakład, odbiorca), jeśli podana osobno od adresu. Pusty string, jeśli nie ma.' },
       address: { type: 'string', description: 'Adres z rubryki MIEJSCE ZAŁADUNKU / ROZŁADUNKU — czyli tam, gdzie faktycznie jedzie samochód. To zwykle NIE jest adres rejestrowy firmy z nagłówka dokumentu (zakład/magazyn bywa w innym mieście niż siedziba) — nigdy nie podstawiaj adresu z nagłówka, gdy dokument podaje osobne miejsce załadunku/rozładunku. Pusty string, jeśli nieznany.' },
       city: { type: 'string', description: 'Sama nazwa miejscowości z TEGO SAMEGO miejsca co pole address (załadunek/rozładunek), bez reszty adresu i bez siedziby firmy z nagłówka. Pusty string, jeśli nieznana.' },
+      postal_code: { type: 'string', description: 'Kod pocztowy TEGO SAMEGO miejsca co address/city (miejsce dostawy albo załadunku), w zapisie NN-NNN. To NIE jest kod pocztowy zleceniodawcy z nagłówka (od tego jest forwarder_postal_code). Pusty string, jeśli dokument go nie podaje — nie zgaduj kodu z nazwy miasta.' },
       contact_phone: { type: 'string', description: 'Telefon KONTAKTOWY do miejsca załadunku/rozładunku (osoba u klienta, magazyn, odbiorca) — jeśli dokument go podaje. To NIE jest telefon kierowcy (driver_phone) ani telefon spedytora wystawiającego zlecenie. Pusty string, jeśli nie podano.' },
       extra_stops: {
         type: 'array',
@@ -87,13 +88,14 @@ const EXTRACT_TOOL = {
           properties: {
             kind: { type: 'string', enum: ['', 'load', 'unload'], description: '"load" = załadunek, "unload" = rozładunek. Pusty string, jeśli dokument tego nie nazywa.' },
             company_name: { type: 'string', description: 'Nazwa firmy/miejsca. Pusty string, jeśli nie ma.' },
-            address: { type: 'string', description: 'Ulica z numerem (i kod pocztowy, jeśli podany). Pusty string, jeśli nie ma.' },
+            address: { type: 'string', description: 'Ulica z numerem. Pusty string, jeśli nie ma.' },
             city: { type: 'string', description: 'Sama miejscowość. Pusty string, jeśli nie ma.' },
+            postal_code: { type: 'string', description: 'Kod pocztowy tego miejsca (NN-NNN). Pusty string, jeśli dokument go nie podaje.' },
             date: { type: 'string', description: 'Data tego miejsca w formacie RRRR-MM-DD. Pusty string, jeśli dokument jej nie podaje osobno.' },
             time: { type: 'string', description: 'Godzina/okno czasowe tego miejsca (np. "08:30", "8-16"). Pusty string, jeśli nie ma.' },
             notes: { type: 'string', description: 'Uwaga dotycząca TEGO miejsca (np. numer awizacji, "wjazd od tyłu"). Pusty string, jeśli nie ma.' },
           },
-          required: ['kind', 'company_name', 'address', 'city', 'date', 'time', 'notes'],
+          required: ['kind', 'company_name', 'address', 'city', 'postal_code', 'date', 'time', 'notes'],
         },
       },
       load_date: { type: 'string', description: 'Data ZAŁADUNKU/podjęcia w formacie RRRR-MM-DD, TYLKO jeśli dokument podaje ją osobno od daty rozładunku. Pusty string, jeśli nieznana — NIGDY nie zgaduj roku ani dnia.' },
@@ -106,7 +108,7 @@ const EXTRACT_TOOL = {
       rate_includes_baf: { type: ['boolean', 'null'], description: 'Czy kwota w rate_amount ZAWIERA już BAF. true dla "stawka 3000 zł zawiera BAF 13%" / "w tym BAF", false dla "2000 zł + BAF 13%" / "BAF doliczany". Null, jeśli dokument nie mówi tego wprost — appka policzy wtedy BAF jako doliczany. NIE zgaduj: to decyduje o kwocie na fakturze.' },
       payment_terms_days: { type: ['number', 'null'], description: 'Liczba dni terminu płatności (np. z "60 dni od..." -> 60). Null, jeśli nieznana.' },
       payment_terms_note: { type: 'string', description: 'Od jakiego zdarzenia liczony jest termin płatności (np. "od daty wpływu faktury i listu przewozowego"). Pusty string, jeśli nie podano albo nie ma osobnego terminu dni.' },
-      notes: { type: 'string', description: 'Inne istotne informacje z dokumentu, których nie da się przypisać do pól wyżej (np. nietypowe wymagania, ważenie, kary umowne warte uwagi, informacja o kontenerze LEASINGOWYM). Pusty string, jeśli nic takiego nie ma.' },
+      notes: { type: 'string', description: 'Inne istotne informacje z dokumentu, których nie da się przypisać do pól wyżej (np. nietypowe wymagania, kary umowne warte uwagi, informacja o kontenerze LEASINGOWYM). Ważenie ma własne pola (weighing_required, weighing_place) — nie opisuj go tutaj. Pusty string, jeśli nic takiego nie ma.' },
       // Poniższe pola pochodzą zwykle z DRUGIEGO dokumentu tego samego zlecenia — listu
       // przewozowego dla kierowcy. Jeden wgrany plik wypełni tylko część z nich; appka skleja
       // dokumenty po stronie klienta (mergeParsedOrders), więc pusty string tu niczego nie psuje.
@@ -115,6 +117,8 @@ const EXTRACT_TOOL = {
       seal_number: { type: 'string', description: 'Numer PLOMBY założonej na kontener (w dokumentach "plomba", "nr plomby", "seal", "seal no"). Sam numer/oznaczenie. To NIE jest numer kontenera ani bookingu. Pusty string, jeśli nie podano.' },
       goods_name: { type: 'string', description: 'Nazwa przewożonego towaru. Pusty string, jeśli nie podano.' },
       adr_sent: { type: 'string', description: 'Oznaczenie ładunku pod nadzorem — dokładnie jedna z wartości: "ADR" (towar niebezpieczny: dokument podaje klasę ADR, numer UN albo wprost słowo ADR), "SENT" (przewóz zgłaszany do systemu SENT), "ADR + SENT" (jedno i drugie). Pusty string, jeśli dokument o żadnym z nich nie mówi — NIE wnioskuj tego z nazwy towaru.' },
+      weighing_required: { type: ['boolean', 'null'], description: 'Czy zlecenie wymaga WAŻENIA kontenera (ważenie, waga, VGM, "kontener do zważenia", "wymagane ważenie"). true, gdy dokument tego wymaga albo wskazuje miejsce ważenia; false TYLKO wtedy, gdy dokument wprost mówi, że ważenie nie jest potrzebne. Null, gdy dokument o ważeniu w ogóle nie wspomina — NIE zgaduj z rodzaju ładunku ani z kierunku.' },
+      weighing_place: { type: 'string', description: 'GDZIE odbywa się ważenie — przepisz dosłownie z dokumentu ("ważenie w porcie" -> "w porcie", "waga miejska w Gdyni", "SGS", nazwa terminala albo adres wagi). To NIE jest miejsce podjęcia ani zdania kontenera. Pusty string, jeśli dokument mówi tylko, że ważenie jest wymagane, nie mówiąc gdzie.' },
       net_weight_kg: { type: ['number', 'null'], description: 'Waga samego TOWARU w kilogramach (na listach przewozowych bywa podpisana "waga towaru brutto" — chodzi o towar BEZ tary kontenera; appka sama doliczy tarę). Sama liczba w kg. Null, jeśli nieznana.' },
       submitted_when: { type: 'string', description: 'Kiedy kontener ma być złożony/zdany — w dokumentach zwykle "cut off" / "cutoff" / "termin złożenia". Datę zapisz jako RRRR-MM-DD (z godziną po spacji, jeśli dokument ją podaje: "2026-09-12 14:00"). Jeśli dokument zamiast daty stawia warunek ("cut off wg armatora"), przepisz ten warunek dosłownie. Pusty string, jeśli nie podano.' },
       submitted_where: { type: 'string', description: 'Miejsce ZDANIA kontenera po obsłudze: przy imporcie pusty kontener wraca do depotu/terminala, przy eksporcie PEŁNY jedzie do portu/terminala. Przepisz dosłownie z dokumentu (appka sama skróci nazwę terminala). Bywa tu nie miejsce, tylko INSTRUKCJA ("zgodnie z instrukcjami armatora", "wg dyspozycji spedytora") — wtedy przepisz tę instrukcję, nie zostawiaj pustego pola. Pusty string tylko wtedy, gdy dokument w ogóle o tym nie mówi.' },
@@ -124,7 +128,7 @@ const EXTRACT_TOOL = {
       trailer_plate: { type: 'string', description: 'Numer rejestracyjny NACZEPY/przyczepy. Pusty string, jeśli nie podano.' },
       driver_phone: { type: 'string', description: 'Telefon kierowcy. Pusty string, jeśli nie podano.' },
     },
-    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'contact_phone', 'extra_stops', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'seal_number', 'goods_name', 'adr_sent', 'net_weight_kg', 'submitted_when', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
+    required: ['order_number', 'forwarder', 'forwarder_nip', 'forwarder_address', 'forwarder_postal_code', 'forwarder_city', 'direction', 'container_number', 'container_size', 'shipping_line', 'company_name', 'address', 'city', 'postal_code', 'contact_phone', 'extra_stops', 'load_date', 'delivery_date', 'delivery_time', 'customs_location_or_status', 'rate_amount', 'rate_currency', 'baf_percentage', 'rate_includes_baf', 'payment_terms_days', 'payment_terms_note', 'notes', 'pickup_type', 'pin_booking', 'seal_number', 'goods_name', 'adr_sent', 'weighing_required', 'weighing_place', 'net_weight_kg', 'submitted_when', 'submitted_where', 'driver_name', 'driver_id_number', 'vehicle_plate', 'trailer_plate', 'driver_phone'],
   },
 };
 
@@ -177,7 +181,16 @@ Zasady, których nie wolno złamać:
 11. "Cut off" (albo "cutoff", "termin złożenia") to pole submitted_when — data, do której kontener
    ma być złożony. Nie myl go z datą rozładunku/załadunku u klienta (delivery_date) ani z terminem
    płatności.
-12. Gdy dostajesz TREŚĆ MAILA zamiast dokumentu, obowiązują te same zasady, a szczególnie zasada 1:
+12. WAŻENIE bywa w dokumencie jednym słowem w uwagach ("ważenie w porcie", "kontener do zważenia",
+   "VGM po stronie przewoźnika"). Rozbij je na dwa pola: weighing_required (czy w ogóle) i
+   weighing_place (gdzie). Wskazanie miejsca samo w sobie znaczy, że ważenie jest wymagane. Nie myl
+   ważenia z wagą towaru (net_weight_kg) ani z miejscem podjęcia/zdania kontenera.
+13. KOD POCZTOWY miejsca dostawy/załadunku (postal_code) przepisz dokładnie tak, jak stoi przy
+   TYM adresie, do którego jedzie samochód — nie z nagłówka zleceniodawcy i nie z pieczątki.
+   Jeśli dokument kodu nie podaje, zostaw puste: appka woli brak kodu niż kod zgadnięty z nazwy
+   miasta (od kodu zależy u niej stawka wypłacana kierowcy). Tak samo przy kolejnych miejscach
+   w extra_stops.
+14. Gdy dostajesz TREŚĆ MAILA zamiast dokumentu, obowiązują te same zasady, a szczególnie zasada 1:
    mail często niesie tylko JEDNĄ informację ("kontener przesunięty na piątek", "nowy numer
    bookingu"). Wypełnij wtedy WYŁĄCZNIE te pola, które mail faktycznie podaje, a całą resztę
    zostaw pustą — appka scala takie uzupełnienie z istniejącym zleceniem i nadpisanie czegokolwiek

@@ -23,6 +23,13 @@ export interface LoadStop {
   company_name: string;
   address: string;
   city: string;
+  /**
+   * Kod pocztowy tego miejsca — od niego zależy stawka dla kierowcy (src/lib/driverRates/rates.ts),
+   * a przy zleceniu wielopunktowym liczy się NAJWYŻSZA stawka ze wszystkich miejsc, więc kod
+   * kolejnego miejsca potrafi zdecydować o kwocie. Starsze wpisy w jsonb go nie mają — wtedy
+   * ratuje kod wyłuskany z `address`.
+   */
+  postal_code: string;
   /** RRRR-MM-DD albo puste — kolejne miejsce bywa innego dnia niż pierwsze. */
   date: string;
   time: string;
@@ -34,6 +41,7 @@ export const EMPTY_STOP: LoadStop = {
   company_name: "",
   address: "",
   city: "",
+  postal_code: "",
   date: "",
   time: "",
   notes: "",
@@ -53,7 +61,7 @@ function textOf(value: unknown): string {
 
 /** Czy w tym miejscu w ogóle cokolwiek stoi — puste wiersze formularza nie mają po co iść do bazy. */
 export function isStopEmpty(stop: LoadStop): boolean {
-  return !stop.company_name && !stop.address && !stop.city && !stop.date && !stop.time && !stop.notes;
+  return !stop.company_name && !stop.address && !stop.city && !stop.postal_code && !stop.date && !stop.time && !stop.notes;
 }
 
 /**
@@ -72,6 +80,7 @@ export function normalizeStops(raw: unknown): LoadStop[] {
       company_name: textOf(source.company_name),
       address: textOf(source.address),
       city: textOf(source.city),
+      postal_code: textOf(source.postal_code),
       date: textOf(source.date),
       time: textOf(source.time),
       notes: textOf(source.notes),

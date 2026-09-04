@@ -46,7 +46,14 @@ export interface StoredLearningMaterial {
 }
 
 /** Pliki z Storage → materiał do nauki. Tekst wyciągany tą samą ścieżką co w oknie importu. */
-export async function learningDocsFromStorage(files: StoredFileRef[]): Promise<StoredLearningMaterial> {
+export async function learningDocsFromStorage(
+  files: StoredFileRef[],
+  // Próg długości tekstu jest regułą NAUKI, nie własnością pliku: kotwice mają z czego powstać
+  // dopiero przy sensownym kawałku tekstu. Inni wołający (np. wyciąganie kodu pocztowego przy
+  // miejscowości) potrzebują tego samego pobrania, ale nie tej reguły — stąd parametr zamiast
+  // stałej wpisanej na sztywno w środku.
+  { minTextLength = 300 }: { minTextLength?: number } = {}
+): Promise<StoredLearningMaterial> {
   const out: LearningDocument[] = [];
   const problems: string[] = [];
 
@@ -72,7 +79,7 @@ export async function learningDocsFromStorage(files: StoredFileRef[]): Promise<S
     }
     // Skan bez warstwy tekstowej — nauka na kotwicach tekstowych nie ma z czego powstać. To nie
     // błąd, tylko granica metody; Claude czyta takie dokumenty dalej.
-    if (text.trim().length < 300) {
+    if (text.trim().length < minTextLength) {
       problems.push(`${name}: brak warstwy tekstowej (skan?) — z tego appka się nie nauczy.`);
       continue;
     }
@@ -93,7 +100,10 @@ export async function learningDocsFromStorage(files: StoredFileRef[]): Promise<S
  * Dokumenty jednego zlecenia → materiał do nauki. Bucket bierzemy z wiersza: załącznik z maila
  * zostaje w `order-emails` (Skrzynka go tylko podpina), wgrany ręcznie leży w `load-documents`.
  */
-export async function learningDocsFromStored(documents: LoadDocument[]): Promise<StoredLearningMaterial> {
+export async function learningDocsFromStored(
+  documents: LoadDocument[],
+  options?: { minTextLength?: number }
+): Promise<StoredLearningMaterial> {
   return learningDocsFromStorage(
     documents
       .filter((document) => !SKIPPED_KINDS.includes(document.kind))
@@ -105,6 +115,7 @@ export async function learningDocsFromStored(documents: LoadDocument[]): Promise
         parseSource: document.parse_source
           ? `${document.parse_source} (nauka z zapisanego zlecenia)`
           : "nauka z zapisanego zlecenia",
-      }))
+      })),
+    options
   );
 }

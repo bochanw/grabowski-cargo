@@ -12,6 +12,7 @@
 import { previousWorkingDay } from "@/lib/dates/workingDays";
 import { canOverwriteGrossWeight, computeGrossWeightKg } from "@/lib/containers/tare";
 import { shippingLineForNotes } from "@/lib/loads/leasing";
+import { extractPostalCode, formatPostalCode } from "@/lib/driverRates/rates";
 import type { ParsedOrder } from "@/types/parsedOrder";
 
 export interface OrderDefaults {
@@ -38,6 +39,16 @@ export function applyOrderDefaults(order: ParsedOrder): OrderDefaults {
     next = { ...next, gross_weight: String(gross) };
   }
 
+  // Ważenie: dokumenty prawie nigdy nie piszą "ważenie: wymagane" — piszą, GDZIE się waży
+  // ("ważenie w porcie", "waga miejska Gdynia"). Skoro dokument wskazał miejsce, to znaczy, że
+  // ważenie jest. Odwrotnie NIE działa: brak miejsca nie znaczy "niewymagane", więc pola „czy"
+  // wtedy nie ruszamy — zostaje null („dokument o tym nie mówi"). Świadome "nie" dyspozytora
+  // (false) też zostaje nietknięte.
+  if (next.weighing_place && next.weighing_required === null) {
+    warnings.push(`Dokument podaje miejsce ważenia („${next.weighing_place}”) — zaznaczono, że ważenie jest wymagane.`);
+    next = { ...next, weighing_required: true };
+  }
+
   // Gestia z uwag: kontener leasingowy nie ma armatora, a informacja o leasingu stoi w uwagach.
   const line = shippingLineForNotes(next.notes, next.shipping_line) ?? "";
   if (line !== next.shipping_line) {
@@ -48,6 +59,21 @@ export function applyOrderDefaults(order: ParsedOrder): OrderDefaults {
     );
     next = { ...next, shipping_line: line };
   }
+
+  // Kod pocztowy z adresu: dokumenty rzadko mają osobną rubrykę, a adres bywa jednym ciągiem
+  // ("Słoneczna 42 A, 05-500 Piaseczno"). Od kodu zależy stawka dla kierowcy, więc wyłuskujemy go
+  // raz i zapisujemy przy zleceniu — inaczej ta sama regułka musiałaby stać w każdym miejscu,
+  // które stawkę liczy (a to jest dokładnie ten błąd, po którym powstał ten plik).
+  if (!next.postal_code) {
+    const fromAddress = extractPostalCode([next.address, next.city].filter(Boolean).join(" "));
+    if (fromAddress) next = { ...next, postal_code: formatPostalCode(fromAddress) };
+  }
+
+  // Stawki dla kierowcy TU NIE MA i to jest świadome: cennik przychodzi z bazy (asynchronicznie),
+  // a ta funkcja bywa wołana w inicjalizatorze stanu okna — czyli czasem ZANIM cennik dojedzie.
+  // Reguła siedzi więc w jednym miejscu innego rodzaju: `computeDriverRate` (czysty odczyt cennika),
+  // wołane na żywo przez okno zlecenia (podpowiedź w formularzu), edycję inline w tabeli
+  // i przeliczanie zbiorcze. Patrz src/lib/driverRates/.
 
   return { order: next, warnings };
 }
