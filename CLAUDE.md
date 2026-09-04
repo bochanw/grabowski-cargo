@@ -1339,6 +1339,17 @@ pojazdach):
   **40/45 na solówkę = odmowa z komunikatem**, nie cichy zapis. **Nieznana wielkość NIE blokuje
   drugiego miejsca** (w danych klienta puste „Wielkość" jest częste — blokada odbierałaby pół
   zestawu przy każdym niedoczytanym dokumencie).
+- **Kontener z importu dnia X sam pokazuje się w EKSPORCIE dnia X** (właściciel: „kontenery będące
+  dnia X w imporcie będą szły automatycznie do exportu tego samego dnia — ale zostawiamy tylko
+  informacje o miejscowości, gestii i nr kontenera; ładunki na export (export/krajówka/zjazd na
+  pusto) będziemy właśnie w eksporcie dodawać"). To NIE jest zlecenie, tylko podpowiedź na wolnym
+  miejscu (`PlanCell.carriedFrom`, przerywana ramka, nagłówek „z importu") — miejsce dalej przyjmuje
+  upuszczenie i klik, a po dołożeniu eksportu podpowiedź znika, bo relację niesie wtedy linia „po:".
+  Trzy szczegóły, które łatwo przeoczyć: miejsce (tył/przód) przenosi się jeden do jednego; pusta
+  czterdziestka zajmuje cały zestaw tak samo jak pełna, ale **nie scalamy kolumn, gdy obok stoi już
+  prawdziwe zlecenie** (podpowiedź nie może schować cudzej pracy); i podpowiedź liczy się z CAŁEGO
+  `loads`, nie z okna — import z pierwszego dnia okna należy do sekcji, której już nie widać, więc
+  bez tego pierwsza sekcja byłaby ślepa.
 - **Nic nie ginie**: kontener wypchnięty przez czterdziestkę i „trzeci na zestawie" lądują w
   czerwonym pasku „Nie mieści się na zestawie" przy kafelku; pojazd z tablicy, której nie ma w
   Panelu floty, dostaje własny wiersz („spoza Panelu floty"); **zlecenie BEZ DATY** trafia do
@@ -1364,10 +1375,10 @@ pojazdach):
   samo, co 0006). Sprawdzone `has_function_privilege` po zaaplikowaniu.
 - Zakładki „Zestawienie / Plan wspaniały" (`src/components/AppViews.tsx`). Synchronizacji nie ma i
   nie trzeba: oba widoki czytają ten sam cache TanStack Query odświeżany przez Realtime.
-- **Zweryfikowane**: logika — 42 sprawdzenia (`scratch-plan.test.mts`, plik tymczasowy; jedno złapało
+- **Zweryfikowane**: logika — 50 sprawdzeń (`scratch-plan.test.mts`, plik tymczasowy; jedno złapało
   realny błąd: kontener wypchnięty przez czterdziestkę liczył się dwa razy). Przeglądarka
   (Playwright, `next dev`, tymczasowe strony `/test-plan` i `/test-widoki`, usunięte po teście) —
-  21 + 6 sprawdzeń **z podstawionym REST-em, nie z atrapą hooków**, więc szła ta sama ścieżka co w
+  26 + 6 sprawdzeń **z podstawionym REST-em, nie z atrapą hooków**, więc szła ta sama ścieżka co w
   appce (fetch → TanStack Query → widok → PATCH): cztery dni okna z właściwymi datami i kolumnami,
   zlecenia z dnia −1 i +2 w swoich blokach, scalenie kolumn przy 40HC, brak drugiego miejsca,
   pamiątka wyliczona i nadpisana, odmowa 40HC na solówkę BEZ zapisu, 20DV na solówce zapisane,

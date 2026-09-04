@@ -10,6 +10,36 @@ import { containerSizeFamily } from "@/lib/containers/tare";
  * Dolna, szara linia w EKSPORCIE to pamiątka "po jakim imporcie jest ten kontener"; w imporcie jej
  * nie ma (właściciel: "import jest prosty, tam są tylko realne ładunki z informacjami o nich").
  */
+/**
+ * Kontener, który został na zestawie po imporcie z tego samego dnia — podpowiedź, NIE zlecenie.
+ *
+ * Właściciel: "kontenery będące dnia X w imporcie będą szły automatycznie do eksportu tego samego
+ * dnia, ale zostawiamy tylko informacje o miejscowości, gestii i nr kontenera; ładunki na export
+ * (export / krajówka / zjazd na pusto) będziemy właśnie w eksporcie dodawać". Stąd trzy pola i
+ * przerywana ramka: nic tu jeszcze nie jest zaplanowane, miejsce dalej przyjmuje zlecenie.
+ */
+export function PlanCarryTile({ load }: { load: Load }) {
+  const opis = [load.city, load.shipping_line, load.container_number]
+    .map((v) => (v ?? "").trim())
+    .filter(Boolean);
+
+  return (
+    <div
+      data-testid="kafelek-z-importu"
+      data-kontener={load.container_number ?? ""}
+      title="Kontener został po imporcie z tego samego dnia — dołóż tu ładunek (export / krajówka / zjazd na pusto)"
+      className="h-full rounded border border-dashed border-zinc-300 bg-zinc-50/70 px-1.5 py-1 text-[11px] leading-tight text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-400"
+    >
+      <div className="text-[10px] uppercase tracking-wide text-zinc-400">z importu</div>
+      {opis.length > 0 ? (
+        <div className="truncate text-zinc-700 dark:text-zinc-300">{opis.join(" · ")}</div>
+      ) : (
+        <div className="text-zinc-400">(bez danych)</div>
+      )}
+    </div>
+  );
+}
+
 export function PlanTile({
   load,
   memory,

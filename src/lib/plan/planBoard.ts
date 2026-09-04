@@ -35,6 +35,13 @@ export interface PlanCell {
   /** Dolna linia kafelka eksportu; pusta w imporcie i przy pustym miejscu. */
   memory: string;
   memoryIsManual: boolean;
+  /**
+   * Kontener, który został na zestawie po imporcie z TEGO SAMEGO dnia (właściciel: "kontenery
+   * będące dnia X w imporcie będą szły automatycznie do exportu tego samego dnia"). To NIE jest
+   * zlecenie eksportowe — to podpowiedź, na którą dyspozytor dopiero dokłada ładunek
+   * (export / krajówka / zjazd na pusto). Ustawiane tylko na PUSTYM miejscu w kolumnach eksportu.
+   */
+  carriedFrom: Load | null;
   /** Zlecenia, dla których zabrakło miejsca — nic nie może zniknąć po cichu. */
   conflicts: Load[];
 }
@@ -108,8 +115,40 @@ function emptyCell(slot: PlanSlot): PlanCell {
     slotImplied: false,
     memory: "",
     memoryIsManual: false,
+    carriedFrom: null,
     conflicts: [],
   };
+}
+
+/**
+ * Kontener z importu TEGO SAMEGO dnia zostaje na zestawie i staje się podstawą eksportu — appka
+ * pokazuje go na wolnym miejscu w kolumnach eksportu jako podpowiedź, a nie jako zlecenie.
+ * Właściciel: "zostawiamy tylko informacje o miejscowości, gestii i nr kontenera, ładunki na
+ * export (export/krajówka/zjazd na pusto) będziemy właśnie w eksporcie dodawać".
+ *
+ * Kolejność miejsc się nie zmienia: kontener zdejmuje się z tego miejsca, na którym stoi.
+ * Zajęte miejsce (już dołożony eksport) zostaje nietknięte — tam relację widać w linii "po:".
+ */
+function applyCarryOver(exportCells: PlanCell[], sameDayImports: PlanCell[]): void {
+  for (let i = 0; i < exportCells.length; i++) {
+    const cell = exportCells[i];
+    if (cell.load || cell.covered) continue;
+    const carried = sameDayImports[i]?.load ?? null;
+    if (carried) cell.carriedFrom = carried;
+  }
+
+  // Pusty czterdziestostopowiec zajmuje cały zestaw tak samo jak pełny — ale scalamy tylko wtedy,
+  // gdy pierwsze miejsce jest wolne; przy dołożonym już eksporcie na "tyle" podpowiedź zostaje
+  // zwykłym kafelkiem, bo o rozstawieniu decyduje wtedy dyspozytor.
+  const pierwsza = exportCells[0];
+  const druga = exportCells[1];
+  // Nigdy nie zasłaniamy DRUGIEGO miejsca, jeśli stoi na nim prawdziwe zlecenie — podpowiedź nie
+  // może schować pracy, którą ktoś już zaplanował (wtedy o rozstawieniu decyduje dyspozytor).
+  if (!pierwsza.load && !druga.load && pierwsza.carriedFrom && loadOccupiesWholeSet(pierwsza.carriedFrom)) {
+    pierwsza.span = 2;
+    druga.covered = true;
+    druga.carriedFrom = null;
+  }
 }
 
 /**
@@ -337,6 +376,9 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
     const key = normalizePlate(plate);
     const planVehicle = planByPlate.get(key) ?? null;
     const mine = relevant.filter((load) => normalizePlate(load.vehicle_plate ?? "") === key);
+    // Do przeniesienia "import dnia X → eksport dnia X" potrzebne są też importy spoza kolumn
+    // okna: import z pierwszego dnia okna należy do sekcji, której już nie widać.
+    const mineAll = input.loads.filter((load) => normalizePlate(load.vehicle_plate ?? "") === key);
 
     // Kierowca: etatowy z ustawień planu, a gdy go nie ma — ten wpisany na zleceniach z okna.
     // Panel floty nie wiąże kierowcy z pojazdem, więc innego źródła nie ma.
@@ -346,9 +388,19 @@ export function buildPlanBoard(input: PlanBoardInput): PlanBoard {
 
     const blocks: PlanRowBlock[] = days.map((day) => {
       const tego = mine.filter((load) => belongsTo(load, day));
+      const eksport = layoutSide(tego.filter((l) => l.direction === "E"), input.loads, key, true);
+      // Importy z TEGO SAMEGO dnia co eksport — ich kontenery zostają na zestawie i idą dalej
+      // jako eksport. Rozkładamy je tą samą funkcją, żeby miejsca (tył/przód) się zgadzały.
+      const importyTegoDnia = layoutSide(
+        mineAll.filter((l) => l.direction === "I" && l.load_date === day.dayExport),
+        input.loads,
+        key,
+        false
+      );
+      applyCarryOver(eksport, importyTegoDnia);
       return {
         day,
-        eksport: layoutSide(tego.filter((l) => l.direction === "E"), input.loads, key, true),
+        eksport,
         import: layoutSide(tego.filter((l) => l.direction === "I"), input.loads, key, false),
         absences: [
           ...planAbsenceLabels(input.absences, key, day.dayExport),

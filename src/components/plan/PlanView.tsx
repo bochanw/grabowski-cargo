@@ -18,7 +18,7 @@ import {
 import { PLAN_SLOTS, PLAN_SLOT_LABELS, type PlanSlot } from "@/lib/plan/slots";
 import { assignRefusal, assignmentPatch, unassignPatch } from "@/lib/plan/assign";
 import { nextWorkingDay, previousWorkingDay, todayIso, isWorkingDay } from "@/lib/dates/workingDays";
-import { PlanTile } from "./PlanTile";
+import { PlanCarryTile, PlanTile } from "./PlanTile";
 import { PlanRowSettingsDialog } from "./PlanRowSettingsDialog";
 
 const DAY_FORMATTER = new Intl.DateTimeFormat("pl-PL", { weekday: "long", day: "2-digit", month: "2-digit" });
@@ -188,9 +188,19 @@ export function PlanView() {
                 direction === "E" ? () => setMemoryEdit({ load: cell.load!, value: cell.memory }) : undefined
               }
             />
+          ) : cell.carriedFrom && !selected ? (
+            <PlanCarryTile load={cell.carriedFrom} />
           ) : (
             <div className="min-h-[46px] rounded border border-dashed border-zinc-200 text-center text-[11px] leading-[46px] text-zinc-300 dark:border-zinc-800 dark:text-zinc-700">
-              {selected ? (refusal ? "nie tutaj" : "wstaw tutaj") : nieobecny ? "wolne" : ""}
+              {selected
+                ? refusal
+                  ? "nie tutaj"
+                  : cell.carriedFrom
+                    ? `wstaw na ${cell.carriedFrom.container_number || "ten kontener"}`
+                    : "wstaw tutaj"
+                : nieobecny
+                  ? "wolne"
+                  : ""}
             </div>
           )}
           {cell.conflicts.length > 0 && (
