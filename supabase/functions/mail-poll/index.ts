@@ -32,6 +32,7 @@ import { type MailSource, MailSourceError } from "./mailSource.ts";
 import { assessRelevance, type MarkingRule, MIN_ORDER_NUMBER_LENGTH, normalizeOrderNumber } from "./relevance.ts";
 import { extractPdfText } from "./pdfText.ts";
 import { matchKnownTemplate } from "./shared/orderTemplates.ts";
+import { postalCodeNearCity } from "./shared/postalFromText.ts";
 import { matchLearnedTemplate, type LearnedTemplateLike } from "./shared/readTemplate.ts";
 import { previousWorkingDay } from "./shared/workingDays.ts";
 import {
@@ -217,6 +218,9 @@ Deno.serve(async (req: Request) => {
       if (relevance.relevant) {
         let merged = EMPTY_PARSED_ORDER;
         const sources: string[] = [];
+        // Teksty wszystkich załączników — potrzebne jeszcze raz po scaleniu, przy szukaniu kodu
+        // pocztowego (miasto bywa w jednym dokumencie, kod w drugim).
+        const teksty: string[] = [];
 
         for (const pdf of mail.attachments) {
           const storagePath = `${mail.messageId.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 80)}/${pdf.filename}`;
@@ -233,6 +237,7 @@ Deno.serve(async (req: Request) => {
           let text = "";
           try {
             text = await extractPdfText(pdf.bytes);
+            teksty.push(text);
           } catch (e) {
             // Skan bez warstwy tekstowej to nie koniec — Claude dostaje oryginalny PDF.
             attachmentError = `tekst z PDF-a: ${(e as Error).message}`;
@@ -266,6 +271,15 @@ Deno.serve(async (req: Request) => {
             );
           }
 
+          // Kod pocztowy decyduje o stawce dla kierowcy, a odczyt oddaje zwykle sam adres. Szukamy
+          // go w tekście PRZY nazwie miejscowości z tego dokumentu — ta sama reguła co przy ręcznym
+          // wgraniu pliku (src/lib/driverRates/postalFromText.ts), więc zlecenie z maila nie jest
+          // uboższe od tego samego zlecenia wgranego z dysku.
+          if (parsed && !parsed.postal_code && text) {
+            const kod = postalCodeNearCity(text, parsed.city);
+            if (kod) parsed = { ...parsed, postal_code: kod };
+          }
+
           if (parsed) {
             if (merged.order_number && parsed.order_number && merged.order_number !== parsed.order_number) {
               warnings.push(`${pdf.filename}: numer zlecenia ${parsed.order_number} różni się od ${merged.order_number} z poprzedniego dokumentu — sprawdź, czy to to samo zlecenie.`);
@@ -294,6 +308,18 @@ Deno.serve(async (req: Request) => {
         // widać w panelu, więc dyspozytor często rozstrzygnie sprawę bez wydawania grosza.
         if (mail.attachments.length === 0 && mail.bodyText.trim()) {
           warnings.push('Treść maila nieodczytana — kliknij „Odczytaj przez Claude", jeśli chcesz z niej wyciągnąć pola zlecenia.');
+        }
+
+        // Miasto bywa w jednym dokumencie, a kod pocztowy w drugim (zlecenie + list przewozowy),
+        // więc po scaleniu próbujemy jeszcze raz — już z miejscowością z kompletu pól.
+        if (!merged.postal_code && merged.city) {
+          for (const tekst of teksty) {
+            const kod = postalCodeNearCity(tekst, merged.city);
+            if (kod) {
+              merged = { ...merged, postal_code: kod };
+              break;
+            }
+          }
         }
 
         // Domyślna „Data" = dzień roboczy przed rozładunkiem/załadunkiem — ta sama reguła co przy

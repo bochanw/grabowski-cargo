@@ -1851,6 +1851,29 @@ pierwszej wersji stawek; słuszne):
   sukcesem, ani błędem. Stąd podstawienie `/storage/v1/object` w mocku — bez tego test wyglądałby
   na zawieszenie appki.
 
+**`mail-poll` WDROŻONA (v19) — skrzynka też bierze kody pocztowe:**
+- Poller ma teraz tę samą regułę co przeglądarka (`shared/postalFromText.ts` z
+  `scripts/build-edge-shared.mjs`): po odczycie dokumentu szuka kodu PRZY miejscowości z tego
+  dokumentu, a po scaleniu załączników jeszcze raz — bo miasto bywa w zleceniu, a kod w liście
+  przewozowym. Propozycja w Skrzynce przychodzi więc z kodem, a nie dopiero po otwarciu okna.
+- **Szablon Q4Road zapisuje kod osobno** (`parseUnloadingRow`): ten sam regex widział go od zawsze,
+  ale służył wyłącznie do odcięcia miejscowości. Sprawdzone na wierszu w kształcie, jaki produkuje
+  pdf.js: „ul. Zwirowa 73, 54-029 Wrocław" → kod 54-029, miasto „Wrocław".
+- **Dwie pułapki wdrożenia, obie potwierdzone w praktyce w tej sesji:**
+  1. `verify_jwt` MUSI iść jawnie jako `false` (cron woła funkcję sekretem `x-ingest-secret`, bez
+     JWT) — domyślka MCP to `true` i odcina odczyt skrzynki.
+  2. Pominięcie `import_map_path` kończy się błędem „import map path does not exist" ze SKLEJONĄ
+     ścieżką z poprzedniej wersji (dosłownie: `…_19/source/file:///…_18/source/deno.json`).
+     Podawać `import_map_path: "deno.json"` i dołączać `deno.json` do plików.
+- Wdrożone jako bundle (esbuild, `--charset=utf8`, 48 kB) — `bundle.js` jest artefaktem i wchodzi
+  do `.gitignore`; źródłem prawdy zostają pliki `.ts`. Przed wdrożeniem: `deno check` + 26 testów
+  Deno przechodzi.
+- Sprawdzone po wdrożeniu: strzał curl-em daje NASZE komunikaty (405 i 401, polskie znaki całe),
+  a przebieg crona po wdrożeniu kończy się bez błędu (`email_ingest_state.last_error` puste,
+  `seen_total` rośnie). **Czego nie da się sprawdzić z tej sesji: czy kod faktycznie wyszedł
+  z prawdziwego maila** — potrzeba nowego zlecenia w skrzynce; widać to będzie w Skrzynce przy
+  pierwszej propozycji (pole „Kod pocztowy" w oknie zlecenia).
+
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,

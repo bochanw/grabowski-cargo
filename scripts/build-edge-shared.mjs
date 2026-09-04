@@ -37,6 +37,10 @@ const TARGETS = {
     "src/lib/orderTemplates/readTemplate.ts": "readTemplate.ts",
     "src/lib/dates/workingDays.ts": "workingDays.ts",
     "src/lib/loads/orderNumber.ts": "orderNumber.ts",
+    // Kod pocztowy wyciągany z tekstu dokumentu PRZY nazwie miejscowości — ta sama reguła musi
+    // działać w przeglądarce i w pollerze, inaczej zlecenie z maila przychodziłoby bez kodu,
+    // a to samo zlecenie wgrane ręcznie już z kodem.
+    "src/lib/driverRates/postalFromText.ts": "postalFromText.ts",
   },
   // Odpytywanie Baltic Hub: okno godzinowe (dni robocze 6-18) i model pięciu statusów muszą
   // znaczyć DOKŁADNIE to samo w przeglądarce i w cronie — stąd kopia, a nie druga implementacja.

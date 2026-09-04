@@ -60,8 +60,14 @@ function parseUnloadingRow(text: string, result: ParsedOrder) {
   result.company_name = parts[0]?.trim() ?? "";
   if (parts[1]) {
     result.address = parts[1].trim();
-    const cityMatch = parts[1].match(/,\s*\d{2}-\d{3}\s+(.+)$/);
-    if (cityMatch) result.city = cityMatch[1].trim();
+    // Ten sam kawałek adresu niesie kod pocztowy i miejscowość ("ul. Zwirowa 73, 54-029 Wrocław").
+    // Kod zapisujemy OSOBNO, bo od niego zależy stawka dla kierowcy — do tej pory przepadał,
+    // mimo że regex już go widział (służył tylko do odcięcia miejscowości).
+    const cityMatch = parts[1].match(/,\s*(\d{2}-\d{3})\s+(.+)$/);
+    if (cityMatch) {
+      result.postal_code = cityMatch[1];
+      result.city = cityMatch[2].trim();
+    }
   }
   const [dd, mm, yyyy] = dateStr.split(".");
   result.delivery_date = `${yyyy}-${mm}-${dd}`;

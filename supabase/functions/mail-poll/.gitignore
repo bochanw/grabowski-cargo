@@ -1,2 +1,4 @@
 node_modules/
 deno.lock
+# Artefakt wdrożenia (esbuild) — źródłem prawdy są pliki .ts obok.
+bundle.js
