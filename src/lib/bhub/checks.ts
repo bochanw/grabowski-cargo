@@ -112,14 +112,14 @@ export function containerWarnings(load: CheckedLoad): BhubWarning[] {
   // „nie odczytałem" i milczymy: ostrzeżenie z braku wiedzy byłoby fałszywym alarmem.
   const timeOut = (load.bhub_time_out ?? "").trim();
   if (timeOut) {
-    out.push({ text: `Baltic Hub: „Time Out" nie jest pusty (${timeOut}) — kontener opuścił już terminal.` });
+    out.push({ text: `Terminal: „Time Out" nie jest pusty (${timeOut}) — kontener opuścił już terminal.` });
   }
 
   const wagi = compareWeights(load.bhub_commodity_weight_kg, load.bhub_net_weight_kg);
   if (wagi === "mismatch") {
     out.push({
       text:
-        `Baltic Hub: waga celna (Commodity ${formatKg(load.bhub_commodity_weight_kg as number)}) różni się od wagi ` +
+        `Terminal: waga celna (Commodity ${formatKg(load.bhub_commodity_weight_kg as number)}) różni się od wagi ` +
         `towaru (Cargo ${formatKg(load.bhub_net_weight_kg as number)}).`,
     });
   }

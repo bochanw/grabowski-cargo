@@ -14,6 +14,7 @@
 
 import { deflateRawSync } from "node:zlib";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -135,6 +136,32 @@ function pliki(katalog, prefiks = "") {
 }
 
 const znalezione = pliki(ZRODLO);
+/**
+ * BRAMKA SKŁADNI — wtyczka nie ma buildu ani bundlera, więc nic nie sprawdzało, czy jej pliki
+ * w ogóle się parsują. To kosztowało wydanie 1.1.0: w `background.js` zwykły cudzysłów w środku
+ * napisu („guzik „Wtyczka" w appce") zamknął string wcześniej, plik miał błąd składni i service
+ * worker w ogóle się nie ładował — a objawem było PUSTE okno wtyczki, bo nie miał kto odpowiedzieć
+ * na wiadomość. Chrome nie mówi tego wprost, więc mówi to paczka: plik z błędem NIE zostanie
+ * spakowany.
+ *
+ * Sprawdzamy jako MODUŁ (kopia z rozszerzeniem `.mjs`) — pliki wtyczki to moduły ES i tylko takie
+ * parsowanie łapie zarówno `import`, jak i zwykłe literówki.
+ */
+function sprawdzSkladnie(wpisy) {
+  const tmp = join(ROOT, "node_modules", ".cache");
+  mkdirSync(tmp, { recursive: true });
+  for (const wpis of wpisy.filter((w) => w.nazwa.endsWith(".js"))) {
+    const kopia = join(tmp, `skladnia-${wpis.nazwa.replace(/[^\w.-]/g, "_")}.mjs`);
+    writeFileSync(kopia, wpis.dane);
+    try {
+      execFileSync(process.execPath, ["--check", kopia], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch (e) {
+      const powod = String(e.stderr ?? e.message).split("\n").slice(0, 6).join("\n");
+      throw new Error(`Plik wtyczki ${wpis.nazwa} ma błąd składni — paczka NIE powstała:\n${powod}`);
+    }
+  }
+}
+
 const manifest = JSON.parse(readFileSync(join(ZRODLO, "manifest.json"), "utf8"));
 if (!manifest.version) throw new Error("extension/manifest.json nie ma pola `version` — bez niego appka nie pozna, czy wtyczka jest aktualna.");
 
@@ -145,6 +172,7 @@ const wpisy = znalezione.map(({ sciezka, wZip }) => ({
 }));
 
 mkdirSync(CEL, { recursive: true });
+sprawdzSkladnie(wpisy);
 const paczka = zip(wpisy);
 writeFileSync(join(CEL, NAZWA_ZIP), paczka);
 

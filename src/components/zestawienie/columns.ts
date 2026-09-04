@@ -35,7 +35,7 @@ export const COLUMNS: ColumnDef[] = [
   { key: "container_number", label: "Nr kontenera", block: "ladunek" },
   // Status z Baltic Hub: dwie litery + kolor tła (patrz src/lib/bhub/status.ts). Stoi zaraz przy
   // numerze kontenera, bo dyspozytor czyta jedno razem z drugim.
-  { key: "bhub_status", label: "Status BHub", block: "ladunek", kind: "bhub_status" },
+  { key: "bhub_status", label: "Status terminala", block: "ladunek", kind: "bhub_status" },
   { key: "shipping_line", label: "Gestia", block: "ladunek" },
   { key: "company_name", label: "Dane firmy", block: "ladunek" },
   { key: "address", label: "Adres", block: "ladunek" },

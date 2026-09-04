@@ -75,7 +75,7 @@ function zapytaj<T>(wiadomosc: unknown, limitMs: number): Promise<{ ok: true; da
           brak: true,
           error:
             "Nie widzę rozszerzenia „Grabowski — statusy kontenerów” w tej przeglądarce. " +
-            "Zainstaluj je albo włącz — bez niego statusy z Baltic Hub nie będą się odświeżać.",
+            "Zainstaluj je albo włącz — bez niego statusy z terminali nie będą się odświeżać.",
         });
         return;
       }

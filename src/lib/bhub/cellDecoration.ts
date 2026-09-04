@@ -33,7 +33,7 @@ const UWAGA_CLASS = "font-bold text-amber-700 dark:text-amber-400";
 
 function checkedAtNote(load: Pick<Load, "bhub_checked_at" | "bhub_error">, now: Date): string {
   if (load.bhub_error) return `Ostatnie sprawdzenie nie powiodło się: ${load.bhub_error}`;
-  if (!load.bhub_checked_at) return "Jeszcze nie sprawdzano w Baltic Hub";
+  if (!load.bhub_checked_at) return "Jeszcze nie sprawdzano w terminalu";
   const checked = new Date(load.bhub_checked_at);
   if (Number.isNaN(checked.getTime())) return "";
   const minutes = Math.max(0, Math.round((now.getTime() - checked.getTime()) / 60_000));
@@ -117,7 +117,7 @@ function statusDecoration(load: DecoratedLoad, now: Date): CellDecoration {
     return {
       text: load.bhub_status_raw,
       className: "italic text-zinc-500 dark:text-zinc-400",
-      title: [`Status z Baltic Hub, jeszcze bez przypisanego kodu: „${load.bhub_status_raw}”`, note]
+      title: [`Status z terminala, jeszcze bez przypisanego kodu: „${load.bhub_status_raw}”`, note]
         .filter(Boolean)
         .join("\n"),
     };

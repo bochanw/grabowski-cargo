@@ -54,7 +54,7 @@ export function useBhubCheck() {
           setError(
             result.reason === "brak_rozszerzenia"
               ? result.error
-              : `Nie udało się sprawdzić statusu w Baltic Hub: ${result.error}`
+              : `Nie udało się sprawdzić statusu w terminalu: ${result.error}`
           );
           return false;
         }

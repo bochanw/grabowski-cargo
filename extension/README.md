@@ -1,6 +1,6 @@
 # Rozszerzenie „Grabowski — statusy kontenerów"
 
-Sprawdza w Baltic Hubie statusy kontenerów, które podejmujemy z BHub, i zapisuje je przy
+Sprawdza w Baltic Hubie, BCT i GCT statusy kontenerów, które stamtąd podejmujemy, i zapisuje je przy
 zleceniach w appce. Działa w przeglądarce dyspozytora, bo terminal odrzuca ruch z serwerowni:
 `baltichub.com` stoi za Cloudflare, a formularz ma reCAPTCHĘ. Prawdziwa przeglądarka na zwykłym
 łączu przechodzi to sama.
@@ -66,7 +66,7 @@ otwiera przypiętą kartę, wystarczy przejść weryfikację ręcznie. Kolejne s
 
 - **Sprawdź teraz** — przebieg poza kolejnością.
 - **Otwórz stronę terminala** — przypięta karta, gdy trzeba coś kliknąć ręcznie.
-- **Adres strony terminala** — do zmiany, gdyby Baltic Hub przeniósł stronę (albo przy kolejnym
+- **Adresy stron terminali** (osobno BHub, BCT, GCT) — do zmiany, gdyby terminal przeniósł stronę (albo przy kolejnym
   terminalu).
 - **Nazwa tego komputera** — pokazuje się w appce przy stanie sprawdzania („Dyspozytornia 1").
 
@@ -115,3 +115,9 @@ tu krytyczne i mają własne testy:
 Testy (w środowisku z Playwrightem): `page.js` sprawdzany na stronie odwzorowującej mierzone
 pułapki terminala, całe rozszerzenie — wgrane do prawdziwego Chrome (manifest, identyfikator,
 wiadomości, alarm). Szczegóły w `CLAUDE.md`, sekcja o Baltic Hubie.
+
+**BRAMKA SKŁADNI przy pakowaniu.** `scripts/build-extension-zip.mjs` parsuje KAŻDY plik `.js`
+wtyczki jako moduł i przerywa pakowanie, gdy któryś ma błąd składni. Powód jest konkretny: wersja
+1.1.0 wyszła z niedomkniętym napisem w `background.js` (zwykły cudzysłów w środku polskiego
+cytatu), przez co service worker w ogóle się nie ładował — a objawem było PUSTE okno wtyczki, bo
+nie miał kto odpowiedzieć na wiadomość. Wtyczka nie ma buildu, więc nic tego nie łapało.

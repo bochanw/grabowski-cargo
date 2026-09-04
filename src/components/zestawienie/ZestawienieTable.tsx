@@ -490,7 +490,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
               type="button"
               disabled={checkingIds.size > 0}
               onClick={() => void checkBhub(selectedLoads.map((l) => l.id))}
-              title="Sprawdź w Baltic Hub zaznaczone zlecenia — także te ze statusem ZP, które pomija odpytywanie cykliczne"
+              title="Sprawdź w terminalu zaznaczone zlecenia — także te ze statusem ZP, które pomija odpytywanie cykliczne"
               className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400"
             >
               Sprawdź statusy ({selectedLoads.length})
@@ -542,12 +542,12 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             onClick={() => void checkBhub(trackedIds)}
             title={
               trackedIds.length === 0
-                ? "Nie ma kontenerów do sprawdzenia (podjęcie z BHub, znany numer, status inny niż ZP)"
-                : `Sprawdź teraz statusy w Baltic Hub. ${bhubStatus.tytul}`
+                ? "Nie ma kontenerów do sprawdzenia (podjęcie z BHub, BCT albo GCT, znany numer, status inny niż ZP)"
+                : `Sprawdź teraz statusy w terminalach (BHub, BCT, GCT). ${bhubStatus.tytul}`
             }
             className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400"
           >
-            Statusy BHub{trackedIds.length > 0 ? ` (${trackedIds.length})` : ""}
+            Statusy terminali{trackedIds.length > 0 ? ` (${trackedIds.length})` : ""}
           </button>
           {/* Pobranie aktualnej wtyczki do Chrome. Paczka jedzie razem z appką (powstaje przy
               buildzie z katalogu `extension/`), więc „aktualna" znaczy tu tę samą wersję, co
@@ -558,7 +558,7 @@ export function ZestawienieTable({ loads }: { loads: Load[] }) {
             title={
               extensionOutdated
                 ? `Masz starą wtyczkę (${extension?.wersja ?? "?"}), do pobrania jest ${extensionPackage?.wersja}.`
-                : "Pobierz aktualną wtyczkę do Chrome, która sprawdza statusy w Baltic Hub"
+                : "Pobierz aktualną wtyczkę do Chrome, która sprawdza statusy w terminalach"
             }
             className={`rounded-full border px-3 py-1 text-xs font-medium ${
               extensionOutdated
@@ -1000,12 +1000,12 @@ function DirectionRows({
  */
 function BhubSpinner() {
   return (
-    <span className="ml-1 inline-flex items-center align-middle" title="Sprawdzam status w Baltic Hub…">
+    <span className="ml-1 inline-flex items-center align-middle" title="Sprawdzam status w terminalu…">
       <span
         aria-hidden
         className="inline-block size-3 animate-spin rounded-full border border-zinc-400 border-t-transparent dark:border-zinc-500 dark:border-t-transparent"
       />
-      <span className="sr-only">Sprawdzam status w Baltic Hub</span>
+      <span className="sr-only">Sprawdzam status w terminalu</span>
     </span>
   );
 }

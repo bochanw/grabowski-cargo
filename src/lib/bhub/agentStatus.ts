@@ -52,7 +52,7 @@ export function opisOstatniegoSprawdzenia(
     return {
       ton: "uwaga",
       tekst: "statusy: brak sprawdzeń",
-      tytul: `Żadne rozszerzenie nie zgłosiło jeszcze sprawdzenia statusów w Baltic Hub.${oTejPrzegladarce}`,
+      tytul: `Żadne rozszerzenie nie zgłosiło jeszcze sprawdzenia statusów w terminalach.${oTejPrzegladarce}`,
     };
   }
 
@@ -72,7 +72,7 @@ export function opisOstatniegoSprawdzenia(
       ton: "uwaga",
       tekst: `statusy: cisza od ${temu(agent.last_ok_at ?? agent.last_seen_at, teraz)}`,
       tytul:
-        `Od ${Math.round(cisza)} minut nikt nie sprawdzał statusów w Baltic Hub${gdzie}. ` +
+        `Od ${Math.round(cisza)} minut nikt nie sprawdzał statusów w terminalach${gdzie}. ` +
         `Sprawdza je rozszerzenie w przeglądarce dyspozytora — jeśli jest zamknięta albo wylogowane, ` +
         `statusy przestają się odświeżać.${oTejPrzegladarce}`,
     };

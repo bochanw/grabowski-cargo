@@ -1283,6 +1283,30 @@ terminalach"):
   przez MCP, czyli treść trzeba przenieść ręcznie, a paczka to połowa objętości źródeł. Źródłem
   prawdy zostają pliki `.ts` w repo; `bundle.js` jest w `.gitignore`.
 
+**PUSTE OKNO WTYCZKI 1.1.0 — niedomknięty napis w `background.js`** (zgłoszenie właściciela: „po
+pobraniu nowej wtyczki i zainstalowaniu i kliknięciu jest pusta"):
+- **Przyczyna, znaleziona przez sparsowanie pliku jako modułu**: w komunikacie o nieznanym terminalu
+  stało `"(guzik „Wtyczka" w appce)."` — zwykły cudzysłów po polskim cytacie ZAMKNĄŁ napis
+  wcześniej, więc `background.js` miał BŁĄD SKŁADNI i service worker w ogóle się nie ładował.
+  Objaw był mylący: okno wtyczki otwierało się puste (widać sam tytuł), bo `odswiez()` czeka na
+  odpowiedź z tła, a nie miał kto odpowiedzieć — obie sekcje okna zostawały ukryte.
+- **To ta sama pułapka, która w tej sesji trafiła już dwa razy w pliki testowe** (`"„Brak wyników
+  dla: <numer>" = odpowiedź"`). Tam kosztowała minutę, bo test się nie uruchamiał. W kodzie wtyczki
+  kosztowała wydanie: **wtyczka nie ma buildu ani bundlera, więc NIC nie sprawdzało składni.**
+- **Naprawa trwała, nie punktowa**: `scripts/build-extension-zip.mjs` ma teraz BRAMKĘ — parsuje
+  każdy plik `.js` wtyczki jako moduł (`node --check` na kopii `.mjs`) i przerywa pakowanie, gdy
+  któryś się nie parsuje. Sprawdzone odwrotnie: celowo zepsuty plik faktycznie blokuje paczkę
+  i wypisuje, który to plik i w której linii.
+- **Wniosek do zapamiętania: `node --check plik.js` NIE wystarcza** — dla rozszerzenia `.js` Node
+  parsuje po swojemu i ten błąd przepuścił. Dopiero kopia z rozszerzeniem `.mjs` (parsowanie jako
+  moduł ES) go pokazała.
+- Przy okazji, drugie zgłoszenie z tej samej wiadomości („program dalej daje napis status BHub,
+  zamiast wszystkie"): napisy w appce i w oknie wtyczki mówią teraz o TERMINALACH, nie o Baltic
+  Hubie — kolumna „Status terminala", guzik „Statusy terminali", dymki i komunikaty. Nazwy KOLUMN
+  w bazie zostają (`bhub_*`) — siedzą w dzienniku zmian i w zapisanych ustawieniach widoku każdego
+  użytkownika, jak przy „Złożone kiedy" i „Ważenie gdzie".
+- Wtyczka **1.1.1** — 1.1.0 jest zepsuta i nie wolno jej zostawić u dyspozytorów.
+
 **Odczyt maili wyczerpał środki w Claude Console — naprawione (właściciel: „w nocy program
 wykorzystał wszystkie fundusze Claude Console — odczytem zleceń; niech odczyt PDF (płatny) będzie
 dopiero po moim kliknięciu"):**

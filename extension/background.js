@@ -366,7 +366,7 @@ export async function przebieg({ powod = "harmonogram", loadIds = null } = {}) {
     if (nieznane.length) {
       const powodBledu =
         "Rozszerzenie nie zna tego terminala — zaktualizuj wtyczkę w chrome://extensions " +
-        "(guzik „Wtyczka" w appce).";
+        "(guzik Wtyczka w appce).";
       problemy.push(powodBledu);
       await wywolaj("report", {
         results: nieznane.map((i) => ({ loadId: i.loadId, container: i.container, error: powodBledu })),

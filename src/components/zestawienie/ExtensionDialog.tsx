@@ -27,7 +27,7 @@ export function ExtensionDialog({ extension, onClose }: { extension: StanRozszer
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl dark:bg-zinc-950">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Wtyczka do Chrome — statusy Baltic Hub</h2>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Wtyczka do Chrome — statusy z terminali</h2>
           <button type="button" onClick={onClose} aria-label="Zamknij" className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">
             ✕
           </button>
