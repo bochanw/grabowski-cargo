@@ -52,10 +52,10 @@ export class ImapMailSource implements MailSource {
     const messages: RawMessage[] = [];
     let highest = startUid;
     for (const uid of uids) {
-      const raw = await this.#client.fetchRaw(uid);
+      const fetched = await this.#client.fetchRaw(uid);
       highest = uid;
-      if (!raw) continue;
-      const mime = await PostalMime.parse(raw);
+      if (!fetched) continue;
+      const mime = await PostalMime.parse(fetched.raw);
 
       const attachments: MailAttachment[] = [];
       for (const attachment of mime.attachments ?? []) {
@@ -82,6 +82,10 @@ export class ImapMailSource implements MailSource {
         bodyText: (mime.text ?? "").slice(0, 20_000),
         receivedAt: mime.date ? new Date(mime.date).toISOString() : null,
         attachments,
+        // Kategorie Outlooka wychodzą po IMAP-ie jako słowa kluczowe (bez wiodącego "\"); flagi
+        // systemowe (\Seen, \Answered, \Deleted…) oznaczeniem nie są.
+        categories: fetched.flags.filter((flag) => !flag.startsWith("\\")),
+        flagged: fetched.flags.some((flag) => flag.toLowerCase() === "\\flagged"),
       });
     }
 

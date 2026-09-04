@@ -29,7 +29,7 @@ import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.5
 import { GraphMailSource } from "./graph.ts";
 import { ImapMailSource, requireImapConfig } from "./imapSource.ts";
 import { type MailSource, MailSourceError } from "./mailSource.ts";
-import { assessRelevance, MIN_ORDER_NUMBER_LENGTH, normalizeOrderNumber } from "./relevance.ts";
+import { assessRelevance, type MarkingRule, MIN_ORDER_NUMBER_LENGTH, normalizeOrderNumber } from "./relevance.ts";
 import { extractPdfText } from "./pdfText.ts";
 import { matchKnownTemplate } from "./shared/orderTemplates.ts";
 import { matchLearnedTemplate, type LearnedTemplateLike } from "./shared/readTemplate.ts";
@@ -138,6 +138,14 @@ Deno.serve(async (req: Request) => {
       .select("id,label,forwarder_name,forwarder_nip,doc_kind,labels,rules,status")
       .eq("status", "aktywny");
     const learnedTemplates = (learnedRows ?? []) as LearnedTemplateLike[];
+
+    // Reguła „czytaj tylko oznaczone" (migracja 0024) — u klienta pracownik zaznacza kolorową
+    // kategorią zlecenia do wpisania. Konfiguracja stoi przy stanie odczytu, bo to wspólna reguła
+    // firmy, a nie ustawienie prywatne dyspozytora.
+    const marking: MarkingRule = {
+      onlyMarked: state?.only_marked ?? true,
+      categories: (state?.marked_categories ?? []) as string[],
+    };
     const fetched = await source.fetchSince(String(state?.cursor ?? ""), MAX_MESSAGES_PER_RUN);
 
     // Zbiory do dopasowania maila do istniejącego zlecenia — pobrane RAZ na przebieg, nie per mail.
@@ -183,7 +191,7 @@ Deno.serve(async (req: Request) => {
         skipped++;
         continue;
       }
-      const relevance = assessRelevance(mail, loadsByNormalizedNumber, threadLoadByRef);
+      const relevance = assessRelevance(mail, loadsByNormalizedNumber, threadLoadByRef, marking);
 
       const record: Record<string, unknown> = {
         message_id: mail.messageId,
@@ -193,6 +201,11 @@ Deno.serve(async (req: Request) => {
         subject: mail.subject,
         body_text: mail.bodyText,
         received_at: mail.receivedAt,
+        // Oznaczenia ze skrzynki zapisujemy ZAWSZE, także dla maili pominiętych: dzięki temu
+        // w Skrzynce widać, czym te wiadomości są naprawdę oznaczone, i da się zawęzić regułę do
+        // właściwej kategorii bez zgadywania jej nazwy.
+        categories: mail.categories,
+        flagged: mail.flagged,
         matched_load_id: relevance.matchedLoadId,
         match_reason: relevance.reason,
         status: relevance.relevant ? "new" : "ignored",

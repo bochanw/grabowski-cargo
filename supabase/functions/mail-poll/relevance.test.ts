@@ -4,7 +4,7 @@
 // Uruchomienie: deno test supabase/functions/mail-poll/relevance.test.ts
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { assessRelevance } from "./relevance.ts";
+import { assessRelevance, isMarked, type MarkingRule } from "./relevance.ts";
 
 const LOADS = new Map([
   ["ZD179762026", { id: "load-1", order_number: "ZD/1797/6/2026", container_number: "NYKU9911861" }],
@@ -13,7 +13,7 @@ const LOADS = new Map([
 ]);
 
 function mail(overrides: Partial<Parameters<typeof assessRelevance>[0]> = {}) {
-  return { subject: "", bodyText: "", threadRefs: [], attachments: [], ...overrides };
+  return { subject: "", bodyText: "", threadRefs: [], attachments: [], categories: [], flagged: false, ...overrides };
 }
 const PDF = [{ filename: "zlecenie.pdf", bytes: new Uint8Array([1]) }];
 
@@ -105,4 +105,70 @@ Deno.test("mail z PDF-em ORAZ numerem znanego zlecenia wiąże się ze zleceniem
     new Map(),
   );
   assertEquals(result.matchedLoadId, "load-1");
+});
+
+
+// ============================================================
+// "Czytaj tylko oznaczone" — właściciel: "pracownik klienta oznacza zlecenie czerwonym kolorkiem
+// […] oznaczając że jest to zlecenie do wpisania".
+// ============================================================
+const TYLKO_OZNACZONE: MarkingRule = { onlyMarked: true, categories: [] };
+const TYLKO_CZERWONE: MarkingRule = { onlyMarked: true, categories: ["Kategoria czerwona"] };
+
+Deno.test("nieoznaczony mail z PDF-em nie jest propozycją nowego zlecenia", () => {
+  const result = assessRelevance(mail({ attachments: PDF }), LOADS, new Map(), TYLKO_OZNACZONE);
+  assertEquals(result.relevant, false);
+});
+
+Deno.test("oznaczony kategorią mail z PDF-em przechodzi", () => {
+  const result = assessRelevance(
+    mail({ attachments: PDF, categories: ["Kategoria czerwona"] }),
+    LOADS,
+    new Map(),
+    TYLKO_OZNACZONE,
+  );
+  assertEquals(result.relevant, true);
+  assertEquals(result.matchedLoadId, null);
+});
+
+Deno.test("flaga do wykonania liczy się tak samo jak kategoria", () => {
+  assertEquals(assessRelevance(mail({ attachments: PDF, flagged: true }), LOADS, new Map(), TYLKO_OZNACZONE).relevant, true);
+});
+
+Deno.test("zawężenie do JEDNEJ kategorii odrzuca inne kolory", () => {
+  assertEquals(
+    assessRelevance(mail({ attachments: PDF, categories: ["Kategoria zielona"] }), LOADS, new Map(), TYLKO_CZERWONE).relevant,
+    false,
+  );
+  assertEquals(
+    assessRelevance(mail({ attachments: PDF, categories: ["kategoria CZERWONA"] }), LOADS, new Map(), TYLKO_CZERWONE).relevant,
+    true,
+    "nazwa kategorii nie może zależeć od wielkości liter",
+  );
+});
+
+Deno.test("mail o ISTNIEJĄCYM zleceniu przechodzi BEZ oznaczenia", () => {
+  // To jest granica reguły: oznaczenie mówi "wpisz to jako nowe zlecenie", a odpowiedzi spedytora
+  // w wątku nikt w firmie nie oznacza. Bez tego wyjątku zniknąłby wcześniejszy wymóg właściciela.
+  const wWatku = assessRelevance(
+    mail({ threadRefs: ["watek-1"] }),
+    LOADS,
+    new Map([["watek-1", "load-1"]]),
+    TYLKO_OZNACZONE,
+  );
+  assertEquals(wWatku.relevant, true);
+  assertEquals(wWatku.matchedLoadId, "load-1");
+
+  const poNumerze = assessRelevance(mail({ subject: "ZD/1797/6/2026 przesunięcie" }), LOADS, new Map(), TYLKO_OZNACZONE);
+  assertEquals(poNumerze.relevant, true);
+});
+
+Deno.test("wyłączona reguła zachowuje się jak przed zmianą", () => {
+  assertEquals(assessRelevance(mail({ attachments: PDF }), LOADS, new Map()).relevant, true);
+});
+
+Deno.test("isMarked: puste kategorie znaczą DOWOLNE oznaczenie", () => {
+  assertEquals(isMarked({ categories: [], flagged: false }, TYLKO_OZNACZONE), false);
+  assertEquals(isMarked({ categories: ["cokolwiek"], flagged: false }, TYLKO_OZNACZONE), true);
+  assertEquals(isMarked({ categories: [], flagged: true }, TYLKO_OZNACZONE), true);
 });

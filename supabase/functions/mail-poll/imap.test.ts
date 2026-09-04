@@ -28,6 +28,8 @@ const RAW_MESSAGE = [
 interface Scenario {
   failLogin?: boolean;
   searchReply?: string;
+  /** Odpowiedź FETCH z flagami — tak wygląda mail oznaczony ręcznie w skrzynce. */
+  withFlags?: string;
 }
 
 /** Atrapa serwera IMAP na losowym porcie. Zwraca port i funkcję zamykającą. */
@@ -75,7 +77,8 @@ async function startFakeServer(scenario: Scenario = {}) {
               // Dokładnie ten kształt, który wysyła Gmail: literał z rozmiarem w bajtach,
               // treść, a po niej domykający nawias w tej samej "linii".
               const bytes = new TextEncoder().encode(RAW_MESSAGE).length;
-              await write(`* 1 FETCH (UID 1005 BODY[] {${bytes}}${CRLF}`);
+              const flags = scenario.withFlags ? `FLAGS (${scenario.withFlags}) ` : "";
+              await write(`* 1 FETCH (UID 1005 ${flags}BODY[] {${bytes}}${CRLF}`);
               await write(RAW_MESSAGE);
               await write(`)${CRLF}`);
               await write(`${tag} OK FETCH completed${CRLF}`);
@@ -107,8 +110,9 @@ Deno.test("czyta mail z literału zawierającego CRLF, bez gubienia treści", as
     assertEquals(mailbox.uidValidity, 42);
     assertEquals(mailbox.uidNext, 1010);
 
-    const raw = await client.fetchRaw(1005);
-    assert(raw, "fetchRaw zwrócił null");
+    const fetched = await client.fetchRaw(1005);
+    assert(fetched, "fetchRaw zwrócił null");
+    const raw = fetched.raw;
     // Cała treść, łącznie z obiema liniami po pustej — czyli literał został policzony w bajtach,
     // a nie ucięty na pierwszym CRLF.
     assertStringIncludes(raw, "Message-ID: <abc@example.com>");
@@ -183,9 +187,9 @@ Deno.test("wiele UID-ów pod rząd — każdy FETCH dostaje pełną treść", as
     await client.login("konto@gmail.com", "haslo");
     await client.selectInbox();
     for (const uid of await client.searchAfter(1000)) {
-      const raw = await client.fetchRaw(uid);
-      assert(raw, `brak treści dla UID ${uid}`);
-      assertStringIncludes(raw, "Tresc druga linia");
+      const fetched = await client.fetchRaw(uid);
+      assert(fetched, `brak treści dla UID ${uid}`);
+      assertStringIncludes(fetched.raw, "Tresc druga linia");
     }
   } finally {
     client.close();
@@ -243,4 +247,50 @@ Deno.test("odczyt skrzynki NICZEGO w niej nie zmienia (bez flag, bez oznaczania 
     client.close();
     server.close();
   }
+});
+
+Deno.test("flagi wiadomości docierają do pollera - oznaczenie do wpisania", async () => {
+  // Exchange niesie po IMAP-ie zarówno \\Flagged, jak i słowa kluczowe, w które mapują się kolorowe
+  // kategorie Outlooka — to nimi pracownik klienta zaznacza zlecenia do wpisania.
+  const server = await startFakeServer({ withFlags: "\\Seen \\Flagged Kategoria_czerwona" });
+  const client = new ImapClient({ timeoutMs: 5_000 });
+  try {
+    await client.adopt(await Deno.connect({ hostname: "127.0.0.1", port: server.port }));
+    await client.login("konto@example.com", "haslo");
+    await client.selectInbox();
+    const fetched = await client.fetchRaw(1005);
+    assert(fetched, "fetchRaw zwrócił null");
+    assertEquals(fetched.flags, ["\\Seen", "\\Flagged", "Kategoria_czerwona"]);
+    // Treść nie może ucierpieć na tym, że przed literałem stoi więcej pól.
+    assertStringIncludes(fetched.raw, "Tresc druga linia");
+  } finally {
+    client.close();
+    server.close();
+  }
+});
+
+Deno.test("brak flag w odpowiedzi serwera nie psuje odczytu", async () => {
+  const server = await startFakeServer();
+  const client = new ImapClient({ timeoutMs: 5_000 });
+  try {
+    await client.adopt(await Deno.connect({ hostname: "127.0.0.1", port: server.port }));
+    await client.login("konto@example.com", "haslo");
+    await client.selectInbox();
+    const fetched = await client.fetchRaw(1005);
+    assert(fetched, "fetchRaw zwrócił null");
+    assertEquals(fetched.flags, []);
+  } finally {
+    client.close();
+    server.close();
+  }
+});
+
+Deno.test("pobranie treści NADAL nie oznacza maila jako przeczytanego", () => {
+  // Wymóg właściciela wprost: "pamiętaj żeby nie oznaczać jako odczytane". Dołożenie FLAGS do
+  // komendy nie może przemycić zwykłego BODY[] zamiast BODY.PEEK[] — to jedyna różnica między
+  // "czytam" a "oznaczam przeczytane" po stronie IMAP-a.
+  const zrodlo = Deno.readTextFileSync(new URL("./imap.ts", import.meta.url));
+  assertStringIncludes(zrodlo, "BODY.PEEK[]");
+  assert(!/\(BODY\[\]/.test(zrodlo), "BODY[] bez PEEK ustawiłoby flagę \\Seen");
+  assertStringIncludes(zrodlo, "EXAMINE INBOX");
 });

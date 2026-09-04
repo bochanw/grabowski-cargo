@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { supabase } from "@/lib/supabase/client";
-import { triggerMailPoll, useEmailInbox, useIngestState, useSetEmailStatus } from "@/hooks/useEmailInbox";
+import { triggerMailPoll, useEmailInbox, useIngestState, useSetEmailStatus, useSetIngestMarking, useSkippedEmails } from "@/hooks/useEmailInbox";
 import { useLinkExistingDocument } from "@/hooks/useLoadDocuments";
 import { guessDocumentKind } from "@/types/loadDocument";
 import type { EmailAttachment } from "@/types/emailMessage";
@@ -57,6 +57,32 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
   // Teksty załączników odczytanych przez Claude — po zapisie zlecenia appka uczy się z nich układu
   // dokumentu, żeby kolejny mail od tego spedytora był darmowy (patrz autoLearn.ts).
   const [materialDoNauki, setMaterialDoNauki] = useState<LearningDocument[]>([]);
+  // Reguła „czytaj tylko oznaczone" i podgląd pominiętych — patrz migracja 0024. Pominięte
+  // pobieramy dopiero po rozwinięciu, bo to widok diagnostyczny, nie codzienna praca.
+  const [pokazPominiete, setPokazPominiete] = useState(false);
+  const { data: pominiete = [] } = useSkippedEmails(pokazPominiete);
+  const setMarking = useSetIngestMarking();
+
+  // Kategorie FAKTYCZNIE spotkane w skrzynce — nazwy nadaje użytkownik Outlooka, więc appka nie
+  // może ich znać z góry. Dyspozytor wybiera właściwą z listy tego, co naprawdę przyszło.
+  const spotkaneKategorie = [
+    ...new Set([...(messages ?? []), ...pominiete].flatMap((m) => m.categories ?? [])),
+  ].sort((a, b) => a.localeCompare(b, "pl"));
+  const wybraneKategorie = ingestState?.marked_categories ?? [];
+
+  async function przelaczKategorie(name: string) {
+    const next = wybraneKategorie.includes(name)
+      ? wybraneKategorie.filter((c) => c !== name)
+      : [...wybraneKategorie, name];
+    const err = await setMarking({ marked_categories: next });
+    setNotice(
+      err
+        ? `Nie udało się zapisać reguły: ${err}`
+        : next.length === 0
+          ? "Liczy się teraz DOWOLNE oznaczenie (kolor albo flaga)."
+          : `Propozycje tylko z maili oznaczonych: ${next.join(", ")}.`
+    );
+  }
 
   async function odczytajPrzezClaude(mail: EmailMessage) {
     setCzytany(mail.id);
@@ -137,6 +163,94 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
           </div>
         )}
 
+        {/* Reguła „czytaj tylko oznaczone" — u klienta pracownik zaznacza kolorową kategorią
+            zlecenia do wpisania. Nazw kategorii appka nie zna z góry (nadaje je użytkownik
+            Outlooka), więc pokazujemy TE, KTÓRE FAKTYCZNIE PRZYSZŁY, zamiast zgadywać. */}
+        <div className="border-b border-zinc-100 px-3 py-2 text-[11px] dark:border-zinc-900">
+          <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+            <input
+              type="checkbox"
+              checked={ingestState?.only_marked ?? true}
+              onChange={async (e) => {
+                const err = await setMarking({ only_marked: e.target.checked });
+                setNotice(
+                  err
+                    ? `Nie udało się zapisać reguły: ${err}`
+                    : e.target.checked
+                      ? "Nowe zlecenia tylko z maili oznaczonych w skrzynce."
+                      : "Nowe zlecenia z każdego maila z PDF-em, jak przed zmianą."
+                );
+              }}
+            />
+            Nowe zlecenia tylko z maili <b>oznaczonych</b> (kolor albo flaga)
+          </label>
+          <p className="mt-1 text-zinc-500">
+            Mail dotyczący JUŻ istniejącego zlecenia (odpowiedź w wątku, numer w treści) przechodzi
+            zawsze — oznaczenie decyduje tylko o propozycjach nowych zleceń. Appka niczego w skrzynce
+            nie zmienia i nie oznacza jako przeczytane.
+          </p>
+          {spotkaneKategorie.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <span className="text-zinc-500">Kategorie w skrzynce:</span>
+              {spotkaneKategorie.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => void przelaczKategorie(name)}
+                  title="Kliknij, żeby zawęzić regułę do tej kategorii"
+                  className={`rounded-full border px-2 py-0.5 ${
+                    wybraneKategorie.includes(name)
+                      ? "border-emerald-400 bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                      : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                  }`}
+                >
+                  {name}
+                </button>
+              ))}
+              {wybraneKategorie.length === 0 && <span className="text-zinc-400">(liczy się dowolne)</span>}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setPokazPominiete((v) => !v)}
+            className="mt-1.5 text-zinc-500 underline hover:text-zinc-800 dark:hover:text-zinc-200"
+          >
+            {pokazPominiete ? "Ukryj pominięte" : "Pokaż pominięte maile"}
+          </button>
+          {pokazPominiete && (
+            <div className="mt-1 max-h-40 overflow-auto rounded bg-zinc-50 p-2 dark:bg-zinc-900">
+              {pominiete.length === 0 ? (
+                <p className="text-zinc-500">Nic nie zostało pominięte.</p>
+              ) : (
+                pominiete.map((mail) => (
+                  <div key={mail.id} className="border-b border-zinc-200 py-1 last:border-0 dark:border-zinc-800">
+                    <div className="text-zinc-700 dark:text-zinc-300">{mail.subject || "(bez tematu)"}</div>
+                {((mail.categories ?? []).length > 0 || mail.flagged) && (
+                  <div className="mt-0.5 flex flex-wrap gap-1">
+                    {(mail.categories ?? []).map((name) => (
+                      <span key={name} className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] text-red-800 dark:bg-red-950 dark:text-red-300">
+                        {name}
+                      </span>
+                    ))}
+                    {mail.flagged && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        flaga
+                      </span>
+                    )}
+                  </div>
+                )}
+                    <div className="text-zinc-500">
+                      {mail.from_name || mail.from_email || "(nieznany nadawca)"} ·{" "}
+                      {(mail.categories ?? []).length > 0 ? `oznaczenia: ${mail.categories.join(", ")}` : "bez oznaczeń"}
+                      {mail.flagged ? " + flaga" : ""} · {mail.match_reason}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="min-h-0 flex-1 overflow-auto">
           {isLoading && <p className="p-3 text-xs text-zinc-500">Wczytywanie…</p>}
           {isError && (
@@ -162,6 +276,20 @@ export function SkrzynkaPanel({ onClose, loads }: { onClose: () => void; loads: 
                   <span className="shrink-0 text-zinc-400">{formatAge(mail.received_at)}</span>
                 </div>
                 <div className="text-zinc-700 dark:text-zinc-300">{mail.subject || "(bez tematu)"}</div>
+                {((mail.categories ?? []).length > 0 || mail.flagged) && (
+                  <div className="mt-0.5 flex flex-wrap gap-1">
+                    {(mail.categories ?? []).map((name) => (
+                      <span key={name} className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] text-red-800 dark:bg-red-950 dark:text-red-300">
+                        {name}
+                      </span>
+                    ))}
+                    {mail.flagged && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        flaga
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {/* Dlaczego ten mail w ogóle tu jest — dyspozytor widzi podstawę dopasowania,
                     zamiast zgadywać, czemu appka uznała go za zlecenie. */}

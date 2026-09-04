@@ -22,6 +22,27 @@ async function fetchInbox(): Promise<EmailMessage[]> {
   return data ?? [];
 }
 
+/**
+ * Maile POMINIĘTE przez prefiltr — normalnie niewidoczne, bo Skrzynka ma pokazywać to, co wymaga
+ * decyzji. Odkąd propozycje robimy tylko z maili OZNACZONYCH przez człowieka (migracja 0024), musi
+ * być jednak sposób, żeby zobaczyć, co odpadło i CZYM te wiadomości są oznaczone — inaczej reguła
+ * byłaby czarną skrzynką, a przegapione zlecenie nie do wyśledzenia.
+ */
+async function fetchSkipped(): Promise<EmailMessage[]> {
+  const { data, error } = await supabase
+    .from("email_messages")
+    .select("*")
+    .eq("status", "ignored")
+    .order("received_at", { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  return data ?? [];
+}
+
+export function useSkippedEmails(enabled: boolean) {
+  return useQuery({ queryKey: ["email-skipped"], queryFn: fetchSkipped, enabled });
+}
+
 async function fetchIngestState(): Promise<EmailIngestState | null> {
   const { data, error } = await supabase.from("email_ingest_state").select("*").eq("id", true).maybeSingle();
   if (error) throw error;
@@ -107,6 +128,21 @@ export function useIngestState() {
 }
 
 /** Zmiana statusu maila (zaakceptowany/odrzucony). Optymistycznie, z cofnięciem przy błędzie. */
+/**
+ * Reguła „czytaj tylko oznaczone" (migracja 0024) — wspólna dla całej firmy, więc siedzi przy
+ * stanie odczytu, a nie w prywatnych ustawieniach widoku. Zapis idzie przez zwykły UPDATE, a zmianę
+ * widzą pozostali dyspozytorzy przez Realtime na `email_ingest_state`.
+ */
+export function useSetIngestMarking() {
+  const queryClient = useQueryClient();
+  return async function setMarking(patch: { only_marked?: boolean; marked_categories?: string[] }): Promise<string | null> {
+    const { error } = await supabase.from("email_ingest_state").update(patch).eq("id", true);
+    if (error) return error.message;
+    queryClient.invalidateQueries({ queryKey: EMAIL_INGEST_STATE_QUERY_KEY });
+    return null;
+  };
+}
+
 export function useSetEmailStatus() {
   const queryClient = useQueryClient();
 

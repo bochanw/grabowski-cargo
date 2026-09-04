@@ -39,6 +39,8 @@ interface GraphMessage {
   subject?: string;
   receivedDateTime?: string;
   hasAttachments?: boolean;
+  categories?: string[];
+  flag?: { flagStatus?: string };
   from?: { emailAddress?: { address?: string; name?: string } };
   body?: { content?: string; contentType?: string };
 }
@@ -111,7 +113,10 @@ export class GraphMailSource implements MailSource {
   async fetchSince(cursor: string, limit: number): Promise<FetchResult> {
     const since = cursor || new Date(Date.now() - INITIAL_LOOKBACK_HOURS * 3600_000).toISOString();
     const mailbox = encodeURIComponent(this.#config.mailbox);
-    const select = "id,internetMessageId,conversationId,subject,receivedDateTime,hasAttachments,from,body";
+    // `categories` i `flag` to oznaczenia nadane ręcznie w skrzynce — u klienta pracownik zaznacza
+    // nimi zlecenia do wpisania. Samo ich POBRANIE niczego w skrzynce nie zmienia: Graph zmienia
+    // stan wiadomości wyłącznie przy jawnym zapisie (PATCH), którego appka nigdzie nie robi.
+    const select = "id,internetMessageId,conversationId,subject,receivedDateTime,hasAttachments,categories,flag,from,body";
     // +1 do limitu, żeby wiedzieć, czy zostało coś na kolejny przebieg, bez osobnego zapytania.
     const url =
       `${GRAPH}/users/${mailbox}/mailFolders/inbox/messages` +
@@ -141,6 +146,10 @@ export class GraphMailSource implements MailSource {
         bodyText: (item.body?.content ?? "").slice(0, 20_000),
         receivedAt: item.receivedDateTime ?? null,
         attachments,
+        categories: item.categories ?? [],
+        // "flagged" = do wykonania; "complete" znaczy, że ktoś już to odhaczył, więc nie jest to
+        // sygnał "do wpisania".
+        flagged: (item.flag?.flagStatus ?? "notFlagged") === "flagged",
       });
     }
 

@@ -19,6 +19,14 @@ export interface EmailMessage {
   body_text: string | null;
   received_at: string | null;
   status: EmailStatus;
+  /**
+   * Oznaczenia nadane RĘCZNIE w skrzynce (migracja 0024). U klienta pracownik zaznacza kolorową
+   * kategorią zlecenia „do wpisania" — `categories` to nazwy tych kategorii (dowolne, bo nadaje je
+   * użytkownik Outlooka), `flagged` to flaga do wykonania. Zapisujemy je dla KAŻDEGO maila, także
+   * pominiętego, żeby dało się zobaczyć, czym te wiadomości są naprawdę oznaczone.
+   */
+  categories: string[];
+  flagged: boolean;
   /** Niepuste = mail dotyczy JUŻ ISTNIEJĄCEGO zlecenia (dopięcie/zmiana), puste = kandydat na nowe. */
   matched_load_id: string | null;
   match_reason: string | null;
@@ -50,4 +58,8 @@ export interface EmailIngestState {
   last_ok_at: string | null;
   last_error: string | null;
   seen_total: number;
+  /** Czy propozycje nowych zleceń robimy TYLKO z maili oznaczonych przez człowieka. */
+  only_marked: boolean;
+  /** Puste = liczy się dowolne oznaczenie; niepuste = tylko te kategorie. */
+  marked_categories: string[];
 }

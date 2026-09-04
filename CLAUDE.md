@@ -1170,6 +1170,45 @@ zlecenia jednorazowy przez AI był traktowany jako znany szablon, taka auto-nauk
   zadanie. Do tego czasu appka uczy się i czyta nauczonymi szablonami w PRZEGLĄDARCE, a skrzynka
   zachowuje się jak dotąd (ręczne szablony + guzik „Odczytaj przez Claude").
 
+**ODCZYT TYLKO OZNACZONYCH MAILI — ZROBIONY** (właściciel: „pracownik klienta oznacza zlecenie
+czerwonym kolorkiem (taki prostokąt przy widoku załącznika) oznaczając że jest to zlecenie do
+wpisania — czy program mógłby tylko odczytywać tak oflagowane zlecenia (pamiętaj żeby nie oznaczać
+jako odczytane)"):
+- **Czerwony PROSTOKĄT w Outlooku to kolorowa KATEGORIA** (Graph: `categories`), a nie flaga do
+  wykonania (Graph: `flag.flagStatus`, rysowana jako chorągiewka). Appka czyta i zapisuje OBA
+  sygnały, bo nazwa kategorii jest dowolna — nadaje ją użytkownik skrzynki i z zewnątrz nie da się
+  jej znać. Zgadnięcie nazwy znaczyłoby ciche przegapianie zleceń.
+- **Reguła jest wąska świadomie**: oznaczenie decyduje o tym, czy mail jest PROPOZYCJĄ NOWEGO
+  zlecenia. Mail powiązany z już istniejącym zleceniem (odpowiedź w wątku, numer zlecenia albo
+  kontenera w treści) przechodzi BEZ oznaczenia — inaczej zniknąłby wcześniejszy wymóg właściciela
+  („nawet jak klient dośle informacje w treści/dodatkowym to program to zobaczy"), bo odpowiedzi
+  spedytora nikt w firmie nie oznacza. Osobny test-straż pilnuje tej granicy.
+- **Nic nie ginie**: nieoznaczony mail zapisuje się ze statusem `ignored` i powodem, a w Skrzynce
+  jest guzik „Pokaż pominięte maile" z ich oznaczeniami. To stamtąd widać, czym te wiadomości są
+  NAPRAWDĘ oznaczone, i jednym kliknięciem zawęża się regułę do właściwej kategorii (chipy
+  „Kategorie w skrzynce" biorą się z tego, co faktycznie przyszło, nie z listy w kodzie).
+- Migracja **0024** (ZAAPLIKOWANA przez MCP): `email_messages.categories`/`flagged` +
+  `email_ingest_state.only_marked` (domyślnie **true**, bo o to poprosił właściciel) i
+  `marked_categories` (puste = liczy się DOWOLNE oznaczenie).
+- **„Nie oznaczać jako odczytane" jest pilnowane na dwóch poziomach i nie zależy od tej zmiany**:
+  Graph zmienia stan wiadomości wyłącznie przy jawnym zapisie (`PATCH isRead`), którego appka nigdzie
+  nie robi, a ścieżka IMAP otwiera skrzynkę przez `EXAMINE` (tylko odczyt) i pobiera treść przez
+  `BODY.PEEK`. Do komendy IMAP doszło `FLAGS` (żeby w ogóle zobaczyć oznaczenia) — jest test-straż,
+  że w kodzie nie ma `BODY[]` bez `PEEK` i że `EXAMINE` zostaje.
+- **PUŁAPKA ZŁAPANA PRZY OKAZJI: `imap.ts` używa BAJTÓW NUL jako separatora** (`"\0LITERAL\0"`),
+  których `cat` nie pokazuje — przy ręcznym przepisywaniu plików do `deploy_edge_function` zamieniły
+  się na spacje. Wdrożona kopia jest przez to spójna sama w sobie, ale mniej odporna niż repo
+  (sentinel ze spacjami może teoretycznie wystąpić w treści maila). **Wniosek: funkcje brzegowe
+  wdrażać `supabase functions deploy` z plików, nie przepisywać ich treścią przez MCP.**
+- Zweryfikowane: 17 testów prefiltru (`relevance.test.ts` — nieoznaczony mail z PDF-em odrzucony,
+  kategoria i flaga przepuszczone, zawężenie do jednej kategorii bez względu na wielkość liter,
+  mail o istniejącym zleceniu przechodzi bez oznaczenia, wyłączona reguła = zachowanie sprzed
+  zmiany) + 9 testów klienta IMAP (`imap.test.ts` — flagi parsowane obok literału, brak flag nie
+  psuje odczytu, straż na `BODY.PEEK`/`EXAMINE`). `next build` i `deno check` przechodzą; REST widzi
+  nowe kolumny, wiersz konfiguracji ma `only_marked = true`.
+- **UWAGA: to działa dopiero po wdrożeniu `mail-poll`** (patrz punkt 1 niżej) — cała reguła siedzi
+  w funkcji brzegowej.
+
 **Do zrobienia w kolejnej sesji:**
 1. **NAJPIERW: wdrożyć `mail-poll`** (właściciel: „wdroz mail-poll w kolejnej sesji"). Kod jest
    w repo i przetestowany, brakuje tylko wdrożenia — dziś produkcja czyta maile bez nauczonych
@@ -1189,7 +1228,11 @@ zlecenia jednorazowy przez AI był traktowany jako znany szablon, taka auto-nauk
      odczytu skrzynki" (czyli funkcja wstała i chodzi po naszym kodzie), a `email_ingest_state`
      po najbliższym przebiegu crona ma mieć świeże `last_ok_at` i `last_error = null`.
    - Alternatywa dla właściciela, jeśli woli sam: `supabase functions deploy mail-poll
-     --project-ref itlgexjhznjsbonzdxyg`.
+     --project-ref itlgexjhznjsbonzdxyg`. **To jest droga PREFEROWANA**: wdrożenie przez MCP wymaga
+     przepisania treści plików, a `imap.ts` zawiera bajty NUL, które przy przepisywaniu zamieniają
+     się na spacje (patrz sekcja o oznaczonych mailach).
+   - W tym wdrożeniu jedzie też reguła „czytaj tylko oznaczone" (migracja 0024 już zaaplikowana),
+     więc dopóki go nie ma, skrzynka proponuje zlecenia z KAŻDEGO maila z PDF-em, jak dotąd.
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje
    radę (jeśli nie: `MODEL` → `claude-sonnet-5`), i czy któryś spedytor powtarza się na tyle często,
    żeby opłacał się deterministyczny szablon zamiast płatnego odczytu.

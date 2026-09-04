@@ -31,10 +31,40 @@ export interface Relevance {
   reason: string;
 }
 
+/**
+ * Reguła „czytaj tylko oznaczone" (migracja 0024). Właściciel: „pracownik klienta oznacza zlecenie
+ * czerwonym kolorkiem […] oznaczając że jest to zlecenie do wpisania".
+ *
+ * `categories` puste = liczy się DOWOLNE oznaczenie (jakakolwiek kategoria albo flaga). Tak jest
+ * na starcie celowo: nazwa kolorowej kategorii jest dowolna i zależy od ustawień skrzynki klienta,
+ * a zgadnięcie jej po cichu znaczyłoby przegapianie zleceń. Po pierwszym przebiegu widać w Skrzynce,
+ * czym te maile są NAPRAWDĘ oznaczone, i wtedy można zawęzić regułę do jednej kategorii.
+ */
+export interface MarkingRule {
+  onlyMarked: boolean;
+  categories: string[];
+}
+
+export const ANY_MARKING: MarkingRule = { onlyMarked: false, categories: [] };
+
+/** Czy człowiek oznaczył ten mail jako „do wpisania". */
+export function isMarked(
+  mail: Pick<RawMessage, "categories" | "flagged">,
+  rule: MarkingRule,
+): boolean {
+  if (!rule.onlyMarked) return true;
+  if (rule.categories.length > 0) {
+    const wanted = rule.categories.map((c) => c.trim().toLowerCase());
+    return mail.categories.some((c) => wanted.includes(c.trim().toLowerCase()));
+  }
+  return mail.flagged || mail.categories.length > 0;
+}
+
 export function assessRelevance(
-  mail: Pick<RawMessage, "subject" | "bodyText" | "threadRefs" | "attachments">,
+  mail: Pick<RawMessage, "subject" | "bodyText" | "threadRefs" | "attachments" | "categories" | "flagged">,
   loadsByNormalizedNumber: Map<string, { id: string; order_number: string; container_number?: string | null }>,
   threadLoadByRef: Map<string, string>,
+  marking: MarkingRule = ANY_MARKING,
 ): Relevance {
   // 1) Numer zlecenia z bazy w temacie/treści — najmocniejszy sygnał, bo numer jest u klienta
   //    unikalny. Porównujemy formy znormalizowane, więc "ZD/1797/6/2026" w bazie trafia też
@@ -76,8 +106,28 @@ export function assessRelevance(
   }
 
   // 3) Załącznik PDF — kandydat na NOWE zlecenie od spedytora, którego jeszcze nie znamy.
+  //
+  // TYLKO TUTAJ działa reguła „czytaj wyłącznie oznaczone". Zakres jest wąski świadomie: oznaczenie
+  // od pracownika mówi „to zlecenie jest DO WPISANIA", a więc dotyczy nowych zleceń. Gdyby objąć
+  // nim także punkty 1-2, zniknąłby wcześniejszy wymóg właściciela — „nawet jak klient dośle
+  // informacje w treści/dodatkowym to program to zobaczy" — bo odpowiedź spedytora w wątku nie
+  // jest przez nikogo w firmie oznaczana.
   if (mail.attachments.length > 0) {
-    return { relevant: true, matchedLoadId: null, reason: `załącznik PDF (${mail.attachments.length})` };
+    if (!isMarked(mail, marking)) {
+      return {
+        relevant: false,
+        matchedLoadId: null,
+        reason: `mail z załącznikiem, ale bez oznaczenia „do wpisania" — pomijam${
+          marking.categories.length > 0 ? ` (czekam na kategorię: ${marking.categories.join(", ")})` : ""
+        }`,
+      };
+    }
+    const oznaczenie = mail.categories.length > 0 ? mail.categories.join(", ") : "flaga";
+    return {
+      relevant: true,
+      matchedLoadId: null,
+      reason: `załącznik PDF (${mail.attachments.length})${marking.onlyMarked ? `, oznaczony: ${oznaczenie}` : ""}`,
+    };
   }
 
   return { relevant: false, matchedLoadId: null, reason: "brak PDF-a, numeru zlecenia i powiązania z wątkiem" };

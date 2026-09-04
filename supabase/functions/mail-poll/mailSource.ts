@@ -19,6 +19,14 @@ export interface RawMessage {
   bodyText: string;
   receivedAt: string | null;
   attachments: MailAttachment[];
+  /**
+   * Oznaczenia nadane przez człowieka w skrzynce — u klienta to nimi pracownik mówi „to zlecenie
+   * jest do wpisania". `categories` to kolorowe kategorie Outlooka (czerwony prostokąt przy
+   * wiadomości; nazwy są dowolne, bo nadaje je użytkownik), `flagged` to flaga do wykonania.
+   * Trzymamy OBA, bo z zewnątrz nie da się orzec, którego z nich klient używa.
+   */
+  categories: string[];
+  flagged: boolean;
 }
 
 export interface MailAttachment {
