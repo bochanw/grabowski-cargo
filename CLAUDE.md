@@ -982,7 +982,10 @@ tylko kontenery bez statusu ZP"):
 - Funkcja `bhub-status` wdrożona (v10). **Repo jest o jeden commit do przodu** (słownik T-State +
   nazwanie „Page Expired") — do wdrożenia razem z rozwiązaniem transportu.
 
-**KONIEC drogi serwerowej — statusy Baltic Hub odpytuje ROZSZERZENIE DO CHROME** (właściciel:
+**KONIEC drogi serwerowej — statusy Baltic Hub odpytuje ROZSZERZENIE DO CHROME**
+(**CZĘŚCIOWO NIEAKTUALNE — dotyczy WYŁĄCZNIE Baltic Huba. BCT i GCT wróciły na serwer, bo są
+publiczne; patrz sekcja „BCT i GCT ODPYTUJE SERWER" na końcu pliku. Wszystko poniżej o Cloudflare,
+reCAPTCHY i `chrome.debugger` obowiązuje dalej — dla BHuba.**) (właściciel:
 „chyba nie przejdziemy tego problemu z weryfikacją, możemy spróbować zrobić to przez przeglądarkę
 dopóki nie rozwiążę problemu z API? inni operatorzy terminali będą również się bronić, a tam API
 nie będzie na bank"; przy okazji wybrał: Bright Datę **usunąć całkiem**):
@@ -2134,6 +2137,69 @@ Kod pocztowy powinien być w adresie, a ważenie już mamy kolumnę ważenie gdz
 - **NIE zweryfikowane na żywym koncie** (środowisko sesji nie ma konta): zapis z produkcji.
   `mail-poll` nie wymaga wdrożenia — cała zmiana jest po stronie przeglądarki; propozycja ze
   skrzynki dostaje kod dopisany do adresu w oknie zlecenia i to wystarczy.
+
+**BCT i GCT ODPYTUJE SERWER, wtyczka zostaje przy BHubie i jako zabezpieczenie** (reguła
+właściciela wprost: „BHub i strony wymagające logowania — wtyczka; strony publiczne bez logowania —
+natywna obsługa (o ile będzie możliwa) z dobudowaną funkcjonalnością po stronie wtyczki, gdyby się
+wysypało"):
+- **Zmierzone w tej sesji, nie założone**: BCT to publiczny formularz ASP.NET (GET po
+  `__RequestVerificationToken` → POST na `/Tiles/TileCheckContainerSubmit`), GCT — PRADO (GET po
+  `PRADO_PAGESTATE` → POST na tę samą stronę). Dwa zwykłe zapytania HTTP, żadnego Cloudflare.
+  **To NIE jest ta sama ściana, o którą rozbił się Baltic Hub**, choć wygląda podobnie (oba
+  wymagają tokenu z wcześniej pobranej strony, jak „Page Expired" z `/multi`): tam Cloudflare nie
+  pozwalał POBRAĆ strony, więc świeżego tokenu nie dało się zdobyć. Tu GET przechodzi.
+- **Rozstrzygnięta niewiadoma, która przesądzała o sensie całości: adresy wyjściowe Supabase SĄ
+  przez te terminale przyjmowane.** Pierwszy przebieg na produkcji odczytał wszystkie cztery
+  zlecenia BCT/GCT bez jednego błędu (`updated: 4`, `problems: []`), z prawdziwymi danymi:
+  MSBU3142439 DEPARTED/MSC/10250/8150, OOCU0555210 → **ZP** (reguła „YARD + brak stopek"),
+  oba GCT „na terminalu" z pustym czasem podjęcia. Edge Functions nie mają stałego IP, więc bez
+  tego sprawdzenia cała droga byłaby hipotezą.
+- **JEDEN parser, dwa transporty.** Z serwera dostajemy HTML, z wtyczki widoczny tekst
+  (`innerText`), więc HTML sprowadza do tego samego kształtu `htmlText.ts` (tabulator = komórka,
+  złamanie linii = wiersz), a `parse.ts` nie wie, skąd przyszedł tekst. Dwa odczyty rozjechałyby
+  się przy pierwszej poprawce. Jest test-straż: BCT z serwera i BCT z wtyczki dają identyczne pola.
+  **`&nbsp;` MUSI przeżyć normalizację** — pustą komórkę GCT zapisuje właśnie tak, a bez niej
+  ostatnia kolumna wiersza skleja się z pierwszą kolumną następnego.
+- **BŁĄD ZNALEZIONY PRZY OKAZJI, dotyczył TAKŻE wtyczki i siedział w kodzie od 0032**: `parseGct`
+  dzielił pola co `kolumny.length`, a granicę wiersza niesie ZŁAMANIE LINII — więc ostatnia komórka
+  wchłaniała numer porządkowy następnego wiersza. „Data/Czas podjęcia" wychodziła „2", czyli appka
+  twierdziła, że kontener został PODJĘTY, choć rubryka była pusta, a kolejne kontenery z paczki
+  przesuwały się o jedno pole i nie dawały się odnaleźć. GCT pytamy paczkami po 10, więc dotyczyło
+  to każdej paczki poza jednoelementową; złapane dopiero na prawdziwej odpowiedzi o DWA kontenery.
+  Naprawione (`wierszeGct`) — tniemy tylko OSTATNIĄ komórkę i tylko gdy po złamaniu linii zostaje
+  sam numer porządkowy. Dwa testy-straże, **sprawdzone odwrotnie**: na kodzie sprzed poprawki padają.
+  Przy okazji: GCT wypisuje nieznany kontener jako zwykły wiersz ze słowami „brak informacji" —
+  teraz to `notFound`, a nie status.
+- **Migracja 0033** (ZAAPLIKOWANA + sprawdzona zapytaniem): `terminal_sources` (terminal → `serwer`
+  / `wtyczka`) i cron co 15 minut. **Droga siedzi w BAZIE, nie w kodzie — to jest owo
+  zabezpieczenie**: gdy BCT albo GCT zacznie się bronić, przestawienie jednego wiersza oddaje go
+  wtyczce, bez wdrożenia i bez aktualizacji rozszerzenia u dyspozytorów. Wtyczka NIE TRACI żadnej
+  umiejętności — dalej umie wszystkie trzy terminale, tylko w cyklu ich nie dostaje (pustą listę
+  znosi bez zmian w kodzie: „nic do sprawdzenia"). Przełącznik w oknie „Wtyczka" → „Skąd biorą się
+  statusy"; przestawienie BHuba na `serwer` jest opatrzone ostrzeżeniem (403 przy każdym zleceniu).
+- **Cron używa TEGO SAMEGO sekretu `INGEST_SECRET` co skrzynka mailowa** — jest już w Vaulcie i w
+  sekretach Edge Functions, więc odczyt ruszył od razu. MCP nie ustawia sekretów, więc każdy nowy
+  oznaczałby ręczny krok właściciela i funkcję milczącą do tego czasu. `verify_jwt: false` jest tu
+  KONIECZNE (cron woła bez JWT), a autoryzację robi sam kod: token użytkownika albo sekret, przy
+  czym sekret uprawnia WYŁĄCZNIE do `cykl`.
+- Migracja **0034** — jednorazowy rozruch: wdrożenie wypadło w sobotę wieczorem, a cykl chodzi
+  w oknie „dni robocze 6-18", więc pierwsza odpowiedź przyszłaby dopiero w poniedziałek. `loadIds`
+  liczone z bazy (nie na sztywno) pomijają okno, tak jak kliknięcie dyspozytora.
+- Appka: `checkTerminalStatus.ts` woła `cykl`, a `useBhubCheck` pyta NAJPIERW serwer i dopiero to,
+  co serwer odda jako `dlaWtyczki`, kieruje do rozszerzenia. **Podział terminali rozstrzyga
+  wyłącznie serwer** — gdyby appka dzieliła to sama, przestawienie drogi wymagałoby wdrożenia appki.
+  Skutek uboczny, o który chodziło: dyspozytor bez wtyczki nie dostaje już komunikatu o jej braku,
+  kiedy nie była do niczego potrzebna. Przebieg serwerowy melduje się w `bhub_agent_state` jak
+  każde rozszerzenie, więc martwy odczyt widać niezależnie od tego, która droga zamilkła.
+- Funkcja `bhub-status` wdrożona (**v40**) jako paczka esbuild. **Po zbudowaniu dosłowne tabulatory
+  i twarde spacje w napisach zamieniane są na sekwencje ucieczki** (`scripts` tego nie robią —
+  robione ręcznie, patrz komentarz na górze `bundle.js`): esbuild rozwija `\t`, a niewidoczne znaki
+  gubią się przy przenoszeniu treści przez MCP. Że przeżyły, wiadomo nie z porównania bajtów, tylko
+  z zachowania — GCT bez tabulatorów w ogóle by się nie sparsował, a sparsował się na produkcji.
+- **Czego NIE zweryfikowano**: zapisu przełącznika `terminal_sources` z przeglądarki na żywym koncie
+  (środowisko sesji go nie ma) — polityki, granty i Realtime sprawdzone zapytaniem, a odczyt bez
+  sesji odbity przez RLS (`[]` przez klucz publishable). Nie widziano też jeszcze, jak zachowa się
+  cykl automatyczny w oknie godzinowym — pierwszy taki przebieg wypada w poniedziałek o 6:00.
 
 **Do zrobienia w kolejnej sesji:**
 0. Kolejne przykłady zleceń od nowych spedytorów — po każdym sprawdzić, czy Haiku 4.5 nadal daje

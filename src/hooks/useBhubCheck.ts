@@ -2,19 +2,28 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bhubExtensionState, requestBhubCheck, type StanRozszerzenia } from "@/lib/bhub/extensionBridge";
+import { checkTerminalStatus } from "@/lib/supabase/checkTerminalStatus";
 
 /**
- * Sprawdzanie statusów w Baltic Hub — zlecane ROZSZERZENIU do Chrome, nie funkcji brzegowej.
+ * Sprawdzanie statusów w terminalach — DWIE drogi, bo terminale bronią się bardzo różnie.
  *
- * Powód jest zmierzony, nie teoretyczny: baltichub.com stoi za Cloudflare i reCAPTCHĄ, więc
- * odpytywanie z serwerowni albo przez płatną zdalną przeglądarkę kończyło się raz po raz na
- * przejściówce („Just a moment…"). Prawdziwa przeglądarka dyspozytora przechodzi to sama, a ta
- * sama droga zadziała u kolejnych terminali — one też będą się bronić, a API nie każdy da.
+ *   SERWER (`bhub-status`, działanie `cykl`) — terminale publiczne: BCT i GCT. Zwykłe formularze
+ *   bez logowania i bez captchy, więc funkcja brzegowa pobiera je sama. Dyspozytor nie musi mieć
+ *   nic włączonego, a odczyt chodzi też sam z siebie co kwadrans.
  *
- * Wynik NIE wraca tędy do tabeli: rozszerzenie odsyła odczyt do funkcji `bhub-status`, ta zapisuje
- * go przy zleceniach, a Zestawienie dostaje zmianę przez Realtime. Ten hook odpowiada wyłącznie za
- * „trwa/nie trwa", za komunikat o błędzie i za to, żeby BRAK rozszerzenia było widać, zamiast
- * cicho nie robić nic.
+ *   ROZSZERZENIE DO CHROME — Baltic Hub i wszystko, co wymaga logowania albo się broni.
+ *   baltichub.com stoi za Cloudflare i reCAPTCHĄ: odpytywanie z serwerowni albo przez płatną
+ *   zdalną przeglądarkę kończyło się raz po raz na przejściówce („Just a moment…"). Prawdziwa
+ *   przeglądarka dyspozytora przechodzi to sama.
+ *
+ * KOLEJNOŚĆ JEST WAŻNA I NIE JEST DOWOLNA: najpierw pytamy serwer, bo to ON wie, które terminale
+ * obsługuje dziś którą drogą (tabela `terminal_sources` — przełącznik awaryjny). Rozszerzenie
+ * dostaje dokładnie te zlecenia, które serwer oddał jako `dlaWtyczki`. Gdyby appka dzieliła to
+ * sama, przestawienie terminala na drogę awaryjną wymagałoby wdrożenia appki.
+ *
+ * Wynik NIE wraca tędy do tabeli: obie drogi zapisują odczyt przez `bhub-status`, a Zestawienie
+ * dostaje zmianę przez Realtime. Ten hook odpowiada wyłącznie za „trwa/nie trwa", za komunikat
+ * o błędzie i za to, żeby BRAK rozszerzenia było widać, zamiast cicho nie robić nic.
  */
 export function useBhubCheck() {
   const [checking, setChecking] = useState<ReadonlySet<string>>(new Set());
@@ -49,13 +58,31 @@ export function useBhubCheck() {
       setError(null);
       mark(loadIds, 1);
       try {
-        const result = await requestBhubCheck(loadIds);
-        if (!result.ok) {
+        // 1. Serwer — terminale publiczne. Odpowiedź mówi, co zostało dla rozszerzenia.
+        const serwer = await checkTerminalStatus(loadIds);
+        const dlaWtyczki = serwer.dlaWtyczki;
+
+        // 2. Rozszerzenie — reszta. Gdy serwer obsłużył WSZYSTKO, nie zawracamy mu głowy: dyspozytor
+        // bez rozszerzenia nie może dostać komunikatu o jego braku, skoro nie było ono do niczego
+        // potrzebne.
+        const wtyczka = dlaWtyczki.length > 0 ? await requestBhubCheck(dlaWtyczki) : null;
+
+        if (!serwer.ok && dlaWtyczki.length === 0) {
+          setError(`Nie udało się sprawdzić statusu w terminalu: ${serwer.error}`);
+          return false;
+        }
+        if (wtyczka && !wtyczka.ok) {
           setError(
-            result.reason === "brak_rozszerzenia"
-              ? result.error
-              : `Nie udało się sprawdzić statusu w terminalu: ${result.error}`
+            wtyczka.reason === "brak_rozszerzenia"
+              ? wtyczka.error
+              : `Nie udało się sprawdzić statusu w terminalu: ${wtyczka.error}`
           );
+          return false;
+        }
+        // Serwer odpowiedział, ale przy części zleceń zapisał problem (terminal nie odpowiedział,
+        // zmienił formularz). Nie wolno tego przemilczeć — przy zleceniu i tak stoi powód.
+        if (serwer.ok && serwer.problems.length > 0) {
+          setError(`Terminal: ${serwer.problems[0]}`);
           return false;
         }
         return true;
