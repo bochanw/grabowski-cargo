@@ -591,6 +591,51 @@ export function parseBct(text: string, containerNumber: string): ParsedContainer
 }
 
 /**
+ * Pola tabeli GCT → WIERSZE. Wyglądało to na dzielenie co `kolumny.length` pól i przez to długo
+ * działało — na odpowiedzi o JEDEN kontener.
+ *
+ * BŁĄD, na który to nie wystarcza (zmierzony na prawdziwej odpowiedzi o dwa kontenery): granicę
+ * wiersza niesie ZŁAMANIE LINII, a nie tabulator, więc ostatnia komórka wiersza wchłania numer
+ * porządkowy wiersza NASTĘPNEGO. „Data/Czas podjęcia" wychodziło wtedy „2" — czyli appka
+ * twierdziła, że kontener został podjęty, choć rubryka była pusta — a kolejne kontenery z paczki
+ * przesuwały się o jedno pole i nie dawały się w tabeli odnaleźć. Pytamy GCT paczkami po
+ * dziesięć numerów, więc dotyczyło to każdej paczki poza jednoelementową.
+ *
+ * Złamania linii SĄ TEŻ WEWNĄTRZ komórek (status i stan ładunku, statek i ETA/ETD), więc nie
+ * wolno po prostu dzielić po `\n`. Tniemy wyłącznie OSTATNIĄ komórkę wiersza i tylko wtedy, gdy
+ * po złamaniu linii zostaje sam numer porządkowy kolejnego wiersza — tekst stopki strony pod
+ * ostatnim wierszem tego warunku nie spełnia i zostaje przy komórce.
+ */
+function wierszeGct(pola: string[], kolumny: string[]): Record<string, string>[] {
+  const NUMER_PORZADKOWY = /^([\s\S]*?)\n[ \u00A0]*(\d{1,4})[ \u00A0]*$/;
+  const kolejka = [...pola];
+  const wiersze: Record<string, string>[] = [];
+
+  while (kolejka.length) {
+    const wartosci: string[] = [];
+    while (wartosci.length < kolumny.length && kolejka.length) {
+      let pole = kolejka.shift() as string;
+      if (wartosci.length === kolumny.length - 1) {
+        const rozdzielone = NUMER_PORZADKOWY.exec(pole);
+        if (rozdzielone) {
+          pole = rozdzielone[1];
+          kolejka.unshift(rozdzielone[2]);
+        }
+      }
+      wartosci.push(pole);
+    }
+
+    const wiersz: Record<string, string> = {};
+    kolumny.forEach((nazwa, j) => {
+      if (nazwa) wiersz[nazwa] = (wartosci[j] ?? "").replace(/\u00A0/g, " ").trim();
+    });
+    wiersze.push(wiersz);
+  }
+
+  return wiersze;
+}
+
+/**
  * GCT: jedna tabela, wiersz na kontener. Czytamy z TEKSTU Z TABULATORAMI, a nie ze sklejonego
  * w jedną linię — tylko tabulator mówi, gdzie kończy się „Status", a zaczyna „Status celny"
  * (obie wartości to wolny tekst ze spacjami). Wartości potrafią mieć w środku ZŁAMANIE LINII
@@ -613,12 +658,20 @@ export function parseGct(text: string, containerNumber: string): ParsedContainer
   const pola = linie.slice(naglowek + 1).join("\n").split("\t");
   const szukany = key(containerNumber);
 
-  for (let i = 0; i < pola.length; i += kolumny.length) {
-    const wiersz: Record<string, string> = {};
-    kolumny.forEach((nazwa, j) => {
-      if (nazwa) wiersz[nazwa] = (pola[i + j] ?? "").replace(/ /g, " ").trim();
-    });
+  for (const wiersz of wierszeGct(pola, kolumny)) {
     if (key(wiersz["Nr kontenera"] ?? "") !== szukany) continue;
+
+    // GCT wypisuje kontener, o którym NIC NIE WIE, jako zwykły wiersz ze słowami „brak informacji"
+    // w rubryce statusu i resztą pustą (zmierzone na odpowiedzi o dwa kontenery). To nie jest stan
+    // kontenera, tylko „nie znam" — bez tego appka zapisałaby „brak informacji" jako status,
+    // a PUSTĄ rubrykę podjęcia jako „stoi na terminalu".
+    if (/^(brak informacji|nie znaleziono|brak danych)$/i.test((wiersz["Status"] ?? "").trim())) {
+      return {
+        ...PUSTE, notFound: true, recognised: true,
+        details: { ...wiersz, _container: containerNumber, _uklad: "GCT: brak informacji" },
+      };
+    }
+
     return { ...interpretRow(wiersz), details: { ...wiersz, _container: containerNumber, _uklad: "GCT: tabela" } };
   }
 

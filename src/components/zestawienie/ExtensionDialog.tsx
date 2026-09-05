@@ -1,6 +1,7 @@
 "use client";
 
 import { useExtensionPackage } from "@/hooks/useExtensionPackage";
+import { useTerminalSources, type DrogaTerminala } from "@/hooks/useTerminalSources";
 import { adresPaczki, stanPaczki } from "@/lib/bhub/extensionPackage";
 import type { StanRozszerzenia } from "@/lib/bhub/extensionBridge";
 
@@ -115,8 +116,63 @@ export function ExtensionDialog({ extension, onClose }: { extension: StanRozszer
               </div>
             </>
           ) : null}
+
+          <TerminaleISposobOdczytu />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Podział pracy między serwer a wtyczkę — i przełącznik awaryjny.
+ *
+ * Stoi w tym oknie, a nie w osobnym, bo odpowiada na pytanie, które dyspozytor zadaje sobie
+ * właśnie tutaj: „skoro mam wtyczkę, to co ona właściwie sprawdza?". Od kiedy BCT i GCT pobiera
+ * serwer, wtyczka jest potrzebna WYŁĄCZNIE do Baltic Huba — i do awarii.
+ */
+function TerminaleISposobOdczytu() {
+  const { drogi, isLoading, przestaw } = useTerminalSources();
+  if (isLoading || drogi.length === 0) return null;
+
+  return (
+    <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
+      <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">Skąd biorą się statusy</h3>
+      <p className="mb-2 text-xs text-zinc-500">
+        Terminale publiczne (bez logowania) pobiera serwer sam co 15 minut — do tego nie trzeba mieć nic włączonego.
+        Wtyczka jest do Baltic Huba (Cloudflare i reCAPTCHA przepuszczają tylko prawdziwą przeglądarkę) i jako
+        zabezpieczenie: jeśli publiczny terminal zacznie się bronić albo zmieni formularz, przestaw go tutaj na wtyczkę.
+      </p>
+
+      <ul className="space-y-1">
+        {drogi.map((d) => (
+          <li key={d.terminal} className="flex items-center gap-2 text-xs">
+            <span className="w-12 font-medium text-zinc-800 dark:text-zinc-200">{d.terminal}</span>
+            <select
+              value={d.mode}
+              disabled={przestaw.isPending}
+              onChange={(e) => przestaw.mutate({ terminal: d.terminal, mode: e.target.value as DrogaTerminala })}
+              className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <option value="serwer">serwer (sam, co 15 min)</option>
+              <option value="wtyczka">wtyczka (przeglądarka dyspozytora)</option>
+            </select>
+            {d.terminal === "BHub" && d.mode === "serwer" ? (
+              <span className="text-amber-700 dark:text-amber-400">
+                ⚠ Baltic Hub odrzuca zapytania z serwera (403) — zostaw wtyczkę.
+              </span>
+            ) : (
+              <span className="text-zinc-500">{d.note}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {przestaw.isError ? (
+        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+          Nie udało się przestawić: {przestaw.error instanceof Error ? przestaw.error.message : "nieznany błąd"}
+        </p>
+      ) : null}
     </div>
   );
 }

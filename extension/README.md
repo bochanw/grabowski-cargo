@@ -5,6 +5,14 @@ zleceniach w appce. Działa w przeglądarce dyspozytora, bo terminal odrzuca ruc
 `baltichub.com` stoi za Cloudflare, a formularz ma reCAPTCHĘ. Prawdziwa przeglądarka na zwykłym
 łączu przechodzi to sama.
 
+**Co robi na co dzień, a co na wypadek awarii.** BCT i GCT są publiczne (bez logowania i bez
+captchy), więc pobiera je SERWER sam, co 15 minut — bez niczyjej włączonej przeglądarki. Wtyczka
+odpowiada dziś za Baltic Huba, a dla pozostałych terminali jest zabezpieczeniem: umie je wszystkie,
+tylko w normalnym cyklu ich nie dostaje. Gdy publiczny terminal zacznie się bronić albo zmieni
+formularz, wystarczy w appce (guzik **Wtyczka** → „Skąd biorą się statusy") przestawić go na
+wtyczkę — bez aktualizacji rozszerzenia na komputerach. Dlatego przebieg, w którym wtyczka melduje
+„nic do sprawdzenia", jest normalny, a nie objawem usterki.
+
 ## Instalacja (5 minut, raz na komputer)
 
 1. W appce kliknij **Wtyczka** w pasku Zestawienia i pobierz paczkę, a potem rozpakuj ją w stałe

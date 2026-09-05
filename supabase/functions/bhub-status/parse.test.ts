@@ -9,6 +9,7 @@
 
 import { assertEquals } from "jsr:@std/assert@1";
 import { parseContainerPage, parseTerminalPage } from "./parse.ts";
+import { htmlToText } from "./htmlText.ts";
 
 /** Karta jednego kontenera. `timeOut` pusty = kontener stoi na terminalu. */
 function karta(opts: { numer: string; timeOut?: string; cargo?: string; commodity?: string; weight?: string }): string {
@@ -165,4 +166,89 @@ Deno.test("nieznany terminal = błąd konfiguracji, nazwany wprost", () => {
   const p = parseTerminalPage(BCT, "MSBU3142439", "DCT Gdańsk");
   assertEquals(p.recognised, false);
   assertEquals((p.reason ?? "").includes("DCT Gdańsk"), true);
+});
+
+// ============================================================
+// DROGA SERWEROWA — te same terminale, inny transport.
+//
+// BCT i GCT pobiera dziś funkcja brzegowa zwykłym fetchem (są publiczne, bez logowania), a Baltic
+// Hub dalej rozszerzenie do Chrome. Z serwera dostajemy HTML, z rozszerzenia widoczny tekst — więc
+// HTML sprowadzamy do TEGO SAMEGO kształtu (`htmlText.ts`) i czyta go TEN SAM parser.
+//
+// Fixtury `*.html` to PRAWDZIWE odpowiedzi terminali, zapisane co do bajtu z zapytań wykonanych
+// tak, jak robi to funkcja (BCT: GET po `__RequestVerificationToken` → POST na
+// `/Tiles/TileCheckContainerSubmit`; GCT: GET po `PRADO_PAGESTATE` → POST na tę samą stronę).
+// Odpowiedź GCT dotyczy DWÓCH kontenerów — i to ona złapała błąd opisany niżej.
+// ============================================================
+
+const BCT_HTML = Deno.readTextFileSync(new URL("./fixtures/bct-serwer-MSBU3142439.html", import.meta.url));
+const GCT_HTML = Deno.readTextFileSync(new URL("./fixtures/gct-serwer-HMMU2345017.html", import.meta.url));
+
+Deno.test("BCT z serwera daje DOKŁADNIE to samo, co BCT z rozszerzenia", () => {
+  const zSerwera = parseTerminalPage(htmlToText(BCT_HTML), "MSBU3142439", "BCT");
+  const zWtyczki = parseTerminalPage(BCT, "MSBU3142439", "BCT");
+
+  // To jest cały sens `htmlText.ts`: gdyby drogi rozjechały się w odczycie, mielibyśmy dwie
+  // prawdy o tym samym kontenerze, zależne od tego, kto akurat zapytał.
+  assertEquals(zSerwera.recognised, true);
+  assertEquals(zSerwera.statusRaw, zWtyczki.statusRaw);
+  assertEquals(zSerwera.isoType, zWtyczki.isoType);
+  assertEquals(zSerwera.shippingLine, zWtyczki.shippingLine);
+  assertEquals(zSerwera.grossWeightKg, zWtyczki.grossWeightKg);
+  assertEquals(zSerwera.netWeightKg, zWtyczki.netWeightKg);
+  assertEquals(zSerwera.timeOut, zWtyczki.timeOut);
+});
+
+Deno.test("STRAŻ: w odpowiedzi o KILKA kontenerów wiersz nie zjada numeru następnego", () => {
+  // BŁĄD, który to łapie (był w kodzie, zanim BCT i GCT ruszyły z serwera — a więc dotyczył też
+  // rozszerzenia, bo GCT pytamy paczkami po dziesięć numerów): granicę wiersza niesie ZŁAMANIE
+  // LINII, nie tabulator, więc ostatnia komórka wiersza wchłaniała numer porządkowy wiersza
+  // następnego. „Data/Czas podjęcia" wychodziła wtedy „2" — czyli appka twierdziła, że kontener
+  // został podjęty, choć rubryka była PUSTA.
+  const p = parseTerminalPage(htmlToText(GCT_HTML), "HMMU2345017", "GCT");
+  assertEquals(p.recognised, true);
+  assertEquals(p.timeOut, ""); // pusto = stoi na terminalu; „2" = błąd, który tu pilnujemy
+  assertEquals(p.isoType, "22G1");
+});
+
+Deno.test("kontener DRUGI w paczce też zostaje odnaleziony", () => {
+  // Druga połowa tego samego błędu: po zjedzeniu numeru porządkowego kolejne wiersze przesuwały
+  // się o jedno pole i żaden dalszy kontener nie dawał się w tabeli znaleźć.
+  const p = parseTerminalPage(htmlToText(GCT_HTML), "MSBU3142439", "GCT");
+  assertEquals(p.notFound, true); // GCT pisze o nim wprost „brak informacji"
+  assertEquals(p.recognised, true);
+  assertEquals(p.details._uklad, "GCT: brak informacji");
+});
+
+Deno.test('STRAŻ: „brak informacji” NIE jest statusem kontenera', () => {
+  // Gdyby to przeszło jako zwykły wiersz, przy zleceniu stanąłby status „brak informacji", a PUSTA
+  // rubryka podjęcia zostałaby odczytana jako „kontener stoi na terminalu" — czyli spokojna,
+  // nieprawdziwa informacja zamiast „terminal go nie zna".
+  const p = parseTerminalPage(htmlToText(GCT_HTML), "MSBU3142439", "GCT");
+  assertEquals(p.statusRaw, null);
+  assertEquals(p.timeOut, null);
+});
+
+Deno.test("htmlToText: pusta komórka zostaje kolumną, wcięcia w źródle nie tworzą kolumn", () => {
+  const tekst = htmlToText(GCT_HTML);
+  const naglowek = tekst.split("\n").find((l) => l.includes("\t") && /Nr\s+kontenera/i.test(l)) ?? "";
+
+  // Nagłówek tabeli GCT ma osiem kolumn — tyle samo, co ta sama tabela odczytana z ekranu przez
+  // rozszerzenie. Gdyby tabulator wcięcia ze źródła liczył się jako granica kolumny albo gdyby
+  // tabulator po OSTATNIEJ komórce nie był zdejmowany, liczby by się nie zgodziły.
+  assertEquals(naglowek.split("\t").length, 8);
+  assertEquals(naglowek.split("\t")[1].trim(), "Nr kontenera");
+
+  // `&nbsp;` z pustej komórki MUSI przeżyć — patrz nagłówek `htmlText.ts`.
+  assertEquals(tekst.includes(" "), true);
+});
+
+Deno.test('htmlToText: podpowiedź ze słowami „nr kontenera” nie udaje nagłówka tabeli', () => {
+  // Strona GCT ma nad formularzem zdanie „Można podać więcej niż jeden nr kontenera…". Pierwsza
+  // wersja normalizatora zostawiała w tej linii tabulator (z wcięcia w źródle), więc parser brał
+  // ZDANIE za wiersz nagłówkowy i nie znajdował ani jednego kontenera.
+  const linieZTabulatorem = htmlToText(GCT_HTML)
+    .split("\n")
+    .filter((l) => l.includes("\t") && /Nr\s+kontenera/i.test(l));
+  assertEquals(linieZTabulatorem.length, 1);
 });
